@@ -1,0 +1,9 @@
+name: parameter-catalog
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pandas
+  - numpy
+  - requests
+  - pytest
