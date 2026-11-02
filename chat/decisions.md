@@ -18,8 +18,10 @@ superseded rather than deleting it.
     the value as their schedule override (replacing any value set there, which would otherwise
     hide the family value).
   - Both: a checkbox to also make it the parameter's default value.
-  - Nothing picked by default; Cancel changes nothing; clearing works the same way. Wording is a
-    draft in `DDMGUI._override_questions`.
+  - Nothing picked by default; Cancel changes nothing; clearing works the same way. Wording lives
+    in `DDMGUI._override_questions`.
+- **GUI prompt style:** short Title Case questions followed by a `Parameter = value` line, e.g.
+  "Override Parameter Default Value?" / "Length = 7". No "Also ..." sentences.
 - Rejected along the way: a list of every family and schedule in the catalog, and a yes/no
   "also override for the family in every schedule" question.
 

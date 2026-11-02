@@ -897,14 +897,14 @@ def test_override_question_wording():
     gui = three_family_gui()
 
     heading, list_label, parameter = gui._override_questions("Width", "7", ("F1", "S1"))
-    assert heading == "Override 'Width' with '7' for F1 in schedule 'S1'."
-    assert list_label == "Also apply it to these families in schedule 'S1':"
-    assert parameter == "Also make '7' the default value of 'Width'"
+    assert heading == "Override F1 Value in S1\nWidth = 7"
+    assert list_label == "Override Other Families in S1?"
+    assert parameter == "Override Parameter Default Value?\nWidth = 7"
 
     heading, list_label, parameter = gui._override_questions("Width", None, ("F1", None))
-    assert heading == "Clear the override of 'Width' for F1."
-    assert list_label == "Also apply it to F1 in these schedules:"
-    assert parameter == "Also clear the default value of 'Width'"
+    assert heading == "Clear F1 Value\nWidth = (no value)"
+    assert list_label == "Clear F1 in Other Schedules?"
+    assert parameter == "Clear Parameter Default Value?\nWidth = (no value)"
 
 
 def test_schedule_value_rows_show_overrides_and_effective_values(monkeypatch):
@@ -961,7 +961,7 @@ def test_override_dialog_returns_picked_locations_and_parameter_choice():
         failures = run_in_dialog(root, pick_second_and_tick_parameter)
         answer = gui._ask_override_scope("Width", "7", ("F1", "S1"), connected, True)
         assert not failures
-        assert shown == {"listed": ["F2", "F3"], "checkbox": "Also make '7' the default value of 'Width'"}
+        assert shown == {"listed": ["F2", "F3"], "checkbox": "Override Parameter Default Value?\nWidth = 7"}
         assert answer == {"locations": [("F3", "S1")], "parameter": True}
 
         failures = run_in_dialog(root, lambda: find_button(find_window(root, "Override Value"), "Cancel").invoke())

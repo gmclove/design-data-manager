@@ -930,20 +930,17 @@ class DDMGUI:
         return True
 
     def _override_questions(self, param_name: str, value, location):
-        """The draft wording of the override prompt: ``(heading, list label, parameter checkbox)``."""
+        """The wording of the override prompt: ``(heading, list label, parameter checkbox)``."""
         family_name, schedule_name = location
+        verb = "Clear" if value is None else "Override"
+        assignment = f"{param_name} = {'(no value)' if value is None else value}"
         if schedule_name is None:
-            where = family_name
-            list_label = f"Also apply it to {family_name} in these schedules:"
+            heading = f"{verb} {family_name} Value\n{assignment}"
+            list_label = f"{verb} {family_name} in Other Schedules?"
         else:
-            where = f"{family_name} in schedule '{schedule_name}'"
-            list_label = f"Also apply it to these families in schedule '{schedule_name}':"
-        if value is None:
-            heading = f"Clear the override of '{param_name}' for {where}."
-            parameter = f"Also clear the default value of '{param_name}'"
-        else:
-            heading = f"Override '{param_name}' with '{value}' for {where}."
-            parameter = f"Also make '{value}' the default value of '{param_name}'"
+            heading = f"{verb} {family_name} Value in {schedule_name}\n{assignment}"
+            list_label = f"{verb} Other Families in {schedule_name}?"
+        parameter = f"{verb} Parameter Default Value?\n{assignment}"
         return heading, list_label, parameter
 
     def _ask_override_scope(self, param_name: str, value, location, connected, ask_parameter: bool):
@@ -957,7 +954,7 @@ class DDMGUI:
         dialog.title("Override Value")
         dialog.transient(self.root)
         dialog.grab_set()
-        dialog.geometry("480x360" if connected else "480x170")
+        dialog.geometry("480x400" if connected else "480x200")
 
         ttk.Label(dialog, text=heading, wraplength=450, justify="left", style="Section.TLabel").pack(
             anchor="w", padx=10, pady=(10, 6)

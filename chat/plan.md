@@ -20,8 +20,6 @@ first machine: copy its open items into this file, then treat this file as the p
       the GUI only offers the value).
 
 ## Open questions
-- Wording of the override prompt (`DDMGUI._override_questions`) is a draft; the user wants to
-  refine it.
 - Changing a parameter's data type silently assigns a new GUID (model behaviour, since Revit
   ties a shared parameter's GUID to its type). Should the GUI warn first, like it does for a
   rename?
