@@ -4,129 +4,76 @@
 
 ```mermaid
 flowchart TD
-    A[Param._instances] --> B[Param objects]
-    B --> C{validate()}
-    C --> D[parse formula identifiers]
-    D --> E{identifier is allowed keyword?}
-    E -->|No| F{identifier matches a real Param name?}
-    F -->|No| G[status = Error]
-    F -->|Yes| H[valid]
-    G --> I[validation_message]
-
-    J[Schedule._instances] --> K[Schedule objects]
-    K --> L[self.fams]
-    L --> M[Fam objects]
-    M --> N[self.params]
-    N --> O[Param objects]
-
-    M --> P{Fam.validate()}
-    P --> Q[family has name?]
-    Q -->|No| R[Error]
-    Q -->|Yes| S[check formula refs in family params]
-    S --> T{any ref not in family_param_names?}
-    T -->|Yes| U[Error]
-    T -->|No| V[Ready]
-
-    K --> W{Schedule.validate()}
-    W --> X[loop fams]
-    X --> Y{fam.status == Error?}
-    Y -->|Yes| Z[aggregate family errors]
-    Y -->|No| AA[continue]
-    Z --> AB[status = Error]
-
-    AC[ParameterManagerState] --> AD[pickle checkpoint]
-    AD --> AE[schedule.to_dict()]
-    AE --> AF[Schedule.from_dict()]
-    AF --> AG[rebuild object graph]
+    C[Catalog] --> P[params: Param definitions]
+    C --> F[families: Fam]
+    C --> S[schedules: Schedule]
+    F -->|shares| P
+    F --> CP[own copies of the common IPS_GROUP_* params]
+    F --> O[overrides by parameter name]
+    S -->|references| F
+    T[FamType] -->|layers overrides on| F
+    C --> V{Catalog.validate}
+    V --> PV[Param.validate: syntax + unknown references]
+    V --> FV[Fam.validate: references to params not in the family]
+    V --> SV[Schedule.validate: rolls up family errors]
+    C <--> J[(JSON file: Catalog.save / Catalog.load)]
 ```
 
-## Current storage model
+## Ownership
 
-This project does not yet use a real database. The live data is stored in memory through Python object references:
+Everything lives in a [`Catalog`](revit_parameter_manager.py). There are no global
+registries, so two catalogs never see each other's names.
 
-- `Param._instances` stores all parameter objects
-- `Schedule._instances` stores all schedule objects
-- `Schedule.fams` stores family objects
-- each `Fam` stores its own `params` and `overrides`
-- `ParameterManagerState.save()` serializes the schedule to a local pickle file
+- `Catalog.params` holds the parameter definitions. Names are unique within a catalog.
+- `Catalog.families` holds families. A family's catalog parameters are the *same objects*
+  as the catalog's, so editing or renaming a definition affects every family that uses it.
+- Each family also gets its own copies of the common `IPS_GROUP_*` parameters (same GUIDs),
+  so changing one family's copy never leaks into another family.
+- `Catalog.schedules` holds schedules, which reference families.
+- Objects built without a catalog (`Param('Width', 'Length')`) are standalone: they
+  validate against their own names only.
 
-Relevant code:
+Build through the catalog: `catalog.add_param(...)`, `catalog.add_family(name, param_names)`,
+`catalog.add_schedule(name, family_names)`, and the matching `remove_*` methods.
 
-- [revit_parameter_manager.py](revit_parameter_manager.py#L7-L39)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L251-L443)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L444-L557)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L559-L585)
+## Formulas
 
-## How validation works
+[formula.py](formula.py) tokenizes formulas. Known parameter names are matched first,
+longest first and only on identifier boundaries, so `Rough Width` is one reference and
+`Width` never matches inside `GlassWidth`. Leftover identifiers that are not formula
+functions (`IF`, `MAX`, `PI`, ...) are unknown references.
 
-### `Param.validate()`
+`check_syntax` reports unbalanced parentheses, unterminated strings, unexpected characters,
+and missing values or operators.
 
-In [revit_parameter_manager.py](revit_parameter_manager.py#L120-L167), `Param.validate()`:
+## Validation
 
-1. reads the formula and ignores quoted strings
-2. matches known parameter names from `Param._instances`, longest first, on identifier
-   boundaries (so `Rough Width` is one reference and `Width` never matches inside `GlassWidth`)
-3. treats any remaining identifier that is not a formula function (`ABS`, `MAX`, `IF`, ...) as unknown
+- `Param.validate()` flags syntax problems and references to names the catalog doesn't know.
+- `Fam.validate()` flags a family with no name or no parameters of its own, and formulas that
+  reference catalog parameters the family doesn't include.
+- `Schedule.validate()` rolls up its families' errors.
+- `Catalog.validate()` runs all three and returns `(kind, name, message)` for each error.
 
-If anything is unknown, it marks the parameter as `Error`. The scanning lives in
-[formula.py](formula.py) and is shared by `Param`, `Fam`, and parameter renames.
+## Renames and GUIDs
 
-### `Fam.validate()`
+`Catalog.rename_param` (or `Param.rename`, `Fam.rename_param`, `Schedule.rename_param`) rewrites
+every formula that references the parameter and moves any overrides keyed by its old name.
 
-In [revit_parameter_manager.py](revit_parameter_manager.py#L275-L318), `Fam.validate()`:
-
-1. confirms the family has a name
-2. confirms it contains parameters
-3. checks each parameter formula
-4. compares referenced identifiers with:
-   - known global parameter names
-   - the family’s own parameter names
-
-If a formula references a parameter that exists globally but is not attached to that family, it flags the family as invalid.
-
-### `Schedule.validate()`
-
-In [revit_parameter_manager.py](revit_parameter_manager.py#L483-L501), `Schedule.validate()`:
-
-1. iterates through each family in `self.fams`
-2. calls `fam.validate()`
-3. rolls up any family errors into the schedule status
-
-So the schedule is a summary validator and aggregator, rather than the original source of truth.
-
-## How overrides are checked
-
-Overrides are stored in memory on the model objects rather than in a database table:
-
-- `Fam.overrides` holds override dictionaries by parameter name
-- `Fam.override_param(...)` validates allowed keys with `Param.validate_overrides(...)`
-- `Schedule.override_param(...)` applies overrides across families and refreshes the flattened params list
-
-Relevant code:
-
-- [revit_parameter_manager.py](revit_parameter_manager.py#L350-L365)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L520-L557)
+A rename assigns a **new GUID by default**. Pass `keep_guid=True` to keep the current one.
+`guid_change_warning()` gives the text to show first: Revit labels that use the parameter must
+be remapped to the new GUID if it changes. The GUI asks before every rename.
 
 ## Persistence
 
-The only persistence mechanism currently in use is the checkpoint file created by `ParameterManagerState`:
+`Catalog.save(path, extra=None)` writes versioned JSON (`version: 2`); `Catalog.load(path)`
+returns `(catalog, extra)`. Families store catalog parameters by name and family-local
+parameters in full. The GUI stores its Schedules-tab rows under `extra`.
 
-- [revit_parameter_manager.py](revit_parameter_manager.py#L559-L585)
+## GUI
 
-It saves:
+[parameter_catalog_gui.py](parameter_catalog_gui.py) holds one `Catalog`. Its Parameters and
+Families tables (and the family–parameter links) are views rebuilt from the catalog after every
+change, and edits go through model methods. Status, validation message and GUID are read-only.
 
-- `version`
-- `schedule`: `self.schedule.to_dict()`
-
-and reloads with `Schedule.from_dict(...)`.
-
-## Short summary
-
-The current architecture is:
-
-- live in-memory object graph
-- validation performed by object methods
-- checkpoint persistence via pickle
-- no separate database table/query layer yet
-
-This gives you a model-first validation setup where the core objects are the source of truth, and the UI simply reflects that state.
+The Schedules tab is still presentation data: its override entries are not yet connected to
+the model.

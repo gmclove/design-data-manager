@@ -1,9 +1,6 @@
-import importlib
+import math
 import os
-import pickle
-import re
-import uuid
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 import pandas as pd
 import tkinter as tk
@@ -12,6 +9,7 @@ from tkinter import ttk, messagebox
 from config.revit_dtype_catalog import REVIT_DTYPE_TABLE
 from config.revit_family_category_catalog import REVIT_FAMILY_CATEGORY_TABLE
 from config.revit_property_pallet_catalog import REVIT_PROPERTY_PALLET_TABLE
+from revit_parameter_manager import Catalog, guid_change_warning
 
 try:
     from quickbase_integration import QuickbaseClient, QuickbaseSyncService
@@ -141,6 +139,7 @@ class ParameterCatalogGUI:
         self.family_tree = None
         self.link_tree = None
         self.group_tree = None
+        self.load_frames(self.params_df, self.families_df, self.family_param_links_df)
 
         self._table_columns = {
             "params": ["name", "dtype", "group_under", "formula", "instance_param", "status", "validation_message", "guid"],
@@ -309,7 +308,7 @@ class ParameterCatalogGUI:
         row_index = tree.index(row_id)
         current_value = tree.item(row_id, "values")[column_number] if column_number < len(tree.item(row_id, "values")) else ""
         field_name = columns[column_number]
-        if field_name == "guid":
+        if field_name in self._READ_ONLY_COLUMNS:
             return
         dropdown_values = self._revit_dropdown_values(field_name)
 
@@ -444,9 +443,9 @@ class ParameterCatalogGUI:
                 {"family_name": "Family_J", "group_name": "Opening Schedule", "parameter_name": "HeadHeight", "override_entry": "2.4", "status": "Ready", "validation_message": "Override entry recorded"},
             ]
         )
-        self.render_tables()
-        self.warning_text.delete("1.0", tk.END)
-        self.warning_text.insert("1.0", "Loaded demo data.")
+        self.load_frames(self.params_df, self.families_df, self.family_param_links_df)
+        self.validate_all()
+        self.warning_text.insert(tk.END, "\n\nLoaded demo data.")
 
     def render_tables(self):
         if not hasattr(self, "family_groups_df") or self.family_groups_df is None:
@@ -473,122 +472,125 @@ class ParameterCatalogGUI:
             values = [row.get(col, "") for col in columns]
             tree.insert("", "end", values=["" if value is None else value for value in values])
 
-    def _load_revit_parameter_manager(self):
-        # Reload gives each validation pass fresh class-level registries
-        # (Param._instances, Schedule._instances). Remove once the model owns its
-        # state through a Catalog object (plan step 4).
-        import revit_parameter_manager
+    # --- model <-> table views ------------------------------------------------
+    #
+    # The Catalog is the source of truth. params_df, families_df and
+    # family_param_links_df are read-only views rebuilt from it after every change;
+    # edits go through model methods. family_groups_df (the Schedules tab) is still
+    # presentation data until schedule overrides are modelled.
 
-        return importlib.reload(revit_parameter_manager)
+    _READ_ONLY_COLUMNS = {"status", "validation_message", "guid"}
 
-    def _build_model_validation_snapshot(self):
-        model_module = self._load_revit_parameter_manager()
-        if model_module is None:
-            return {}, {}, {}, []
+    @staticmethod
+    def _cell(row, key) -> str:
+        value = row.get(key, "")
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return ""
+        return str(value).strip()
 
-        Param = model_module.Param
-        Fam = model_module.Fam
-        Schedule = model_module.Schedule
+    @staticmethod
+    def _truthy(value) -> bool:
+        return str(value).strip().lower() in {"true", "1", "yes", "y"}
 
-        current_param_names = set(str(name).strip() for name in self.params_df["name"].dropna().astype(str).tolist() if str(name).strip())
-        existing_instances = getattr(Param, "_instances", [])
-        Param._instances = [param for param in existing_instances if param.name not in current_param_names]
+    def load_frames(self, params_df: pd.DataFrame, families_df: pd.DataFrame, links_df: pd.DataFrame):
+        """Build a fresh Catalog from tabular rows (demo data, CSV imports, tests)."""
+        catalog = Catalog()
+        issues: List[str] = []
 
-        param_models = []
-        for _, row in self.params_df.iterrows():
-            name = str(row.get("name") or "").strip()
+        for _, row in params_df.iterrows():
+            name = self._cell(row, "name")
             if not name:
                 continue
-
-            dtype = str(row.get("dtype") or "")
-            instance_value = row.get("instance_param", True)
             try:
-                param = next((item for item in Param._instances if item.name == name), None)
-                if param is None:
-                    param = Param(
-                        name=name,
-                        dtype=dtype,
-                        guid=str(row.get("guid") or "") or None,
-                        group_under=row.get("group_under") or None,
-                        value=row.get("value"),
-                        formula=None,
-                        instance_param=bool(str(instance_value).strip().lower() in {"true", "1", "yes", "y"}),
-                    )
-                else:
-                    param.dtype = dtype
-                    param.group_under = row.get("group_under") or None
-                    param.value = row.get("value")
-                    param.instance_param = bool(str(instance_value).strip().lower() in {"true", "1", "yes", "y"})
-                param_models.append(param)
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                param = Param(
+                catalog.add_param(
                     name,
-                    dtype,
-                    group_under=row.get("group_under") or None,
-                    value=row.get("value"),
-                    formula=None,
-                    instance_param=bool(str(instance_value).strip().lower() in {"true", "1", "yes", "y"}),
+                    self._cell(row, "dtype"),
+                    guid=self._cell(row, "guid") or None,
+                    group_under=self._cell(row, "group_under") or None,
+                    formula=self._cell(row, "formula") or None,
+                    instance_param=self._truthy(row.get("instance_param", True)),
                 )
-                param.status = "Error"
-                param.validation_message = str(exc)
-                param_models.append(param)
+            except ValueError as exc:
+                issues.append(f"Parameter row '{name}' was not loaded: {exc}")
 
-        for _, row in self.params_df.iterrows():
-            name = str(row.get("name") or "").strip()
+        links: dict = {}
+        for _, row in links_df.iterrows():
+            family_name = self._cell(row, "family_name")
+            param_name = self._cell(row, "parameter_name")
+            if family_name and param_name:
+                links.setdefault(family_name, []).append(param_name)
+
+        for _, row in families_df.iterrows():
+            name = self._cell(row, "name")
             if not name:
                 continue
-
-            formula = str(row.get("formula") or "").strip() or None
-            param = next((item for item in param_models if item.name == name), None)
-            if param is None:
-                continue
-
             try:
-                if formula is not None:
-                    param.formula = formula
-                param.validate()
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                param.status = "Error"
-                param.validation_message = str(exc)
-
-        family_models = {}
-        family_param_map = self._build_family_param_map()
-        for _, row in self.families_df.iterrows():
-            family_name = str(row.get("name") or "").strip()
-            if not family_name:
+                fam = catalog.add_family(
+                    name,
+                    client=self._cell(row, "client") or None,
+                    country=self._cell(row, "country") or None,
+                    description=self._cell(row, "description") or None,
+                    category=self._cell(row, "category") or None,
+                )
+            except ValueError as exc:
+                issues.append(f"Family row '{name}' was not loaded: {exc}")
                 continue
+            for param_name in links.get(name, []):
+                param = catalog.get_param(param_name)
+                if param is None:
+                    issues.append(f"Family '{name}' links unknown parameter '{param_name}'; link ignored.")
+                elif param not in fam.params:
+                    fam.add_param(param)
 
-            family_params = [
-                param for param in param_models if param.name in family_param_map.get(family_name, set())
-            ]
-            try:
-                family = Fam(
-                    name=family_name,
-                    client=row.get("client"),
-                    country=row.get("country"),
-                    description=row.get("description"),
-                    category=row.get("category"),
-                    params=family_params,
-                )
-                family.validate()
-                family_models[family_name] = family
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                family = Fam(
-                    name=family_name,
-                    client=row.get("client"),
-                    country=row.get("country"),
-                    description=row.get("description"),
-                    category=row.get("category"),
-                    params=family_params,
-                )
-                family.status = "Error"
-                family.validation_message = str(exc)
-                family_models[family_name] = family
+        for family_name in links:
+            if catalog.get_family(family_name) is None:
+                issues.append(f"Links reference unknown family '{family_name}'; links ignored.")
 
-        schedule = Schedule(fams=list(family_models.values()))
-        schedule.validate()
+        self.catalog = catalog
+        self.load_issues = issues
+        self._refresh_frames()
 
-        return param_models, family_models, family_param_map, schedule
+    def _refresh_frames(self):
+        catalog = self.catalog
+        self.params_df = pd.DataFrame(
+            [
+                {
+                    "name": param.name,
+                    "dtype": param.dtype,
+                    "group_under": param.group_under or "",
+                    "formula": param.formula or "",
+                    "instance_param": bool(param.instance_param),
+                    "status": param.status,
+                    "validation_message": param.validation_message or "",
+                    "guid": param.guid,
+                }
+                for param in catalog.params
+            ],
+            columns=self._get_table_columns("params"),
+        )
+        self.families_df = pd.DataFrame(
+            [
+                {
+                    "name": fam.name,
+                    "client": fam.client or "",
+                    "country": fam.country or "",
+                    "category": fam.category or "",
+                    "description": fam.description or "",
+                    "status": fam.status,
+                    "validation_message": fam.validation_message or "",
+                }
+                for fam in catalog.families
+            ],
+            columns=self._get_table_columns("families"),
+        )
+        self.family_param_links_df = pd.DataFrame(
+            [
+                {"family_name": fam.name, "parameter_name": param.name}
+                for fam in catalog.families
+                for param in fam.custom_params
+            ],
+            columns=self._get_table_columns("links"),
+        )
 
     def validate_all(self):
         if not hasattr(self, "family_groups_df") or self.family_groups_df is None:
@@ -596,33 +598,10 @@ class ParameterCatalogGUI:
         if not hasattr(self, "group_tree"):
             self.group_tree = None
 
-        self._ensure_param_guids()
-        warnings: List[str] = []
-        param_models, family_models, family_param_map, schedule = self._build_model_validation_snapshot()
-
-        for idx, row in self.params_df.iterrows():
-            param_name = str(row.get("name") or "").strip()
-            matching = next((param for param in param_models if param.name == param_name), None)
-            if matching is None:
-                self.params_df.at[idx, "status"] = "Ready"
-                self.params_df.at[idx, "validation_message"] = ""
-                continue
-            self.params_df.at[idx, "status"] = matching.status
-            self.params_df.at[idx, "validation_message"] = matching.validation_message or ""
-            if matching.status == "Error":
-                warnings.append(f"{param_name}: {matching.validation_message}")
-
-        for idx, row in self.families_df.iterrows():
-            family_name = str(row.get("name") or "").strip()
-            matching = family_models.get(family_name)
-            if matching is None:
-                self.families_df.at[idx, "status"] = "Ready"
-                self.families_df.at[idx, "validation_message"] = ""
-                continue
-            self.families_df.at[idx, "status"] = matching.status
-            self.families_df.at[idx, "validation_message"] = matching.validation_message or ""
-            if matching.status == "Error":
-                warnings.append(f"{family_name}: {matching.validation_message}")
+        issues = self.catalog.validate()
+        self._refresh_frames()
+        warnings: List[str] = list(getattr(self, "load_issues", []))
+        warnings.extend(f"{name}: {message}" for _kind, name, message in issues)
 
         # Schedule/group rows are presentation data. Integrity checks for whether a
         # parameter belongs to a family or catalog are owned by the model objects.
@@ -640,13 +619,11 @@ class ParameterCatalogGUI:
         else:
             self.warning_text.insert("1.0", "Validation passed. No warnings found.")
 
-    def _ensure_param_guids(self):
-        """Give every parameter row a stable GUID so validation passes don't mint new ones."""
-        if "guid" not in self.params_df.columns:
-            self.params_df["guid"] = ""
-        for idx, value in self.params_df["guid"].items():
-            if not str(value or "").strip() or str(value) == "nan":
-                self.params_df.at[idx, "guid"] = str(uuid.uuid4())
+    def _show_error(self, title: str, message: str):
+        if getattr(self, "root", None) is not None:
+            messagebox.showerror(title, message)
+        else:
+            self.last_error = message
 
     def _confirm_guid_change(self, old_name: str, new_name: str) -> Optional[bool]:
         """Ask whether a rename should assign a new GUID.
@@ -654,10 +631,9 @@ class ParameterCatalogGUI:
         Returns True for a new GUID (the default), False to keep the current one,
         or None to cancel the rename.
         """
-        model = self._load_revit_parameter_manager()
         return messagebox.askyesnocancel(
             "Parameter GUID will change",
-            model.guid_change_warning(old_name, new_name)
+            guid_change_warning(old_name, new_name)
             + "\n\nYes: assign a new GUID (default)"
             + "\nNo: keep the current GUID"
             + "\nCancel: don't rename",
@@ -665,60 +641,120 @@ class ParameterCatalogGUI:
             default=messagebox.YES,
         )
 
+    def _rename_in_schedule_rows(self, column: str, old: str, new: str):
+        df = getattr(self, "family_groups_df", None)
+        if df is not None and column in df.columns:
+            df.loc[df[column] == old, column] = new
+
     def _rename_param_row(self, row_index: int, new_name: str) -> bool:
-        """Apply a rename from the GUI, prompting about the GUID. Returns False if cancelled."""
-        self._ensure_param_guids()
-        old_name = str(self.params_df.at[row_index, "name"] or "").strip()
+        """Rename a parameter, prompting about its GUID. Returns False if not renamed."""
+        param = self.catalog.params[row_index]
+        old_name = param.name
         new_name = str(new_name or "").strip()
         if not new_name or new_name == old_name:
-            return new_name == old_name
+            return False
+        if self.catalog.get_param(new_name) is not None:
+            self._show_error("Rename failed", f"Parameter '{new_name}' already exists.")
+            return False
 
-        if old_name:
-            choice = self._confirm_guid_change(old_name, new_name)
-            if choice is None:
+        choice = self._confirm_guid_change(old_name, new_name)
+        if choice is None:
+            return False
+        self.catalog.rename_param(old_name, new_name, keep_guid=not choice)
+        self._rename_in_schedule_rows("parameter_name", old_name, new_name)
+        return True
+
+    def _edit_param(self, row_index: int, column_name: str, new_value) -> bool:
+        if column_name == "name":
+            return self._rename_param_row(row_index, new_value)
+
+        param = self.catalog.params[row_index]
+        text = "" if new_value is None else str(new_value).strip()
+        if column_name == "dtype":
+            param.dtype = text
+        elif column_name == "group_under":
+            param.group_under = text or None
+        elif column_name == "formula":
+            param.formula = text or None
+        elif column_name == "instance_param":
+            param.instance_param = self._truthy(text)
+        else:
+            return False
+        return True
+
+    def _edit_family(self, row_index: int, column_name: str, new_value) -> bool:
+        fam = self.catalog.families[row_index]
+        text = "" if new_value is None else str(new_value).strip()
+        if column_name == "name":
+            if not text or text == fam.name:
                 return False
-            if choice:
-                self.params_df.at[row_index, "guid"] = str(uuid.uuid4())
+            old_name = fam.name
+            fam.name = text
+            self._rename_in_schedule_rows("family_name", old_name, text)
+        elif column_name == "category":
+            fam.set_category(text or None)
+        elif column_name in {"client", "country", "description"}:
+            setattr(fam, column_name, text or None)
+        else:
+            return False
+        return True
 
-        self.params_df.at[row_index, "name"] = new_name
+    def _set_family_params(self, row_index: int, param_names: Sequence[str]):
+        """Make a family's (non-common) parameters exactly ``param_names``."""
+        fam = self.catalog.families[row_index]
+        wanted = [name for name in (n.strip() for n in param_names) if name]
+        unknown = [name for name in wanted if self.catalog.get_param(name) is None]
+        if unknown:
+            raise ValueError("Unknown parameter(s): {}".format(", ".join(unknown)))
+        for param in list(fam.custom_params):
+            if param.name not in wanted:
+                fam.remove_param(param.name)
+        current = {param.name for param in fam.params}
+        for name in wanted:
+            if name not in current:
+                fam.add_param(self.catalog.get_param(name))
+                current.add(name)
+
+    def _edit_link(self, row_index: int, column_name: str, new_value) -> bool:
+        if row_index >= len(self.family_param_links_df):
+            return False
+        row = self.family_param_links_df.iloc[row_index]
+        fam = self.catalog.get_family(row["family_name"])
+        if fam is None or column_name != "parameter_name":
+            return False
+        names = [param.name for param in fam.custom_params]
+        names[names.index(row["parameter_name"])] = str(new_value or "").strip()
+        self._set_family_params(self.catalog.families.index(fam), names)
         return True
 
     def _apply_cell_value(self, table_name: str, row_index: int, column_name: str, new_value):
-        if table_name == "params":
-            df = self.params_df
-        elif table_name == "families":
-            df = self.families_df
-        elif table_name == "links":
-            df = self.family_param_links_df
-        elif table_name == "groups":
+        if column_name in self._READ_ONLY_COLUMNS and table_name != "groups":
+            return
+
+        if table_name == "groups":
             if not hasattr(self, "family_groups_df") or self.family_groups_df is None:
                 self.family_groups_df = pd.DataFrame(columns=self._get_table_columns("groups"))
-            df = self.family_groups_df
-        else:
-            return
-
-        if row_index < 0 or row_index >= len(df):
-            return
-
-        if table_name == "params" and column_name == "name":
-            if not self._rename_param_row(row_index, new_value):
-                return
-        elif column_name == "instance_param":
-            normalized = str(new_value).strip().lower()
-            df.at[row_index, column_name] = normalized in {"true", "1", "yes", "y"}
-        else:
-            df.at[row_index, column_name] = "" if new_value is None else str(new_value)
-
-        if table_name in {"params", "families", "links", "groups"}:
+            if 0 <= row_index < len(self.family_groups_df):
+                self.family_groups_df.at[row_index, column_name] = "" if new_value is None else str(new_value)
             self.validate_all()
+            return
 
-    def _build_family_param_map(self) -> dict:
-        result: dict = {}
-        for _, row in self.family_param_links_df.iterrows():
-            family_name = str(row.get("family_name") or "")
-            parameter_name = str(row.get("parameter_name") or "")
-            result.setdefault(family_name, set()).add(parameter_name)
-        return result
+        sizes = {
+            "params": len(self.catalog.params),
+            "families": len(self.catalog.families),
+            "links": len(self.family_param_links_df),
+        }
+        if table_name not in sizes or not 0 <= row_index < sizes[table_name]:
+            return
+
+        edit = {"params": self._edit_param, "families": self._edit_family, "links": self._edit_link}[table_name]
+        try:
+            changed = edit(row_index, column_name, new_value)
+        except ValueError as exc:
+            self._show_error("Edit not applied", str(exc))
+            changed = False
+        if changed:
+            self.validate_all()
 
     def _open_selected_family_window(self, event):
         if self.family_tree is None:
@@ -755,7 +791,7 @@ class ParameterCatalogGUI:
         form.title(title)
         form.transient(self.root)
         form.grab_set()
-        form.geometry("700x420")
+        form.geometry("700x520")
 
         ttk.Label(form, text=title, style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
 
@@ -777,47 +813,60 @@ class ParameterCatalogGUI:
             entries[col] = value
             ttk.Entry(form, textvariable=value, width=90).pack(fill="x", padx=12, pady=(0, 6))
 
+        params_var = None
+        if item_type == "family":
+            fam = self.catalog.families[row_index]
+            ttk.Label(form, text="Parameters (comma-separated)", style="Section.TLabel").pack(anchor="w", padx=12, pady=(8, 0))
+            params_var = tk.StringVar(value=", ".join(param.name for param in fam.custom_params))
+            ttk.Entry(form, textvariable=params_var, width=90).pack(fill="x", padx=12, pady=(0, 6))
+
         def save_changes():
-            for col, value in entries.items():
-                current_value = value.get() if hasattr(value, "get") else value.get()
-                if item_type == "family":
-                    self.families_df.at[row_index, col] = current_value
-                else:
-                    self.family_groups_df.at[row_index, col] = current_value
+            try:
+                for col, value in entries.items():
+                    current_value = value.get()
+                    if item_type == "family":
+                        if col not in self._READ_ONLY_COLUMNS:
+                            self._edit_family(row_index, col, current_value)
+                    else:
+                        self.family_groups_df.at[row_index, col] = current_value
+                if params_var is not None:
+                    self._set_family_params(row_index, params_var.get().split(","))
+            except ValueError as exc:
+                self._show_error("Changes not fully saved", str(exc))
             self.validate_all()
             form.destroy()
 
         ttk.Button(form, text="Save", command=save_changes, style="Action.TButton").pack(pady=(8, 12))
 
+    def _checkpoint_path(self) -> str:
+        return os.path.join(os.getcwd(), "parameter_catalog.json")
+
     def save_checkpoint(self):
-        checkpoint_path = os.path.join(os.getcwd(), "parameter_catalog_checkpoint.pkl")
-        payload = {
-            "params": self.params_df,
-            "families": self.families_df,
-            "family_param_links": self.family_param_links_df,
-            "family_groups": self.family_groups_df,
-        }
-        with open(checkpoint_path, "wb") as handle:
-            pickle.dump(payload, handle)
+        groups = getattr(self, "family_groups_df", None)
+        extra = {"schedule_rows": [] if groups is None else groups.fillna("").to_dict("records")}
+        checkpoint_path = self.catalog.save(self._checkpoint_path(), extra=extra)
         self.warning_text.delete("1.0", tk.END)
-        self.warning_text.insert("1.0", f"Saved checkpoint to {checkpoint_path}")
+        self.warning_text.insert("1.0", f"Saved catalog to {checkpoint_path}")
 
     def load_checkpoint(self):
-        checkpoint_path = os.path.join(os.getcwd(), "parameter_catalog_checkpoint.pkl")
+        checkpoint_path = self._checkpoint_path()
         if not os.path.exists(checkpoint_path):
-            messagebox.showwarning("Checkpoint missing", f"No checkpoint found at {checkpoint_path}")
+            messagebox.showwarning("Checkpoint missing", f"No saved catalog found at {checkpoint_path}")
             return
 
-        with open(checkpoint_path, "rb") as handle:
-            payload = pickle.load(handle)
+        try:
+            catalog, extra = Catalog.load(checkpoint_path)
+        except (ValueError, KeyError) as exc:
+            messagebox.showerror("Could not load catalog", str(exc))
+            return
 
-        self.params_df = payload.get("params", self.params_df)
-        self.families_df = payload.get("families", self.families_df)
-        self.family_param_links_df = payload.get("family_param_links", self.family_param_links_df)
-        self.family_groups_df = payload.get("family_groups", self.family_groups_df)
-        self.render_tables()
-        self.warning_text.delete("1.0", tk.END)
-        self.warning_text.insert("1.0", f"Loaded checkpoint from {checkpoint_path}")
+        self.catalog = catalog
+        self.load_issues = []
+        self.family_groups_df = pd.DataFrame(
+            extra.get("schedule_rows", []), columns=self._get_table_columns("groups")
+        )
+        self.validate_all()
+        self.warning_text.insert(tk.END, f"\n\nLoaded catalog from {checkpoint_path}")
 
     def sync_to_quickbase(self):
         if QuickbaseClient is None or QuickbaseSyncService is None:
@@ -839,10 +888,10 @@ class ParameterCatalogGUI:
         try:
             client = QuickbaseClient(app_id=app_id, user_token=user_token, app_token=os.getenv("QB_APP_TOKEN"))
             sync = QuickbaseSyncService(client)
-            for _, row in self.params_df.iterrows():
-                sync.map_param_record(row.to_dict())
-            for _, row in self.families_df.iterrows():
-                sync.map_family_record(row.to_dict())
+            for param in self.catalog.params:
+                sync.map_param_record(param)
+            for fam in self.catalog.families:
+                sync.map_family_record(fam)
             self.warning_text.delete("1.0", tk.END)
             self.warning_text.insert("1.0", "Quickbase mapping prepared. Connect real table IDs before live sync.")
         except Exception as exc:  # pragma: no cover

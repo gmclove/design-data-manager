@@ -1,19 +1,14 @@
-import importlib
 from pathlib import Path
 import tkinter as tk
 
 import pandas as pd
+import pytest
 
 from parameter_catalog_gui import ParameterCatalogGUI
+from revit_parameter_manager import Catalog
 
 
 TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
-
-
-def load_model_module():
-    import revit_parameter_manager
-
-    return importlib.reload(revit_parameter_manager)
 
 
 class DummyText:
@@ -212,14 +207,12 @@ def load_test_case():
     )
 
     gui = ParameterCatalogGUI.__new__(ParameterCatalogGUI)
-    gui.params_df = params_df
-    gui.families_df = families_df
-    gui.family_param_links_df = family_param_links_df
     gui.warning_text = DummyText()
     gui.param_tree = None
     gui.family_tree = None
     gui.link_tree = None
     gui.group_tree = None
+    gui.load_frames(params_df, families_df, family_param_links_df)
     gui.family_groups_df = pd.DataFrame(
         [
             {
@@ -324,17 +317,12 @@ def load_test_case():
 
 
 def test_schedule_name_is_required_and_unique():
-    module = load_model_module()
-    Schedule = module.Schedule
-
-    first = Schedule(name="Mechanical Schedule")
+    catalog = Catalog()
+    first = catalog.add_schedule("Mechanical Schedule")
     assert first.name == "Mechanical Schedule"
 
-    try:
-        Schedule(name="Mechanical Schedule")
-        raise AssertionError("Duplicate schedule names should fail")
-    except ValueError:
-        pass
+    with pytest.raises(ValueError):
+        catalog.add_schedule("Mechanical Schedule")
 
 
 def test_validation_flags_missing_references():
@@ -357,7 +345,8 @@ def test_family_validation_accepts_associated_params():
 
 def test_family_validation_detects_missing_link():
     gui = load_test_case()
-    gui.family_param_links_df = gui.family_param_links_df[gui.family_param_links_df["family_name"] != "Family_A"]
+    links = gui.family_param_links_df
+    gui.load_frames(gui.params_df, gui.families_df, links[links["family_name"] != "Family_A"])
     gui.validate_all()
 
     family_a = gui.families_df[gui.families_df["name"] == "Family_A"].iloc[0]
@@ -482,6 +471,90 @@ def test_gui_rename_prompt_not_shown_when_name_unchanged():
 
     gui._confirm_guid_change = fail
     gui._apply_cell_value("params", 0, "name", "Length")
+
+
+
+def _row(df, column, value):
+    return df.index[df[column] == value][0]
+
+
+def test_unknown_links_are_reported_not_silently_dropped():
+    gui = load_test_case()
+    assert any("PowerLoad" in issue for issue in gui.load_issues)
+
+
+def test_gui_rename_updates_formulas_links_and_schedule_rows():
+    gui = load_test_case()
+    gui._confirm_guid_change = lambda old, new: True
+    width_row = _row(gui.params_df, "name", "Width")
+
+    gui._apply_cell_value("params", width_row, "name", "PanelWidth")
+
+    params = gui.params_df.set_index("name")
+    assert params.at["Area", "formula"] == "Length * PanelWidth"
+    assert "PanelWidth" in set(gui.family_param_links_df["parameter_name"])
+    assert "Width" not in set(gui.family_param_links_df["parameter_name"])
+    assert "Override Width" in set(gui.family_groups_df["override_entry"])
+    assert str(params.at["Area", "status"]).lower() == "ready"
+
+
+def test_gui_rename_to_existing_name_is_refused():
+    gui = load_test_case()
+    gui._confirm_guid_change = lambda old, new: True
+    gui._apply_cell_value("params", _row(gui.params_df, "name", "Width"), "name", "Height")
+    assert "already exists" in gui.last_error
+    assert "Width" in set(gui.params_df["name"])
+
+
+def test_gui_read_only_columns_ignore_edits():
+    gui = load_test_case()
+    guid = gui.params_df.at[0, "guid"]
+    gui._apply_cell_value("params", 0, "guid", "not-a-guid")
+    gui._apply_cell_value("params", 0, "status", "Approved")
+    assert gui.params_df.at[0, "guid"] == guid
+    assert gui.params_df.at[0, "status"] != "Approved"
+
+
+def test_gui_invalid_dtype_shows_error_and_keeps_value():
+    gui = load_test_case()
+    gui._apply_cell_value("params", 0, "dtype", "Bogus")
+    assert "Unknown dtype" in gui.last_error
+    assert gui.params_df.at[0, "dtype"] == "Length"
+
+
+def test_gui_family_rename_follows_links_and_schedule_rows():
+    gui = load_test_case()
+    gui._apply_cell_value("families", _row(gui.families_df, "name", "Family_A"), "name", "Door_Main")
+    assert "Door_Main" in set(gui.family_param_links_df["family_name"])
+    assert "Door_Main" in set(gui.family_groups_df["family_name"])
+
+
+def test_gui_set_family_params():
+    gui = load_test_case()
+    row = _row(gui.families_df, "name", "Family_B")
+    gui._set_family_params(row, ["Width", "Depth"])
+    gui.validate_all()
+    linked = gui.family_param_links_df
+    assert set(linked[linked["family_name"] == "Family_B"]["parameter_name"]) == {"Width", "Depth"}
+
+    with pytest.raises(ValueError):
+        gui._set_family_params(row, ["Nope"])
+
+
+def test_gui_checkpoint_round_trip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    gui = load_test_case()
+    gui.validate_all()
+    before = gui.params_df.copy()
+    gui.save_checkpoint()
+
+    other = load_test_case()
+    other.load_frames(other.params_df.iloc[0:0], other.families_df.iloc[0:0], other.family_param_links_df.iloc[0:0])
+    other.load_checkpoint()
+
+    pd.testing.assert_frame_equal(other.params_df, before)
+    assert len(other.family_groups_df) == len(gui.family_groups_df)
+    assert (tmp_path / "parameter_catalog.json").exists()
 
 
 if __name__ == "__main__":

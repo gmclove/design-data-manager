@@ -1,12 +1,20 @@
+"""The parameter catalog model: parameters, families, family types and schedules.
+
+A ``Catalog`` owns everything that belongs together: the parameter definitions,
+the families that use them, and the schedules that group families. Validation,
+renames and persistence all go through the catalog, so separate catalogs never
+see each other's names.
+"""
+
+import json
 import os
-import pickle
 import uuid
 
-from config.revit_dtype_catalog import REVIT_DTYPE_TABLE, get_dtype_row
+from config.revit_dtype_catalog import get_dtype_row
 from config.revit_family_category_catalog import get_family_category_row
-from config.revit_property_pallet_catalog import get_property_palette_row
-from formula import FORMULA_FUNCTIONS, rename_reference, scan_references
+from formula import FORMULA_FUNCTIONS, check_syntax, rename_reference, scan_references, tokenize
 
+CATALOG_FORMAT_VERSION = 2
 
 GUID_CHANGE_WARNING = (
 	"Renaming parameter '{old_name}' to '{new_name}' will assign it a new GUID. "
@@ -28,38 +36,22 @@ class Param(object):
 		'formula',
 		'instance_param',
 	)
-	_instances = []
 
 	def __init__(self, name, dtype, guid=None, group_under=None, value=None,
-				 formula=None, instance_param=True):
+				 formula=None, instance_param=True, catalog=None):
 		self._name = name
 		self._validate_dtype_name(dtype)
 		self._dtype = dtype
 		self.guid = guid or str(uuid.uuid4())
-		self._group_under = None
 		self.group_under = group_under
 		self.value = value
-		self._formula = None
 		self.formula = formula
 		self.instance_param = instance_param
 		self.status = 'Ready'
 		self.validation_message = ''
-		self.__class__._instances.append(self)
-
-	@property
-	def formula(self):
-		return self._formula
-
-	@formula.setter
-	def formula(self, new_formula):
-		if new_formula is None:
-			self._formula = None
-			return
-
-		# Formula references are validated as model state during `validate()` so the
-		# catalog can be rebuilt in batches without failing on later parameters that
-		# are valid but not yet instantiated in the same pass.
-		self._formula = new_formula
+		self.catalog = None
+		if catalog is not None:
+			catalog._register_param(self)
 
 	@property
 	def name(self):
@@ -70,26 +62,22 @@ class Param(object):
 		self.rename(new_name)
 
 	def rename(self, new_name, keep_guid=False):
-		"""Rename this parameter and update formulas that reference it.
+		"""Rename this parameter and update every formula that references it.
 
 		By default a rename assigns a new GUID. Pass ``keep_guid=True`` to keep the
 		current one; see ``guid_change_warning`` for what to tell the user first.
 		"""
 		if new_name == self._name:
 			return self
+		if self.catalog is not None:
+			self.catalog._check_param_name_free(new_name, ignore=self)
 
 		old_name = self._name
 		self._name = new_name
 		if not keep_guid:
 			self.guid = str(uuid.uuid4())
-
-		# Update formulas in all instances of Param that reference the old name.
-		# Matching is by whole reference, so renaming `Width` leaves `GlassWidth`
-		# and `Rough Width` alone.
-		known_names = {param.name for param in self.__class__._instances}
-		for param in self.__class__._instances:
-			if param.formula:
-				param.formula = rename_reference(param.formula, old_name, new_name, known_names)
+		if self.catalog is not None:
+			self.catalog._param_renamed(old_name, new_name)
 		return self
 
 	@property
@@ -105,29 +93,6 @@ class Param(object):
 		self._validate_formula_compatibility(new_dtype)
 		self._dtype = new_dtype
 		self.guid = str(uuid.uuid4())
-	
-
-
-
-	@property
-	def group_under(self):
-		return self._group_under
-
-	@group_under.setter
-	def group_under(self, new_group_under):
-		if new_group_under is None:
-			self._group_under = None
-			return
-
-		# Group labels are user-facing metadata in this catalog workflow. They are
-		# often project-specific and should not block parameter creation when they are
-		# not yet present in the global Revit property palette catalog.
-		if get_property_palette_row(new_group_under) is not None:
-			self._group_under = new_group_under
-			return
-
-		# Preserve custom project groups instead of raising during model builds.
-		self._group_under = new_group_under
 
 	def _validate_dtype_name(self, dtype):
 		if get_dtype_row(dtype) is None:
@@ -135,24 +100,36 @@ class Param(object):
 				"Unknown dtype '{}'. Update the catalog or choose a valid Revit dtype.".format(dtype)
 			)
 
+	def known_names(self):
+		"""Parameter names this parameter's formula may reference."""
+		if self.catalog is not None:
+			return self.catalog.known_names()
+		return {self.name} | COMMON_PARAM_NAMES
+
 	def validate(self):
 		self.status = 'Ready'
 		self.validation_message = ''
 		if not self.formula:
 			return self
 
-		param_names = {param.name for param in self.__class__._instances}
-		_, unknown = scan_references(self.formula, param_names)
+		known_names = self.known_names()
+		issues = check_syntax(tokenize(self.formula, known_names))
+		_, unknown = scan_references(self.formula, known_names)
 		if unknown:
-			self.status = 'Error'
-			self.validation_message = 'Formula references parameter(s) that do not exist yet: {}'.format(
+			issues.append('Formula references parameter(s) that do not exist yet: {}'.format(
 				', '.join(sorted(unknown))
-			)
+			))
+		if issues:
+			self.status = 'Error'
+			self.validation_message = '; '.join(issues)
 		return self
 
 	def _validate_formula_compatibility(self, new_dtype):
-		known_names = {param.name for param in self.__class__._instances}
-		for param in self.__class__._instances:
+		if self.catalog is None:
+			return
+
+		known_names = self.catalog.known_names()
+		for param in self.catalog.params:
 			if not param.formula:
 				continue
 
@@ -193,6 +170,7 @@ class Param(object):
 				', '.join(sorted(invalid_attributes))))
 
 	def with_overrides(self, **overrides):
+		"""An unregistered copy of this parameter with ``overrides`` applied."""
 		self.validate_overrides(overrides)
 		result = Param(
 			self.name,
@@ -219,7 +197,7 @@ class Param(object):
 		}
 
 	@classmethod
-	def from_dict(cls, data):
+	def from_dict(cls, data, catalog=None):
 		return cls(
 			data['name'],
 			data['dtype'],
@@ -228,9 +206,12 @@ class Param(object):
 			value=data.get('value'),
 			formula=data.get('formula'),
 			instance_param=data.get('instance_param', True),
+			catalog=catalog,
 		)
 
 
+# Templates for the parameters every family carries. Each family gets its own
+# copies (same GUIDs), so these objects are never edited directly.
 COMMON_PARAMS = (
 	Param('IPS_GROUP_ConnectTo_Elect', 'Yes/No', instance_param=True),
 	Param('IPS_GROUP_ConnectTo_Plumb', 'Yes/No', instance_param=True),
@@ -238,25 +219,41 @@ COMMON_PARAMS = (
 	Param('IPS_GROUP_Mech_Waterside', 'Yes/No', instance_param=True),
 	Param('IPS_GROUP_Schedule_Name', 'Text', instance_param=True),
 )
+COMMON_PARAM_NAMES = frozenset(param.name for param in COMMON_PARAMS)
 
 
 class Fam(object):
 	def __init__(self, name=None, client=None, country=None, description=None,
-				 category=None, params=None, overrides=None):
-		self.name = name
+				 category=None, params=None, overrides=None, catalog=None):
+		self._name = name
 		self.client = client
 		self.country = country
 		self.description = description
+		self._validate_category_name(category)
 		self.category = category
 		self.status = 'Ready'
 		self.validation_message = ''
-		self._validate_category_name(category)
-		# Copies, not the shared module-level objects: a rename or edit in one
-		# family must not leak into every other family. GUIDs are kept.
+		# Copies, not the shared templates: a rename or edit in one family must not
+		# leak into every other family. GUIDs are kept.
 		self.params = [common.with_overrides() for common in COMMON_PARAMS]
 		self.params.extend(params or [])
 		self.overrides = dict(overrides) if overrides is not None else {}
+		self.catalog = None
+		if catalog is not None:
+			catalog._register_family(self)
 		self.validate()
+
+	@property
+	def name(self):
+		return self._name
+
+	@name.setter
+	def name(self, new_name):
+		if new_name == self._name:
+			return
+		if self.catalog is not None:
+			self.catalog._check_family_name_free(new_name, ignore=self)
+		self._name = new_name
 
 	def _validate_category_name(self, category):
 		if category is None:
@@ -267,6 +264,20 @@ class Fam(object):
 				"Unknown family category '{}'. Update the category catalog or choose a valid family category.".format(category)
 			)
 
+	def set_category(self, category):
+		self._validate_category_name(category)
+		self.category = category
+
+	@property
+	def custom_params(self):
+		"""The family's parameters other than the common IPS_GROUP_* ones."""
+		return [param for param in self.params if param.name not in COMMON_PARAM_NAMES]
+
+	def known_names(self):
+		if self.catalog is not None:
+			return self.catalog.known_names()
+		return {param.name for param in self.params}
+
 	def validate(self):
 		self.status = 'Ready'
 		self.validation_message = ''
@@ -275,11 +286,7 @@ class Fam(object):
 			self.validation_message = 'Family name is required.'
 			return self
 
-		custom_param_names = {
-			param.name for param in self.params
-			if param.name not in {common.name for common in COMMON_PARAMS}
-		}
-		if not custom_param_names:
+		if not self.custom_params:
 			self.status = 'Error'
 			self.validation_message = 'Family has no associated parameters.'
 			return self
@@ -288,13 +295,10 @@ class Fam(object):
 		if issues:
 			self.status = 'Error'
 			self.validation_message = '; '.join(issues)
-		else:
-			self.status = 'Ready'
-			self.validation_message = ''
 		return self
 
 	def _validate_formula_references(self, params_to_validate):
-		known_param_names = {param.name for param in Param._instances}
+		known_param_names = self.known_names()
 		family_param_names = {param.name for param in self.params}
 		issues = []
 		for param in params_to_validate:
@@ -314,6 +318,20 @@ class Fam(object):
 				)
 		return issues
 
+	def add_param(self, param):
+		if any(existing.name == param.name for existing in self.params):
+			raise ValueError("Family '{}' already has parameter '{}'.".format(self.name, param.name))
+		self.params.append(param)
+		return param
+
+	def remove_param(self, param_name):
+		param = self._find_param(param_name)
+		if param.name in COMMON_PARAM_NAMES:
+			raise ValueError("'{}' is a common parameter and can't be removed.".format(param_name))
+		self.params.remove(param)
+		self.overrides.pop(param_name, None)
+		return param
+
 	def override_param(self, param_name, **overrides):
 		Param.validate_overrides(overrides)
 
@@ -331,36 +349,45 @@ class Fam(object):
 			for param in self.params
 		]
 
+	def _param_renamed(self, old_name, new_name, known_names):
+		"""Keep family-local formulas and override keys in step with a rename."""
+		for param in self.params:
+			if param.catalog is None and param.formula:
+				param.formula = rename_reference(param.formula, old_name, new_name, known_names)
+		if old_name in self.overrides:
+			overrides = self.overrides.pop(old_name)
+			self.overrides.setdefault(new_name, {}).update(overrides)
+
 	def to_dict(self):
-		custom_params = [
-			param.to_dict()
-			for param in self.params
-			if param.name not in {common.name for common in COMMON_PARAMS}
-		]
+		"""Serialize the family. Catalog parameters are stored by name; others in full."""
 		return {
 			'name': self.name,
 			'client': self.client,
 			'country': self.country,
 			'description': self.description,
 			'category': self.category,
-			'custom_params': custom_params,
+			'param_names': [param.name for param in self.custom_params if param.catalog is not None],
+			'custom_params': [param.to_dict() for param in self.custom_params if param.catalog is None],
 			'overrides': {name: dict(overrides) for name, overrides in self.overrides.items()},
 		}
 
 	@classmethod
-	def from_dict(cls, data):
-		custom_params = [
-			Param.from_dict(param_data)
-			for param_data in data.get('custom_params', [])
-		]
+	def from_dict(cls, data, catalog=None):
+		params = [Param.from_dict(param_data) for param_data in data.get('custom_params', [])]
+		for param_name in data.get('param_names', []):
+			param = catalog.get_param(param_name) if catalog is not None else None
+			if param is None:
+				raise ValueError("Family '{}' uses unknown parameter '{}'.".format(data.get('name'), param_name))
+			params.append(param)
 		return cls(
 			name=data.get('name'),
 			client=data.get('client'),
 			country=data.get('country'),
 			description=data.get('description'),
 			category=data.get('category'),
-			params=custom_params,
+			params=params,
 			overrides=data.get('overrides', {}),
+			catalog=catalog,
 		)
 
 	def _find_param(self, param_name):
@@ -371,6 +398,11 @@ class Fam(object):
 		raise ValueError('Parameter not found: {}'.format(param_name))
 
 	def rename_param(self, current_name, new_name, keep_guid=False):
+		"""Rename a parameter of this family.
+
+		A catalog parameter is a shared definition, so renaming it here renames it
+		for every family in the catalog.
+		"""
 		param = self._find_param(current_name)
 		if current_name == new_name:
 			return param
@@ -379,24 +411,25 @@ class Fam(object):
 			   if existing is not param):
 			raise ValueError('Parameter already exists: {}'.format(new_name))
 
+		if param.catalog is not None:
+			param.rename(new_name, keep_guid=keep_guid)
+			return param
+
 		param.rename(new_name, keep_guid=keep_guid)
-
-		if current_name in self.overrides:
-			overrides = self.overrides.pop(current_name)
-			if new_name in self.overrides:
-				self.overrides[new_name].update(overrides)
-			else:
-				self.overrides[new_name] = overrides
-
+		self._param_renamed(current_name, new_name, self.known_names() | {new_name})
 		return param
 
 
 class FamType(Fam):
 	def __init__(self, fam, type_name):
 		super(FamType, self).__init__(fam.name, fam.client, fam.country,
-									 fam.description, fam.category, fam.params)
+									 fam.description, fam.category, fam.custom_params)
 		self.parent_fam = fam
 		self.type_name = type_name
+		# Validate against the parent's catalog without registering the type as a
+		# separate family (it shares the parent's name).
+		self.catalog = fam.catalog
+		self.validate()
 
 	def override_param_value(self, param_name, value):
 		return self.override_param(param_name, value=value)
@@ -409,16 +442,16 @@ class FamType(Fam):
 
 
 class Schedule(object):
-	_instances = []
-
-	def __init__(self, name=None, fams=None):
+	def __init__(self, name=None, fams=None, catalog=None):
 		self._name = None
+		self.catalog = None
 		self.name = name
 		self.fams = []
 		self.params = []
 		self.status = 'Ready'
 		self.validation_message = ''
-		self.__class__._instances.append(self)
+		if catalog is not None:
+			catalog._register_schedule(self)
 		for fam in fams or []:
 			self.add_family(fam)
 		self.validate()
@@ -437,13 +470,17 @@ class Schedule(object):
 		if not cleaned_name:
 			raise ValueError('Schedule name is required.')
 
-		if any(existing is not self and getattr(existing, 'name', None) == cleaned_name for existing in self.__class__._instances):
-			raise ValueError("Schedule name '{}' already exists.".format(cleaned_name))
-
+		if self.catalog is not None:
+			self.catalog._check_schedule_name_free(cleaned_name, ignore=self)
 		self._name = cleaned_name
 
 	def add_family(self, fam):
 		self.fams.append(fam)
+		self.refresh_params()
+		self.validate()
+
+	def remove_family(self, family_name):
+		self.fams = [fam for fam in self.fams if fam.name != family_name]
 		self.refresh_params()
 		self.validate()
 
@@ -466,12 +503,6 @@ class Schedule(object):
 			self.validation_message = '; '.join(issues)
 		return self
 
-	def discard(self):
-		"""Unregister this schedule so its name can be reused (e.g. on reload)."""
-		self.__class__._instances = [
-			existing for existing in self.__class__._instances if existing is not self
-		]
-
 	def refresh_params(self):
 		self.params = []
 		for fam in self.fams:
@@ -480,16 +511,18 @@ class Schedule(object):
 	def to_dict(self):
 		return {
 			'name': self.name,
-			'fams': [fam.to_dict() for fam in self.fams],
+			'family_names': [fam.name for fam in self.fams],
 		}
 
 	@classmethod
-	def from_dict(cls, data):
-		schedule = cls(name=data.get('name'))
-		schedule.fams = [Fam.from_dict(fam_data) for fam_data in data.get('fams', [])]
-		schedule.refresh_params()
-		schedule.validate()
-		return schedule
+	def from_dict(cls, data, catalog=None):
+		fams = []
+		for family_name in data.get('family_names', []):
+			fam = catalog.get_family(family_name) if catalog is not None else None
+			if fam is None:
+				raise ValueError("Schedule '{}' uses unknown family '{}'.".format(data.get('name'), family_name))
+			fams.append(fam)
+		return cls(name=data.get('name'), fams=fams, catalog=catalog)
 
 	def override_param(self, param_name, **overrides):
 		Param.validate_overrides(overrides)
@@ -514,8 +547,11 @@ class Schedule(object):
 		renamed = []
 		for fam in self.fams:
 			try:
-				fam._find_param(current_name)
+				param = fam._find_param(current_name)
 			except ValueError:
+				# Already renamed through a shared catalog parameter?
+				if any(param.name == new_name for param in fam.params):
+					renamed.append(fam)
 				continue
 
 			fam.rename_param(current_name, new_name, keep_guid=keep_guid)
@@ -530,36 +566,197 @@ class Schedule(object):
 		]
 
 
-class ParameterManagerState(object):
-	def __init__(self, directory, schedule=None, checkpoint_name='parameter_manager_state.pkl'):
-		self.directory = os.path.abspath(directory)
-		self.checkpoint_name = checkpoint_name
-		self.checkpoint_path = os.path.join(self.directory, self.checkpoint_name)
-		self.schedule = schedule or Schedule()
-		os.makedirs(self.directory, exist_ok=True)
+class Catalog(object):
+	"""Owns parameter definitions, families and schedules, and validates them together."""
 
-	def save(self):
-		state = {
-			'version': 1,
-			'schedule': self.schedule.to_dict(),
+	def __init__(self):
+		self.params = []
+		self.families = []
+		self.schedules = []
+
+	# --- lookups ----------------------------------------------------------
+
+	def param_names(self):
+		return {param.name for param in self.params}
+
+	def known_names(self):
+		"""Every name a formula in this catalog may reference."""
+		names = self.param_names() | COMMON_PARAM_NAMES
+		for fam in self.families:
+			names.update(param.name for param in fam.params)
+		return names
+
+	def get_param(self, name):
+		return next((param for param in self.params if param.name == name), None)
+
+	def get_family(self, name):
+		return next((fam for fam in self.families if fam.name == name), None)
+
+	def get_schedule(self, name):
+		return next((schedule for schedule in self.schedules if schedule.name == name), None)
+
+	# --- building ---------------------------------------------------------
+
+	def add_param(self, name, dtype, **kwargs):
+		return Param(name, dtype, catalog=self, **kwargs)
+
+	def add_family(self, name, param_names=(), **kwargs):
+		params = []
+		for param_name in param_names:
+			param = self.get_param(param_name)
+			if param is None:
+				raise ValueError("Unknown parameter '{}' for family '{}'.".format(param_name, name))
+			params.append(param)
+		return Fam(name=name, params=params, catalog=self, **kwargs)
+
+	def add_schedule(self, name, family_names=()):
+		fams = []
+		for family_name in family_names:
+			fam = self.get_family(family_name)
+			if fam is None:
+				raise ValueError("Unknown family '{}' for schedule '{}'.".format(family_name, name))
+			fams.append(fam)
+		return Schedule(name=name, fams=fams, catalog=self)
+
+	def remove_param(self, name):
+		"""Remove a parameter definition and detach it from every family."""
+		param = self.get_param(name)
+		if param is None:
+			raise ValueError('Parameter not found: {}'.format(name))
+		self.params.remove(param)
+		param.catalog = None
+		for fam in self.families:
+			if param in fam.params:
+				fam.params.remove(param)
+				fam.overrides.pop(name, None)
+		return param
+
+	def remove_family(self, name):
+		fam = self.get_family(name)
+		if fam is None:
+			raise ValueError('Family not found: {}'.format(name))
+		self.families.remove(fam)
+		fam.catalog = None
+		for schedule in self.schedules:
+			if fam in schedule.fams:
+				schedule.remove_family(name)
+		return fam
+
+	def remove_schedule(self, name):
+		schedule = self.get_schedule(name)
+		if schedule is None:
+			raise ValueError('Schedule not found: {}'.format(name))
+		self.schedules.remove(schedule)
+		schedule.catalog = None
+		return schedule
+
+	def rename_param(self, current_name, new_name, keep_guid=False):
+		param = self.get_param(current_name)
+		if param is None:
+			raise ValueError('Parameter not found: {}'.format(current_name))
+		return param.rename(new_name, keep_guid=keep_guid)
+
+	# --- registration (called by the model constructors) -----------------
+
+	def _check_param_name_free(self, name, ignore=None):
+		if not str(name or '').strip():
+			raise ValueError('Parameter name is required.')
+		if any(param is not ignore and param.name == name for param in self.params):
+			raise ValueError("Parameter '{}' already exists.".format(name))
+
+	def _check_family_name_free(self, name, ignore=None):
+		if any(fam is not ignore and fam.name == name for fam in self.families):
+			raise ValueError("Family '{}' already exists.".format(name))
+
+	def _check_schedule_name_free(self, name, ignore=None):
+		if any(schedule is not ignore and schedule.name == name for schedule in self.schedules):
+			raise ValueError("Schedule name '{}' already exists.".format(name))
+
+	def _register_param(self, param):
+		self._check_param_name_free(param.name)
+		param.catalog = self
+		self.params.append(param)
+
+	def _register_family(self, fam):
+		self._check_family_name_free(fam.name)
+		fam.catalog = self
+		self.families.append(fam)
+
+	def _register_schedule(self, schedule):
+		if schedule.name is not None:
+			self._check_schedule_name_free(schedule.name)
+		schedule.catalog = self
+		self.schedules.append(schedule)
+
+	def _param_renamed(self, old_name, new_name):
+		known_names = self.known_names() | {old_name}
+		for param in self.params:
+			if param.formula:
+				param.formula = rename_reference(param.formula, old_name, new_name, known_names)
+		for fam in self.families:
+			fam._param_renamed(old_name, new_name, known_names)
+
+	# --- validation -------------------------------------------------------
+
+	def validate(self):
+		"""Validate everything; return ``(kind, name, message)`` for each error."""
+		issues = []
+		for param in self.params:
+			param.validate()
+			if param.status == 'Error':
+				issues.append(('parameter', param.name, param.validation_message))
+		for fam in self.families:
+			fam.validate()
+			if fam.status == 'Error':
+				issues.append(('family', fam.name, fam.validation_message))
+		for schedule in self.schedules:
+			schedule.validate()
+			if schedule.status == 'Error':
+				issues.append(('schedule', schedule.name, schedule.validation_message))
+		return issues
+
+	# --- persistence ------------------------------------------------------
+
+	def to_dict(self):
+		return {
+			'version': CATALOG_FORMAT_VERSION,
+			'params': [param.to_dict() for param in self.params],
+			'families': [fam.to_dict() for fam in self.families],
+			'schedules': [schedule.to_dict() for schedule in self.schedules],
 		}
-		with open(self.checkpoint_path, 'wb') as checkpoint_file:
-			pickle.dump(state, checkpoint_file, protocol=pickle.HIGHEST_PROTOCOL)
-		return self.checkpoint_path
 
-	def load(self):
-		if not os.path.exists(self.checkpoint_path):
-			return None
+	@classmethod
+	def from_dict(cls, data):
+		version = data.get('version')
+		if version != CATALOG_FORMAT_VERSION:
+			raise ValueError('Unsupported catalog format version: {}'.format(version))
 
-		with open(self.checkpoint_path, 'rb') as checkpoint_file:
-			state = pickle.load(checkpoint_file)
+		catalog = cls()
+		for param_data in data.get('params', []):
+			Param.from_dict(param_data, catalog=catalog)
+		for fam_data in data.get('families', []):
+			Fam.from_dict(fam_data, catalog=catalog)
+		for schedule_data in data.get('schedules', []):
+			Schedule.from_dict(schedule_data, catalog=catalog)
+		return catalog
 
-		# The checkpoint replaces the live schedule, so release its name first.
-		previous = self.schedule
-		previous.discard()
-		try:
-			self.schedule = Schedule.from_dict(state.get('schedule', {'fams': []}))
-		except Exception:
-			Schedule._instances.append(previous)
-			raise
-		return self.schedule
+	def save(self, path, extra=None):
+		"""Write the catalog as JSON. ``extra`` is stored alongside, untouched."""
+		data = self.to_dict()
+		if extra:
+			data['extra'] = extra
+		path = os.path.abspath(path)
+		os.makedirs(os.path.dirname(path), exist_ok=True)
+		temp_path = path + '.tmp'
+		with open(temp_path, 'w', encoding='utf-8') as handle:
+			json.dump(data, handle, indent=2, ensure_ascii=False)
+			handle.write('\n')
+		os.replace(temp_path, path)
+		return path
+
+	@classmethod
+	def load(cls, path):
+		"""Read a catalog saved with ``save``. Returns ``(catalog, extra)``."""
+		with open(path, encoding='utf-8') as handle:
+			data = json.load(handle)
+		return cls.from_dict(data), data.get('extra', {})
