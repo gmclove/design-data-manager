@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.pkl
 *.log
+.idea/
 /data/*
 !/data/test_data/
 !/data/test_data/**

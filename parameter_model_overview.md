@@ -58,29 +58,28 @@ The effective grid width is the schedule override when present, otherwise the pa
 
 Relevant code:
 
-- [revit-parameter-manager.py](revit-parameter-manager.py#L7-L39)
-- [revit-parameter-manager.py](revit-parameter-manager.py#L251-L443)
-- [revit-parameter-manager.py](revit-parameter-manager.py#L444-L557)
-- [revit-parameter-manager.py](revit-parameter-manager.py#L559-L585)
+- [revit_parameter_manager.py](revit_parameter_manager.py#L7-L39)
+- [revit_parameter_manager.py](revit_parameter_manager.py#L251-L443)
+- [revit_parameter_manager.py](revit_parameter_manager.py#L444-L557)
+- [revit_parameter_manager.py](revit_parameter_manager.py#L559-L585)
 
 ## How validation works
 
 ### `Param.validate()`
 
-In [revit-parameter-manager.py](revit-parameter-manager.py#L120-L167), `Param.validate()`:
+In [revit_parameter_manager.py](revit_parameter_manager.py#L120-L167), `Param.validate()`:
 
-1. reads the formula
-2. strips quoted strings
-3. extracts identifiers
-4. checks each identifier against:
-   - allowed formula functions such as `ABS`, `MAX`, and `IF`
-   - the live set of known parameter names from `Param._instances`
+1. reads the formula and ignores quoted strings
+2. matches known parameter names from `Param._instances`, longest first, on identifier
+   boundaries (so `Rough Width` is one reference and `Width` never matches inside `GlassWidth`)
+3. treats any remaining identifier that is not a formula function (`ABS`, `MAX`, `IF`, ...) as unknown
 
-If an identifier is neither, it marks the parameter as `Error`.
+If anything is unknown, it marks the parameter as `Error`. The scanning lives in
+[formula.py](formula.py) and is shared by `Param`, `Fam`, and parameter renames.
 
 ### `Fam.validate()`
 
-In [revit-parameter-manager.py](revit-parameter-manager.py#L275-L318), `Fam.validate()`:
+In [revit_parameter_manager.py](revit_parameter_manager.py#L275-L318), `Fam.validate()`:
 
 1. confirms the family has a name
 2. confirms it contains parameters
@@ -93,7 +92,7 @@ If a formula references a parameter that exists globally but is not attached to 
 
 ### `Schedule.validate()`
 
-In [revit-parameter-manager.py](revit-parameter-manager.py#L483-L501), `Schedule.validate()`:
+In [revit_parameter_manager.py](revit_parameter_manager.py#L483-L501), `Schedule.validate()`:
 
 1. iterates through each family in `self.fams`
 2. calls `fam.validate()`
@@ -111,14 +110,14 @@ Overrides are stored in memory on the model objects rather than in a database ta
 
 Relevant code:
 
-- [revit-parameter-manager.py](revit-parameter-manager.py#L350-L365)
-- [revit-parameter-manager.py](revit-parameter-manager.py#L520-L557)
+- [revit_parameter_manager.py](revit_parameter_manager.py#L350-L365)
+- [revit_parameter_manager.py](revit_parameter_manager.py#L520-L557)
 
 ## Persistence
 
 The only persistence mechanism currently in use is the checkpoint file created by `ParameterManagerState`:
 
-- [revit-parameter-manager.py](revit-parameter-manager.py#L559-L585)
+- [revit_parameter_manager.py](revit_parameter_manager.py#L559-L585)
 
 It saves:
 

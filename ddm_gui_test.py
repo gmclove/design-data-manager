@@ -18,7 +18,7 @@ from ddm_gui import DDMGUI, ScheduleHeaderCanvas
 
 
 def load_model_module():
-    module_path = Path(__file__).with_name("revit-parameter-manager.py")
+    module_path = Path(__file__).with_name("revit_parameter_manager.py")
     spec = importlib.util.spec_from_file_location("revit_parameter_manager_model", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

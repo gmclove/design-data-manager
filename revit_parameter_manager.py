@@ -1,20 +1,28 @@
 import os
 import pickle
-import re
 import uuid
 import math
 
 from config.revit_dtype_definitions import REVIT_DTYPE_TABLE, get_dtype_row
 from config.revit_family_category_definitions import get_family_category_row
 from config.revit_property_pallet_definitions import get_property_palette_row
+from formula import FORMULA_FUNCTIONS, rename_reference, scan_references
+
+
+GUID_CHANGE_WARNING = (
+	"Renaming parameter '{old_name}' to '{new_name}' will assign it a new GUID. "
+	"Any Revit labels that use this parameter will need to be remapped to the new "
+	"parameter GUID. You can keep the current GUID instead."
+)
+
+
+def guid_change_warning(old_name, new_name):
+	"""The warning to show before a rename assigns a new GUID."""
+	return GUID_CHANGE_WARNING.format(old_name=old_name, new_name=new_name)
 
 
 class Param(object):
-	FORMULA_ALLOWED_IDENTIFIERS = {
-		'ABS', 'ACOS', 'AND', 'ASIN', 'ATAN', 'CEILING', 'COS', 'EXP',
-		'FALSE', 'IF', 'INT', 'LN', 'LOG', 'MAX', 'MIN', 'MOD', 'NOT',
-		'OR', 'PI', 'POWER', 'ROUND', 'SIGN', 'SIN', 'SQRT', 'TAN', 'TRUE',
-	}
+	FORMULA_ALLOWED_IDENTIFIERS = FORMULA_FUNCTIONS
 	OVERRIDABLE_ATTRIBUTES = (
 		'group_under',
 		'value',
@@ -96,27 +104,37 @@ class Param(object):
 
 	@name.setter
 	def name(self, new_name):
+		self.rename(new_name)
+
+	def rename(self, new_name, keep_guid=False):
+		"""Rename this parameter and update formulas that reference it.
+
+		By default a rename assigns a new GUID. Pass ``keep_guid=True`` to keep the
+		current one; see ``guid_change_warning`` for what to tell the user first.
+		"""
 		if new_name is None or not str(new_name).strip():
 			raise ValueError('Parameter name is required.')
 
-		cleaned_name = str(new_name).strip()
-		if cleaned_name == self._name:
-			return
+		new_name = str(new_name).strip()
+		if new_name == self._name:
+			return self
 
 		old_name = self._name
-		self._name = cleaned_name
+		self._name = new_name
 		if old_name is None:
-			return
+			return self
 
-		self.guid = str(uuid.uuid4())
+		if not keep_guid:
+			self.guid = str(uuid.uuid4())
 
-		# Update formulas in all instances of Param that reference the old name
+		# Update formulas in all instances of Param that reference the old name.
+		# Matching is by whole reference, so renaming `Width` leaves `GlassWidth`
+		# and `Rough Width` alone.
+		known_names = {param.name for param in self.__class__._instances}
 		for param in self.__class__._instances:
-			if not param.formula:
-				continue
-
-			if old_name in param.formula:
-				param.formula = param.formula.replace(old_name, new_name)
+			if param.formula:
+				param.formula = rename_reference(param.formula, old_name, new_name, known_names)
+		return self
 
 	@property
 	def dtype(self):
@@ -167,48 +185,23 @@ class Param(object):
 		if not self.formula:
 			return self
 
-		cleaned_formula = re.sub(r'"[^"]*"|\'[^\']*\'', ' ', self.formula)
-		identifiers = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', cleaned_formula)
 		param_names = {param.name for param in self.__class__._instances}
-		invalid_identifiers = sorted({
-			identifier for identifier in identifiers
-			if identifier.upper() not in self.FORMULA_ALLOWED_IDENTIFIERS
-			and identifier not in param_names
-		})
-
-		if invalid_identifiers:
+		_, unknown = scan_references(self.formula, param_names)
+		if unknown:
 			self.status = 'Error'
 			self.validation_message = 'Formula references parameter(s) that do not exist yet: {}'.format(
-				', '.join(invalid_identifiers)
+				', '.join(sorted(unknown))
 			)
-			return self
-
 		return self
 
-	def _validate_formula_references(self, formula):
-		if not formula:
-			return []
-
-		cleaned_formula = re.sub(r'"[^"]*"|\'[^\']*\'', ' ', formula)
-		identifiers = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', cleaned_formula)
-		param_names = {param.name for param in self.__class__._instances}
-		invalid_identifiers = sorted({
-			identifier for identifier in identifiers
-			if identifier.upper() not in self.FORMULA_ALLOWED_IDENTIFIERS
-			and identifier not in param_names
-		})
-
-		if invalid_identifiers:
-			raise ValueError(
-				"Formula references parameter(s) that do not exist yet: {}".format(
-					', '.join(invalid_identifiers)
-				)
-			)
-		return []
-
 	def _validate_formula_compatibility(self, new_dtype):
+		known_names = {param.name for param in self.__class__._instances}
 		for param in self.__class__._instances:
-			if not param.formula or self.name not in param.formula:
+			if not param.formula:
+				continue
+
+			referenced, _ = scan_references(param.formula, known_names)
+			if self.name not in referenced:
 				continue
 
 			if self._formula_is_incompatible_with_dtype(param.formula, new_dtype):
@@ -310,7 +303,9 @@ class Fam(object):
 		self.status = 'Ready'
 		self.validation_message = ''
 		self._validate_category_name(category)
-		self.params = list(COMMON_PARAMS)
+		# Copies, not the shared module-level objects: a rename or edit in one
+		# family must not leak into every other family. GUIDs are kept.
+		self.params = [common.with_overrides() for common in COMMON_PARAMS]
 		self.params.extend(params or [])
 		self.overrides = dict(overrides) if overrides is not None else {}
 		self.validate()
@@ -341,8 +336,6 @@ class Fam(object):
 			self.validation_message = 'Family has no associated parameters.'
 			return self
 
-		known_param_names = {param.name for param in Param._instances}
-		family_param_names = {param.name for param in self.params}
 		issues = []
 		seen_param_names = set()
 		duplicate_param_names = set()
@@ -358,27 +351,7 @@ class Fam(object):
 				)
 			)
 
-		for param in self.params:
-			if not param.formula:
-				continue
-
-			cleaned_formula = re.sub(r'"[^"]*"|\'[^\']*\'', ' ', param.formula)
-			identifiers = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', cleaned_formula)
-			family_missing_identifiers = sorted({
-				identifier for identifier in identifiers
-				if identifier in known_param_names
-				and identifier not in family_param_names
-			})
-
-			if family_missing_identifiers:
-				issues.append(
-					"Formula for '{}' references parameter(s) not associated with family '{}': {}".format(
-						param.name,
-						self.name,
-						', '.join(family_missing_identifiers),
-					)
-				)
-
+		issues.extend(self._validate_formula_references(self.params))
 		if issues:
 			self.status = 'Error'
 			self.validation_message = '; '.join(issues)
@@ -395,13 +368,8 @@ class Fam(object):
 			if not param.formula:
 				continue
 
-			cleaned_formula = re.sub(r'"[^"]*"|\'[^\']*\'', ' ', param.formula)
-			identifiers = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', cleaned_formula)
-			family_missing_identifiers = sorted({
-				identifier for identifier in identifiers
-				if identifier in known_param_names
-				and identifier not in family_param_names
-			})
+			referenced, _ = scan_references(param.formula, known_param_names)
+			family_missing_identifiers = sorted(referenced - family_param_names)
 
 			if family_missing_identifiers:
 				issues.append(
@@ -469,7 +437,7 @@ class Fam(object):
 
 		raise ValueError('Parameter not found: {}'.format(param_name))
 
-	def rename_param(self, current_name, new_name):
+	def rename_param(self, current_name, new_name, keep_guid=False):
 		param = self._find_param(current_name)
 		if current_name == new_name:
 			return param
@@ -478,7 +446,7 @@ class Fam(object):
 			   if existing is not param):
 			raise ValueError('Parameter already exists: {}'.format(new_name))
 
-		param.name = new_name
+		param.rename(new_name, keep_guid=keep_guid)
 
 		if current_name in self.overrides:
 			overrides = self.overrides.pop(current_name)
@@ -578,6 +546,12 @@ class Schedule(object):
 			self.status = 'Error'
 			self.validation_message = '; '.join(issues)
 		return self
+
+	def discard(self):
+		"""Unregister this schedule so its name can be reused (e.g. on reload)."""
+		self.__class__._instances = [
+			existing for existing in self.__class__._instances if existing is not self
+		]
 
 	def refresh_params(self):
 		self.params = []
@@ -704,7 +678,7 @@ class Schedule(object):
 	def override_header_text(self, param_name, header_text):
 		return self.override_param(param_name, header_text=header_text)
 
-	def rename_param(self, current_name, new_name):
+	def rename_param(self, current_name, new_name, keep_guid=False):
 		renamed = []
 		for fam in self.fams:
 			try:
@@ -712,7 +686,7 @@ class Schedule(object):
 			except ValueError:
 				continue
 
-			fam.rename_param(current_name, new_name)
+			fam.rename_param(current_name, new_name, keep_guid=keep_guid)
 			renamed.append(fam)
 
 		if not renamed:
@@ -759,5 +733,12 @@ class ParameterManagerState(object):
 		with open(self.checkpoint_path, 'rb') as checkpoint_file:
 			state = pickle.load(checkpoint_file)
 
-		self.schedule = Schedule.from_dict(state.get('schedule', {'fams': []}))
+		# The checkpoint replaces the live schedule, so release its name first.
+		previous = self.schedule
+		previous.discard()
+		try:
+			self.schedule = Schedule.from_dict(state.get('schedule', {'fams': []}))
+		except Exception:
+			Schedule._instances.append(previous)
+			raise
 		return self.schedule

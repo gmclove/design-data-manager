@@ -1037,7 +1037,7 @@ class DDMGUI:
             tree.insert("", "end", values=["" if value is None else value for value in values])
 
     def _load_revit_parameter_manager(self):
-        module_path = Path(__file__).with_name("revit-parameter-manager.py")
+        module_path = Path(__file__).with_name("revit_parameter_manager.py")
         if not module_path.exists():
             return None
 
