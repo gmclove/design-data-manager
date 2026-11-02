@@ -15,6 +15,10 @@ Newest first. One entry per piece of work; link commits where useful.
 - Demo database fixed: nine parameters it linked were never defined, and its override values sat
   in the `caption` column so they never loaded.
 - Stray labels the family window used to add to the main window are gone.
+- Family and schedule windows show one override table each (user's mockup): header groups and
+  column headers, Parameter block, one block per family, for Default Value, Formula and Group
+  Under. Formula and Group Under are family-level only; schedules show them read-only. Family
+  formula overrides are now validated and follow renames.
 
 ## 2026-11-01: Housekeeping
 - GUI default save moved from the tracked fixture `data/test_data/test_data.ddm.pkl` to untracked

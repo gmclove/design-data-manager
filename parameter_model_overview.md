@@ -58,6 +58,9 @@ A parameter's value can be overridden in two places:
   `Schedule.override_family_param(...)`.
 
 The schedule override wins over the family override, which wins over the parameter's default.
+A family can override the value, formula and group under; a schedule only the value
+(`Schedule.FAMILY_OVERRIDABLE_ATTRIBUTES`), since formula and group under belong to the family
+in Revit. Family formula overrides are validated like parameter formulas and follow renames.
 Passing `None` for an attribute clears that override.
 
 `Catalog.apply_override(location, param_name, ...)` sets or clears an override at a location,

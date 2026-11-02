@@ -20,6 +20,16 @@ superseded rather than deleting it.
   - Both: a checkbox to also make it the parameter's default value.
   - Nothing picked by default; Cancel changes nothing; clearing works the same way. Wording lives
     in `DDMGUI._override_questions`.
+- **What can be overridden where** (user decision, 2026-11-01): Value at all three levels;
+  Formula and Group Under at Parameter and Family level only. In Revit they belong to the
+  family, so a schedule shows them read-only (`Schedule.FAMILY_OVERRIDABLE_ATTRIBUTES`).
+  Formula and Group Under overrides offer only the Parameter checkbox (schedules can't hold them).
+- **Override windows are one table each** (`OverrideTable`), from the user's mockup: columns are
+  parameters; rows are the schedule's Group Level N..1 and Column Header (schedule window
+  only), a Parameter block (Name, Default Value, Formula, Group Under; read-only), then one block
+  per family (Default Value, Formula, Group Under). Values set at that level are black,
+  inherited ones gray, columns a family doesn't have are shaded. Double-click a value to
+  override it, a header for column settings.
 - Rejected along the way: a list of every family and schedule in the catalog, and a yes/no
   "also override for the family in every schedule" question.
 

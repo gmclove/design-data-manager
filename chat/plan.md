@@ -16,8 +16,7 @@ first machine: copy its open items into this file, then treat this file as the p
       time, so a rename can't leave a stale reference.
 - [ ] Add and remove parameters, families and schedules from the GUI (today the GUI only edits
       what a loaded file contains), and pick a schedule's families and columns.
-- [ ] Override other attributes than the value (the model supports any overridable attribute;
-      the GUI only offers the value).
+- [x] Override Formula and Group Under (family and parameter level) in the override tables.
 
 ## Open questions
 - Changing a parameter's data type silently assigns a new GUID (model behaviour, since Revit

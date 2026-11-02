@@ -41,7 +41,7 @@ from ddm_tables import (
     text as cell_text,
     write_database_csv,
 )
-from revit_parameter_manager import COMMON_PARAM_NAMES, Catalog, Param, guid_change_warning
+from revit_parameter_manager import COMMON_PARAM_NAMES, Catalog, Param, Schedule, guid_change_warning
 from revit_schedule_macro_generator import generate_schedule_macro_source
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content
@@ -84,22 +84,49 @@ def _wrap_text_segment(text, max_width, font):
     return lines or [""]
 
 
-class ScheduleHeaderCanvas(tk.Canvas):
-    def __init__(self, master, parameter_names, header_texts, groups=None, on_header_double_click=None, grid_column_widths=None):
+class OverrideTable(tk.Canvas):
+    """A grid of default values: header rows, then labelled rows of cells.
+
+    Columns are parameters. Two label columns on the left name each section
+    (Schedule, Parameter, a family) and each row. With ``show_header`` the top
+    rows are the schedule's header groups (Group Level N ... 1) and column headers.
+
+    Body rows are dicts: ``{"section": str, "label": str, "cells": [cell, ...]}``,
+    plus any keys the caller needs back. A cell is ``{"text": str, "state": ...,
+    "editable": bool}`` where state is ``"set"`` (set at this level),
+    ``"inherited"`` (shown in gray, from a level above) or ``"none"`` (shaded,
+    doesn't apply).
+    """
+
+    section_width = 110
+    label_width = 110
+    row_height = 24
+    # Screen pixels per inch of Revit grid column width, and the narrowest readable column.
+    pixels_per_inch = 72
+    min_column_width = 110
+
+    def __init__(self, master, parameter_names, header_texts=None, groups=None, rows=None,
+                 show_header=True, on_header_double_click=None, on_cell_double_click=None,
+                 grid_column_widths=None):
         super().__init__(master, background="#ffffff", highlightthickness=0)
         self.parameter_names = list(parameter_names)
-        self.header_texts = dict(header_texts)
+        self.header_texts = dict(header_texts or {})
+        self.show_header = show_header
+        self.rows = list(rows or [])
         self.groups = []
         self.group_layout = []
         self.selected_indices = set()
         self.selection_anchor = None
         self.on_header_double_click = on_header_double_click
+        self.on_cell_double_click = on_cell_double_click
         self.column_width = 170
         self.column_widths = []
         self.column_offsets = []
         self.group_row_height = 30
-        self.header_height = 58
+        self.header_height = 58 if show_header else 0
         self.header_font = tkfont.Font(root=self, font=("Segoe UI", 10, "bold"))
+        self.label_font = tkfont.Font(root=self, font=("Segoe UI", 9, "bold"))
+        self.body_font = tkfont.Font(root=self, font=("Segoe UI", 9))
         self.header_top = 0
         self.bind("<Button-1>", self._on_mouse_down)
         self.bind("<B1-Motion>", self._on_mouse_drag)
@@ -107,35 +134,33 @@ class ScheduleHeaderCanvas(tk.Canvas):
         self.set_grid_column_widths(grid_column_widths or [1.0] * len(self.parameter_names))
         self.set_groups(groups or [])
 
+    @property
+    def left(self):
+        return self.section_width + self.label_width
+
+    @property
+    def body_top(self):
+        return self.header_top + self.header_height
+
     def set_grid_column_widths(self, widths_in_inches):
-        self.column_widths = [max(60, int(float(width) * 48)) for width in widths_in_inches]
+        self.column_widths = [
+            max(self.min_column_width, int(float(width) * self.pixels_per_inch)) for width in widths_in_inches
+        ]
         if len(self.column_widths) != len(self.parameter_names):
             self.column_widths = [self.column_width] * len(self.parameter_names)
         self.column_width = self.column_widths[0] if self.column_widths else 170
         self.column_offsets = []
-        offset = 0
+        offset = self.left
         for width in self.column_widths:
             self.column_offsets.append(offset)
             offset += width
-        self._update_scroll_region()
         self._draw_grid()
-
-    def _update_scroll_region(self):
-        width = max(1, sum(self.column_widths))
-        height = self.header_top + self.header_height
-        self.configure(scrollregion=(0, 0, width, height))
 
     def _wrap_header_segment(self, text, max_width):
         return _wrap_text_segment(text, max_width, self.header_font)
 
     def _wrapped_header_text(self, parameter_name, max_width):
-        label = self.header_texts.get(parameter_name, parameter_name)
-        segments = [label] if label == parameter_name else [label, parameter_name]
-        return [
-            line
-            for segment in segments
-            for line in self._wrap_header_segment(segment, max_width)
-        ]
+        return self._wrap_header_segment(self.header_texts.get(parameter_name, parameter_name), max_width)
 
     def set_groups(self, groups):
         self.groups = [dict(group) for group in groups]
@@ -145,9 +170,7 @@ class ScheduleHeaderCanvas(tk.Canvas):
             indices = [parameter_indices[name] for name in group["parameter_names"] if name in parameter_indices]
             if len(indices) != len(group["parameter_names"]) or not indices:
                 continue
-            start_index = min(indices)
-            end_index = max(indices)
-            candidates.append((start_index, end_index, group))
+            candidates.append((min(indices), max(indices), group))
 
         candidates.sort(key=lambda item: (item[0], -item[1]))
         lane_ends = []
@@ -160,15 +183,18 @@ class ScheduleHeaderCanvas(tk.Canvas):
                 lane_ends[lane] = end_index
             self.group_layout.append((lane, start_index, end_index, group))
 
-        group_row_count = max(1, len(lane_ends)) if self.parameter_names else 0
-        self.header_top = group_row_count * self.group_row_height
-        height = self.header_top + self.header_height
-        self.configure(height=height)
-        self._update_scroll_region()
+        if self.show_header and self.parameter_names:
+            self.header_top = max(1, len(lane_ends)) * self.group_row_height
+        else:
+            self.header_top = 0
         self._draw_grid()
 
     def set_header_texts(self, header_texts):
         self.header_texts = dict(header_texts)
+        self._draw_grid()
+
+    def set_rows(self, rows):
+        self.rows = list(rows)
         self._draw_grid()
 
     def get_selected_parameter_names(self):
@@ -178,14 +204,31 @@ class ScheduleHeaderCanvas(tk.Canvas):
             if index in self.selected_indices
         ]
 
-    def _parameter_index_at(self, event):
-        if not self.parameter_names or self.canvasy(event.y) < self.header_top:
-            return None
-        canvas_x = self.canvasx(event.x)
+    def _column_at(self, canvas_x):
         for index, (left, width) in enumerate(zip(self.column_offsets, self.column_widths)):
             if left <= canvas_x < left + width:
                 return index
         return None
+
+    def _parameter_index_at(self, event):
+        """The column whose header was clicked, or ``None`` outside the header row."""
+        canvas_y = self.canvasy(event.y)
+        if not self.show_header or not self.parameter_names:
+            return None
+        if not self.header_top <= canvas_y < self.body_top:
+            return None
+        return self._column_at(self.canvasx(event.x))
+
+    def _cell_at(self, event):
+        """``(row_index, column_index)`` of the body cell under the event, or ``None``."""
+        canvas_y = self.canvasy(event.y)
+        if canvas_y < self.body_top:
+            return None
+        row_index = int((canvas_y - self.body_top) // self.row_height)
+        column_index = self._column_at(self.canvasx(event.x))
+        if row_index >= len(self.rows) or column_index is None:
+            return None
+        return row_index, column_index
 
     def _on_mouse_down(self, event):
         index = self._parameter_index_at(event)
@@ -217,97 +260,128 @@ class ScheduleHeaderCanvas(tk.Canvas):
 
     def _on_double_click(self, event):
         index = self._parameter_index_at(event)
-        if index is not None and self.on_header_double_click is not None:
-            self.on_header_double_click(self.parameter_names[index])
+        if index is not None:
+            if self.on_header_double_click is not None:
+                self.on_header_double_click(self.parameter_names[index])
+            return
+        cell = self._cell_at(event)
+        if cell is not None and self.on_cell_double_click is not None:
+            self.on_cell_double_click(*cell)
+
+    def _label_cell(self, x, y, width, height, text, fill="#f1f5f3", font=None):
+        self.create_rectangle(x, y, x + width, y + height, fill=fill, outline="#c8d2ce")
+        if text:
+            self.create_text(
+                x + 6, y + height / 2, text=text, anchor="w",
+                width=max(1, width - 10), font=font or self.label_font,
+            )
 
     def _draw_grid(self):
         self.delete("all")
         if not self.parameter_names:
             return
 
-        wrapped_headers = [
-            self._wrapped_header_text(
-                parameter_name,
-                max(1, self.column_widths[index] - 14),
-            )
-            for index, parameter_name in enumerate(self.parameter_names)
-        ]
-        line_height = self.header_font.metrics("linespace")
-        self.header_height = max(
-            58,
-            max(len(lines) for lines in wrapped_headers) * line_height + 20,
-        )
+        if self.show_header:
+            wrapped_headers = [
+                self._wrapped_header_text(name, max(1, self.column_widths[index] - 14))
+                for index, name in enumerate(self.parameter_names)
+            ]
+            line_height = self.header_font.metrics("linespace")
+            self.header_height = max(58, max(len(lines) for lines in wrapped_headers) * line_height + 20)
+        else:
+            wrapped_headers = []
+            self.header_height = 0
 
-        group_row_count = max(1, max((lane for lane, *_ in self.group_layout), default=-1) + 1)
-        self.configure(
-            height=self.header_top + self.header_height,
-            scrollregion=(
-                0,
-                0,
-                max(1, sum(self.column_widths)),
-                self.header_top + self.header_height,
-            ),
-        )
-        for lane in range(group_row_count):
+        right = self.column_offsets[-1] + self.column_widths[-1]
+        total_height = self.body_top + len(self.rows) * self.row_height
+        self.configure(height=min(max(total_height, 1), 480), scrollregion=(0, 0, right, total_height))
+
+        if self.show_header:
+            self._draw_header(wrapped_headers)
+        self._draw_body(right)
+
+    def _draw_header(self, wrapped_headers):
+        lane_count = self.header_top // self.group_row_height
+        self._label_cell(0, 0, self.section_width, self.body_top, "Schedule")
+        for lane in range(lane_count):
             top = lane * self.group_row_height
+            self._label_cell(self.section_width, top, self.label_width, self.group_row_height,
+                             f"Group Level {lane_count - lane}")
             for index in range(len(self.parameter_names)):
                 left = self.column_offsets[index]
-                right = left + self.column_widths[index]
                 self.create_rectangle(
-                    left,
-                    top,
-                    right,
-                    top + self.group_row_height,
-                    fill="#f1f5f3",
-                    outline="#c8d2ce",
+                    left, top, left + self.column_widths[index], top + self.group_row_height,
+                    fill="#f1f5f3", outline="#c8d2ce",
                 )
+        self._label_cell(self.section_width, self.header_top, self.label_width, self.header_height, "Column Header")
 
         for lane, start_index, end_index, group in self.group_layout:
             left = self.column_offsets[start_index]
             right = self.column_offsets[end_index] + self.column_widths[end_index]
             top = lane * self.group_row_height
-            self.create_rectangle(
-                left,
-                top,
-                right,
-                top + self.group_row_height,
-                fill="#dce9e4",
-                outline="#7a9187",
-                width=2,
-            )
+            self.create_rectangle(left, top, right, top + self.group_row_height, fill="#dce9e4", outline="#7a9187", width=2)
             self.create_text(
-                (left + right) / 2,
-                top + self.group_row_height / 2,
-                text=group["caption"],
-                width=max(1, right - left - 12),
-                font=("Segoe UI", 10, "bold"),
+                (left + right) / 2, top + self.group_row_height / 2,
+                text=group["caption"], width=max(1, right - left - 12), font=("Segoe UI", 10, "bold"),
             )
 
-        for index, (parameter_name, header_lines) in enumerate(
-            zip(self.parameter_names, wrapped_headers)
-        ):
+        for index, header_lines in enumerate(wrapped_headers):
             left = self.column_offsets[index]
             right = left + self.column_widths[index]
-            top = self.header_top
             selected = index in self.selected_indices
             self.create_rectangle(
-                left,
-                top,
-                right,
-                top + self.header_height,
+                left, self.header_top, right, self.body_top,
                 fill="#dcefe7" if selected else "#ffffff",
                 outline="#7a9187" if selected else "#c8d2ce",
                 width=2 if selected else 1,
             )
             self.create_text(
-                (left + right) / 2,
-                top + self.header_height / 2,
-                text="\n".join(header_lines),
-                width=self.column_widths[index] - 14,
-                justify="center",
-                font=self.header_font,
+                (left + right) / 2, self.header_top + self.header_height / 2,
+                text="\n".join(header_lines), width=self.column_widths[index] - 14,
+                justify="center", font=self.header_font,
             )
 
+    def _draw_body(self, right):
+        section_start = 0
+        for row_index, row in enumerate(self.rows + [None]):
+            starts_section = row is None or (row_index > 0 and row.get("section"))
+            if starts_section and row_index > section_start:
+                # The section label spans every row since the last section started.
+                top = self.body_top + section_start * self.row_height
+                height = (row_index - section_start) * self.row_height
+                self._label_cell(0, top, self.section_width, height, self.rows[section_start].get("section", ""))
+                self.create_line(0, top, right, top, fill="#374151", width=2)
+                section_start = row_index
+            if row is None:
+                break
+
+            top = self.body_top + row_index * self.row_height
+            self._label_cell(self.section_width, top, self.label_width, self.row_height, row.get("label", ""), fill="#f8faf9")
+            for index, cell in enumerate(row["cells"]):
+                left = self.column_offsets[index]
+                state = cell.get("state", "set")
+                if state == "none":
+                    fill = "#e5e9e7"
+                elif cell.get("editable"):
+                    fill = "#ffffff"
+                else:
+                    fill = "#f8faf9"
+                self.create_rectangle(left, top, left + self.column_widths[index], top + self.row_height,
+                                      fill=fill, outline="#c8d2ce")
+                if cell.get("text") and state != "none":
+                    self.create_text(
+                        left + 6, top + self.row_height / 2,
+                        text=self._fit_text(cell["text"], self.column_widths[index] - 12), anchor="w",
+                        font=self.body_font, fill="#9ca3af" if state == "inherited" else "#111827",
+                    )
+
+    def _fit_text(self, text: str, max_width: int) -> str:
+        """``text`` on one line, cut short with an ellipsis if it is wider than ``max_width``."""
+        if self.body_font.measure(text) <= max_width:
+            return text
+        while text and self.body_font.measure(text + "…") > max_width:
+            text = text[:-1]
+        return text + "…"
 
 
 class PlaceholderEntry(ttk.Entry):
@@ -412,8 +486,6 @@ class DDMGUI:
     }
 
     _schedule_summary_columns = ["name", "family_count", "parameter_count", "status", "validation_message"]
-    _value_columns = ["parameter_name", "default_value", "override", "value"]
-    _schedule_value_columns = ["family_name", "parameter_name", "override", "value"]
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -940,15 +1012,29 @@ class DDMGUI:
         else:
             raise ValueError(f"{self._humanize_column_name(column_name)} can't be edited.")
 
-    # --- value overrides --------------------------------------------------------
+    # --- default value overrides ------------------------------------------------
 
-    def _connected_override_locations(self, location, param_name: str):
+    # What can be overridden, in table order, with its style-guide term and row label.
+    _override_attributes = (
+        ("value", "Default Value", "Default Value"),
+        ("formula", "Default Formula", "Formula"),
+        ("group_under", "Default Group Under", "Group Under"),
+    )
+
+    @classmethod
+    def _attribute_term(cls, attribute: str) -> str:
+        return next(term for name, term, _label in cls._override_attributes if name == attribute)
+
+    def _connected_override_locations(self, location, param_name: str, attribute: str = "value"):
         """Where else, connected to ``location``, the same override can go.
 
         From a schedule: the other families in that schedule that show the parameter.
         From a family: the schedules that family is in that show the parameter.
+        Schedules only hold values, so other attributes have nowhere connected to go.
         Each is a ``(location, label)`` pair.
         """
+        if attribute not in Schedule.FAMILY_OVERRIDABLE_ATTRIBUTES:
+            return []
         family_name, schedule_name = location
         if schedule_name is not None:
             schedule = self._get_schedule(schedule_name)
@@ -964,57 +1050,63 @@ class DDMGUI:
             if fam in schedule.fams and param_name in schedule.family_param_names(fam)
         ]
 
-    def _override_value(self, location, param_name: str, new_value) -> bool:
-        """Override (or, with a blank value, clear) a parameter's value at ``location``.
+    def _override_value(self, location, param_name: str, new_value, attribute: str = "value") -> bool:
+        """Override (or, with a blank value, clear) ``attribute`` of a parameter at ``location``.
 
         ``location`` is ``(family_name, schedule_name)``, with ``None`` for the family
         everywhere. The user can pick connected places to get the same change (other
         families in the schedule, or the family's schedules) and can also make it the
-        parameter's default value. Returns ``False`` if the user cancels.
+        parameter's default. Returns ``False`` if the user cancels.
         """
         value = cell_text(new_value) or None
-        connected = self._connected_override_locations(location, param_name)
+        connected = self._connected_override_locations(location, param_name, attribute)
         param = self.catalog.get_param(param_name)
 
         answer = {"locations": [], "parameter": False}
         if connected or param is not None:
-            answer = self._ask_override_scope(param_name, value, location, connected, param is not None)
+            answer = self._ask_override_scope(param_name, value, location, connected, param is not None, attribute)
             if answer is None:
                 return False
 
         for target in [location, *answer["locations"]]:
-            self.catalog.apply_override(target, param_name, value=value)
+            self.catalog.apply_override(target, param_name, **{attribute: value})
         if answer["parameter"]:
-            param.value = value
+            setattr(param, attribute, value)
         self.validate_all()
         return True
 
-    def _override_questions(self, param_name: str, value, location):
+    def _override_questions(self, param_name: str, value, location, attribute: str = "value"):
         """The wording of the override prompt: ``(heading, list label, parameter checkbox)``.
 
-        The three levels are always named the same way: Parameter Default Value
-        (the parameter's own value), Family Default Value (a family's override) and
-        Schedule Default Value (one family's value in one schedule).
+        The three levels are always named the same way: Parameter, Family and
+        Schedule, followed by the attribute's term (Default Value, Default Formula,
+        Default Group Under).
         """
         family_name, schedule_name = location
         verb = "Clear" if value is None else "Override"
-        assignment = f"{param_name} = {'(no value)' if value is None else value}"
-        if schedule_name is None:
-            heading = f"{verb} Family Default Value\n{family_name}\n{assignment}"
-            list_label = f"{verb} Schedule Default Value in These Schedules?"
+        term = self._attribute_term(attribute)
+        shown = "(no value)" if value is None else value
+        if attribute == "group_under":
+            assignment = f"{param_name} Group Under = {shown}"
         else:
-            heading = f"{verb} Schedule Default Value\n{schedule_name}: {family_name}\n{assignment}"
-            list_label = f"{verb} Schedule Default Value for These Families?"
-        parameter = f"{verb} Parameter Default Value?\n{assignment}"
+            assignment = f"{param_name} = {shown}"
+        if schedule_name is None:
+            heading = f"{verb} Family {term}\n{family_name}\n{assignment}"
+            list_label = f"{verb} Schedule {term} in These Schedules?"
+        else:
+            heading = f"{verb} Schedule {term}\n{schedule_name}: {family_name}\n{assignment}"
+            list_label = f"{verb} Schedule {term} for These Families?"
+        parameter = f"{verb} Parameter {term}?\n{assignment}"
         return heading, list_label, parameter
 
-    def _ask_override_scope(self, param_name: str, value, location, connected, ask_parameter: bool):
+    def _ask_override_scope(self, param_name: str, value, location, connected, ask_parameter: bool,
+                            attribute: str = "value"):
         """Ask where else the override goes.
 
         ``connected`` is a list of ``(location, label)`` pairs to choose from.
         Returns ``{"locations": [...], "parameter": bool}``, or ``None`` to cancel.
         """
-        heading, list_label, parameter_text = self._override_questions(param_name, value, location)
+        heading, list_label, parameter_text = self._override_questions(param_name, value, location, attribute)
         dialog = tk.Toplevel(self.root)
         dialog.title("Override Default Value")
         dialog.transient(self.root)
@@ -1062,10 +1154,11 @@ class DDMGUI:
         return result["answer"]
 
     def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save,
-                           placeholder: str = "", field_label: str = ""):
+                           placeholder: str = "", field_label: str = "", choices=None):
         """A small dialog for one value. ``on_save(value)`` returns ``False`` to keep it open.
 
         ``field_label`` (such as ``"Width ="``) sits on the same line as the box.
+        With ``choices`` the box is a drop-down whose blank first entry clears the value.
         """
         editor = tk.Toplevel(parent)
         editor.title(title)
@@ -1077,10 +1170,14 @@ class DDMGUI:
         field_row.pack(fill="x", padx=10, pady=4)
         if field_label:
             ttk.Label(field_row, text=field_label, style="Section.TLabel").pack(side="left", padx=(0, 6))
-        entry = PlaceholderEntry(field_row, placeholder=placeholder)
-        if current_value:
-            entry.insert(0, current_value)
-            entry.selection_range(0, tk.END)
+        if choices is not None:
+            entry = ttk.Combobox(field_row, values=["", *choices], state="readonly")
+            entry.set(current_value)
+        else:
+            entry = PlaceholderEntry(field_row, placeholder=placeholder)
+            if current_value:
+                entry.insert(0, current_value)
+                entry.selection_range(0, tk.END)
         entry.pack(side="left", fill="x", expand=True)
         entry.focus_set()
 
@@ -1100,49 +1197,123 @@ class DDMGUI:
         entry.bind("<Return>", lambda _event: save())
         return editor
 
-    def _family_value_rows(self, fam) -> List[dict]:
-        overrides = fam.overrides
-        return [
-            {
-                "parameter_name": param.name,
-                "default_value": "" if param.value is None else param.value,
-                "override": overrides.get(param.name, {}).get("value", ""),
-                "value": "" if resolved.value is None else resolved.value,
-            }
-            for param, resolved in zip(fam.params, fam.resolved_params())
-            if param.name not in COMMON_PARAM_NAMES
-        ]
+    # --- default value tables -----------------------------------------------------
 
-    def _schedule_value_rows(self, schedule) -> List[dict]:
-        rows = []
-        for fam in schedule.fams:
-            overrides = schedule.family_overrides.get(fam.name, {})
-            resolved = {param.name: param for param in schedule.resolved_family_params(fam)}
-            for param_name in schedule.family_param_names(fam):
-                if schedule.field_names is None and param_name in COMMON_PARAM_NAMES:
-                    continue
-                value = resolved[param_name].value
-                rows.append({
-                    "family_name": fam.name,
-                    "parameter_name": param_name,
-                    "override": overrides.get(param_name, {}).get("value", ""),
-                    "value": "" if value is None else value,
-                })
+    @staticmethod
+    def _table_cell(text, state: str = "set", editable: bool = False) -> dict:
+        return {"text": "" if text is None else str(text), "state": state, "editable": editable}
+
+    def _parameter_table_rows(self, parameter_names: Sequence[str], families) -> List[dict]:
+        """The Parameter section: each column's name and Parameter Default values (read-only)."""
+        definitions = [
+            self.catalog.get_param(name)
+            or next((param for fam in families for param in fam.params if param.name == name), None)
+            for name in parameter_names
+        ]
+        rows = [{"section": "Parameter", "label": "Name", "cells": [self._table_cell(name) for name in parameter_names]}]
+        for attribute, _term, label in self._override_attributes:
+            rows.append({
+                "section": "",
+                "label": label,
+                "cells": [
+                    self._table_cell(None if param is None else getattr(param, attribute))
+                    for param in definitions
+                ],
+            })
         return rows
 
-    def _build_value_tree(self, parent, columns: Sequence[str], height: int = 8, labels=None) -> ttk.Treeview:
+    def _family_table_rows(self, fam, parameter_names: Sequence[str], schedule=None) -> List[dict]:
+        """One row per attribute for ``fam``: its Family Default values, or with
+        ``schedule`` its Schedule Default values (only the value is editable there).
+
+        A value set at this level is ``"set"``; one that comes from a level above is
+        ``"inherited"``; a column the family doesn't have is ``"none"``.
+        """
+        if schedule is None:
+            resolved = {param.name: param for param in fam.resolved_params()}
+            own_overrides = fam.overrides
+        else:
+            resolved = {param.name: param for param in schedule.resolved_family_params(fam)}
+            own_overrides = schedule.family_overrides.get(fam.name, {})
+
+        rows = []
+        for attribute, _term, label in self._override_attributes:
+            editable = schedule is None or attribute in Schedule.FAMILY_OVERRIDABLE_ATTRIBUTES
+            cells = []
+            for name in parameter_names:
+                param = resolved.get(name)
+                if param is None:
+                    cells.append(self._table_cell(None, "none"))
+                    continue
+                is_set = editable and attribute in own_overrides.get(name, {})
+                cells.append(self._table_cell(getattr(param, attribute), "set" if is_set else "inherited", editable))
+            rows.append({
+                "section": "" if rows else fam.name,
+                "label": label,
+                "cells": cells,
+                "family": fam.name,
+                "attribute": attribute,
+            })
+        return rows
+
+    def _schedule_table_rows(self, schedule) -> List[dict]:
+        parameter_names = self._get_schedule_parameter_names(schedule)
+        rows = self._parameter_table_rows(parameter_names, schedule.fams)
+        for fam in schedule.fams:
+            rows.extend(self._family_table_rows(fam, parameter_names, schedule))
+        return rows
+
+    def _family_window_rows(self, fam) -> List[dict]:
+        parameter_names = [param.name for param in fam.custom_params]
+        return self._parameter_table_rows(parameter_names, [fam]) + self._family_table_rows(fam, parameter_names)
+
+    def _edit_table_cell(self, parent, table: "OverrideTable", rows_builder, schedule_name, row_index: int, column_index: int):
+        """Open the edit dialog for one table cell, then the override prompt on save."""
+        row = table.rows[row_index]
+        if not row["cells"][column_index].get("editable"):
+            return None
+        param_name = table.parameter_names[column_index]
+        attribute = row["attribute"]
+        family_name = row["family"]
+        term = self._attribute_term(attribute)
+        if schedule_name is None:
+            own = self.catalog.get_family(family_name).overrides.get(param_name, {})
+            level, fallback, context = "Family", "Parameter", family_name
+        else:
+            own = self._get_schedule(schedule_name).family_overrides.get(family_name, {}).get(param_name, {})
+            level, fallback, context = "Schedule", "Family", f"{schedule_name}: {family_name}"
+        current = own.get(attribute)
+
+        def save(value):
+            saved = self._override_value((family_name, schedule_name), param_name, value, attribute)
+            table.set_rows(rows_builder())
+            return saved
+
+        return self._edit_value_dialog(
+            parent,
+            f"Override {level} {term}",
+            context,
+            "" if current is None else str(current),
+            save,
+            placeholder=f"Blank Uses {fallback} {term}",
+            field_label=f"{param_name} Group Under =" if attribute == "group_under" else f"{param_name} =",
+            choices=self._revit_dropdown_values("group_under") if attribute == "group_under" else None,
+        )
+
+    def _build_override_table(self, parent, parameter_names, rows, **kwargs) -> "OverrideTable":
+        """An ``OverrideTable`` with scroll bars, packed into ``parent``."""
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
-        tree = ttk.Treeview(frame, columns=list(columns), show="headings", height=height)
-        labels = labels or {}
-        for column in columns:
-            tree.heading(column, text=labels.get(column, self._humanize_column_name(column)))
-            tree.column(column, width=150, anchor="w")
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
-        tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        return tree
+        table = OverrideTable(frame, parameter_names, rows=rows, **kwargs)
+        x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
+        y_scroll = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
+        table.configure(xscrollcommand=x_scroll.set, yscrollcommand=y_scroll.set)
+        table.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        return table
 
     # --- schedules --------------------------------------------------------------
 
@@ -1226,7 +1397,7 @@ class DDMGUI:
         form.title(title)
         form.transient(self.root)
         form.grab_set()
-        form.geometry("760x680")
+        form.geometry("960x760")
         ttk.Label(form, text=title, style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
 
         row = self.families_df.iloc[row_index]
@@ -1236,7 +1407,7 @@ class DDMGUI:
                 ttk.Label(
                     form,
                     text=f"{self._humanize_column_name(col)}: {row.get(col)}",
-                    wraplength=720,
+                    wraplength=920,
                     justify="left",
                 ).pack(anchor="w", padx=12, pady=(6, 0))
                 continue
@@ -1269,39 +1440,16 @@ class DDMGUI:
 
         values_box = ttk.LabelFrame(form, text="Family Default Values (double-click to override)", padding=8)
         values_box.pack(fill="both", expand=True, padx=12, pady=(4, 12))
-        value_tree = self._build_value_tree(values_box, self._value_columns, labels={
-            "default_value": "Parameter Default Value",
-            "override": "Family Default Value",
-            "value": "Value Used",
-        })
-
-        def refresh_values():
-            self._render_tree(value_tree, pd.DataFrame(self._family_value_rows(fam)), self._value_columns)
-
-        def edit_value(event):
-            row_id = value_tree.identify_row(event.y)
-            if not row_id:
-                return
-            parameter_name = value_tree.item(row_id, "values")[0]
-            current = fam.overrides.get(parameter_name, {}).get("value", "")
-
-            def save(value):
-                saved = self._override_value((fam.name, None), parameter_name, value)
-                refresh_values()
-                return saved
-
-            self._edit_value_dialog(
-                form,
-                "Override Family Default Value",
-                fam.name,
-                "" if current is None else str(current),
-                save,
-                placeholder="Blank Uses Parameter Default Value",
-                field_label=f"{parameter_name} =",
-            )
-
-        value_tree.bind("<Double-1>", edit_value)
-        refresh_values()
+        rows_builder = lambda: self._family_window_rows(fam)  # noqa: E731 - rebuilt after each edit
+        table = self._build_override_table(
+            values_box,
+            [param.name for param in fam.custom_params],
+            rows_builder(),
+            show_header=False,
+            on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
+                form, table, rows_builder, None, row_index, column_index
+            ),
+        )
 
     def _open_schedule_window(self, selected_name: str):
         schedule = self.catalog.get_schedule(selected_name)
@@ -1312,191 +1460,144 @@ class DDMGUI:
         form.title(f"Schedule Details: {selected_name}")
         form.transient(self.root)
         form.grab_set()
-        form.geometry("880x700")
+        form.geometry("1040x760")
 
         ttk.Label(form, text=f"Schedule: {selected_name}", style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
         ttk.Label(form, text=f"Status: {schedule.status}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(0, 6))
-        ttk.Label(form, text=f"Validation: {schedule.validation_message or 'None'}", wraplength=840, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
+        ttk.Label(form, text=f"Validation: {schedule.validation_message or 'None'}", wraplength=1000, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
 
-        content = ttk.Frame(form)
-        content.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        content.grid_columnconfigure(0, weight=1, uniform="schedule_detail")
-        content.grid_columnconfigure(1, weight=2, uniform="schedule_detail")
-        content.grid_rowconfigure(0, weight=1)
-
-        family_box = ttk.LabelFrame(content, text="Families", padding=8)
-        family_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        family_names = [fam.name for fam in schedule.fams]
-        family_list = tk.Text(family_box, height=8, width=32, wrap="word")
-        family_list.insert("1.0", "\n".join(family_names) if family_names else "No families assigned")
-        family_list.configure(state="disabled")
-        family_list.pack(fill="both", expand=True)
-
-        parameter_box = ttk.LabelFrame(content, text="Parameters", padding=8)
-        parameter_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        table_box = ttk.LabelFrame(
+            form,
+            text="Schedule Default Values (double-click a header for column settings, a value to override)",
+            padding=8,
+        )
+        table_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         parameter_names = self._get_schedule_parameter_names(schedule)
-        if parameter_names:
-            def edit_schedule_header(parameter_name):
-                current_override = schedule.header_text_overrides.get(parameter_name, "")
-                width_override = schedule.grid_column_width_overrides.get(parameter_name)
-                current_width_override = "" if width_override is None else f"{width_override:g}"
-                default_param = next(
-                    param for fam in schedule.fams for param in fam.resolved_params()
-                    if param.name == parameter_name
-                )
-                default_header = default_param.header_text
-                default_width = default_param.grid_column_width
+        if not parameter_names:
+            ttk.Label(table_box, text="No parameters assigned").pack(anchor="w")
+            ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(0, 10))
+            return
 
-                editor = tk.Toplevel(form)
-                editor.title("Schedule Column Settings")
-                editor.transient(form)
-                editor.grab_set()
-                editor.geometry("420x210")
-                ttk.Label(editor, text="Schedule Header Text", style="Section.TLabel").pack(
-                    anchor="w", padx=10, pady=(10, 4)
-                )
-                header_entry = PlaceholderEntry(editor, placeholder=default_header)
-                if current_override:
-                    header_entry.insert(0, current_override)
-                header_entry.pack(fill="x", padx=10, pady=4)
-                ttk.Label(editor, text="Schedule Column Width (in)", style="Section.TLabel").pack(
-                    anchor="w", padx=10, pady=(8, 4)
-                )
-                width_entry = PlaceholderEntry(editor, placeholder=f"{default_width:g}")
-                if current_width_override:
-                    width_entry.insert(0, current_width_override)
-                width_entry.pack(fill="x", padx=10, pady=4)
-                header_entry.focus_set()
-
-                def save_header_override():
-                    try:
-                        self._set_schedule_column(selected_name, parameter_name, header_entry.get(), width_entry.get())
-                    except ValueError as exc:
-                        messagebox.showwarning("Invalid width", str(exc), parent=editor)
-                        return
-                    header_canvas.set_header_texts({
-                        name: self._get_schedule_header_text(schedule, name) for name in parameter_names
-                    })
-                    header_canvas.set_grid_column_widths([
-                        self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
-                    ])
-                    editor.destroy()
-
-                buttons = ttk.Frame(editor)
-                buttons.pack(fill="x", padx=10, pady=(4, 8))
-                ttk.Button(buttons, text="Save", command=save_header_override).pack(side="right")
-                ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
-                header_entry.bind("<Return>", lambda _event: save_header_override())
-                width_entry.bind("<Return>", lambda _event: save_header_override())
-
-            header_canvas = ScheduleHeaderCanvas(
-                parameter_box,
-                parameter_names,
-                {name: self._get_schedule_header_text(schedule, name) for name in parameter_names},
-                groups=schedule.header_groups,
-                on_header_double_click=edit_schedule_header,
-                grid_column_widths=[
-                    self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
-                ],
+        def edit_schedule_header(parameter_name):
+            current_override = schedule.header_text_overrides.get(parameter_name, "")
+            width_override = schedule.grid_column_width_overrides.get(parameter_name)
+            current_width_override = "" if width_override is None else f"{width_override:g}"
+            default_param = next(
+                param for fam in schedule.fams for param in fam.resolved_params()
+                if param.name == parameter_name
             )
-            canvas_frame = ttk.Frame(parameter_box)
-            canvas_frame.pack(fill="both", expand=True)
-            header_canvas.pack(side="top", fill="both", expand=True)
-            header_scroll = ttk.Scrollbar(canvas_frame, orient="horizontal", command=header_canvas.xview)
-            header_canvas.configure(xscrollcommand=header_scroll.set)
-            header_scroll.pack(side="bottom", fill="x")
+            default_header = default_param.header_text
+            default_width = default_param.grid_column_width
 
-            selection_box = ttk.LabelFrame(parameter_box, text="Header Groups", padding=6)
-            selection_box.pack(fill="x", pady=(8, 0))
-            group_controls = ttk.Frame(selection_box)
-            group_controls.pack(fill="x")
+            editor = tk.Toplevel(form)
+            editor.title("Schedule Column Settings")
+            editor.transient(form)
+            editor.grab_set()
+            editor.geometry("420x210")
+            ttk.Label(editor, text="Schedule Header Text", style="Section.TLabel").pack(
+                anchor="w", padx=10, pady=(10, 4)
+            )
+            header_entry = PlaceholderEntry(editor, placeholder=default_header)
+            if current_override:
+                header_entry.insert(0, current_override)
+            header_entry.pack(fill="x", padx=10, pady=4)
+            ttk.Label(editor, text="Schedule Column Width (in)", style="Section.TLabel").pack(
+                anchor="w", padx=10, pady=(8, 4)
+            )
+            width_entry = PlaceholderEntry(editor, placeholder=f"{default_width:g}")
+            if current_width_override:
+                width_entry.insert(0, current_width_override)
+            width_entry.pack(fill="x", padx=10, pady=4)
+            header_entry.focus_set()
 
-            def begin_header_group():
-                selected_parameters = header_canvas.get_selected_parameter_names()
-                if len(selected_parameters) < 2:
+            def save_header_override():
+                try:
+                    self._set_schedule_column(selected_name, parameter_name, header_entry.get(), width_entry.get())
+                except ValueError as exc:
+                    messagebox.showwarning("Invalid width", str(exc), parent=editor)
+                    return
+                table.set_header_texts({
+                    name: self._get_schedule_header_text(schedule, name) for name in parameter_names
+                })
+                table.set_grid_column_widths([
+                    self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
+                ])
+                editor.destroy()
+
+            buttons = ttk.Frame(editor)
+            buttons.pack(fill="x", padx=10, pady=(4, 8))
+            ttk.Button(buttons, text="Save", command=save_header_override).pack(side="right")
+            ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
+            header_entry.bind("<Return>", lambda _event: save_header_override())
+            width_entry.bind("<Return>", lambda _event: save_header_override())
+
+        rows_builder = lambda: self._schedule_table_rows(schedule)  # noqa: E731 - rebuilt after each edit
+        table = self._build_override_table(
+            table_box,
+            parameter_names,
+            rows_builder(),
+            header_texts={name: self._get_schedule_header_text(schedule, name) for name in parameter_names},
+            groups=schedule.header_groups,
+            on_header_double_click=edit_schedule_header,
+            on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
+                form, table, rows_builder, selected_name, row_index, column_index
+            ),
+            grid_column_widths=[
+                self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
+            ],
+        )
+
+        group_controls = ttk.Frame(form)
+        group_controls.pack(fill="x", padx=12)
+
+        def begin_header_group():
+            selected_parameters = table.get_selected_parameter_names()
+            if len(selected_parameters) < 2:
+                messagebox.showwarning(
+                    "Select headers",
+                    "Select at least two adjacent parameter headers to group.",
+                    parent=form,
+                )
+                return
+
+            editor = tk.Toplevel(form)
+            editor.title("Name Header Group")
+            editor.transient(form)
+            editor.grab_set()
+            editor.geometry("360x130")
+            ttk.Label(editor, text="Group name:", style="Section.TLabel").pack(
+                anchor="w", padx=10, pady=(10, 4)
+            )
+            caption_var = tk.StringVar()
+            caption_entry = ttk.Entry(editor, textvariable=caption_var)
+            caption_entry.pack(fill="x", padx=10, pady=4)
+            caption_entry.focus_set()
+
+            def save_header_group():
+                caption = caption_var.get().strip()
+                if not caption:
                     messagebox.showwarning(
-                        "Select headers",
-                        "Select at least two adjacent parameter headers to group.",
-                        parent=form,
+                        "Group name required",
+                        "Enter a name for this header group.",
+                        parent=editor,
                     )
                     return
+                try:
+                    self._add_schedule_header_group(selected_name, selected_parameters, caption)
+                except ValueError as exc:
+                    messagebox.showwarning("Cannot group headers", str(exc), parent=editor)
+                    return
+                table.set_groups(schedule.header_groups)
+                editor.destroy()
 
-                editor = tk.Toplevel(form)
-                editor.title("Name Header Group")
-                editor.transient(form)
-                editor.grab_set()
-                editor.geometry("360x130")
-                ttk.Label(editor, text="Group name:", style="Section.TLabel").pack(
-                    anchor="w", padx=10, pady=(10, 4)
-                )
-                caption_var = tk.StringVar()
-                caption_entry = ttk.Entry(editor, textvariable=caption_var)
-                caption_entry.pack(fill="x", padx=10, pady=4)
-                caption_entry.focus_set()
+            buttons = ttk.Frame(editor)
+            buttons.pack(fill="x", padx=10, pady=(4, 8))
+            ttk.Button(buttons, text="Group", command=save_header_group).pack(side="right")
+            ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
+            caption_entry.bind("<Return>", lambda _event: save_header_group())
 
-                def save_header_group():
-                    caption = caption_var.get().strip()
-                    if not caption:
-                        messagebox.showwarning(
-                            "Group name required",
-                            "Enter a name for this header group.",
-                            parent=editor,
-                        )
-                        return
-                    try:
-                        self._add_schedule_header_group(selected_name, selected_parameters, caption)
-                    except ValueError as exc:
-                        messagebox.showwarning("Cannot group headers", str(exc), parent=editor)
-                        return
-                    header_canvas.set_groups(schedule.header_groups)
-                    editor.destroy()
-
-                buttons = ttk.Frame(editor)
-                buttons.pack(fill="x", padx=10, pady=(4, 8))
-                ttk.Button(buttons, text="Group", command=save_header_group).pack(side="right")
-                ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
-                caption_entry.bind("<Return>", lambda _event: save_header_group())
-
-            ttk.Button(group_controls, text="Group Selected", command=begin_header_group).pack(side="right")
-        else:
-            ttk.Label(parameter_box, text="No parameters assigned").pack(anchor="w")
-
-        values_box = ttk.LabelFrame(form, text="Schedule Default Values (double-click to override)", padding=8)
-        values_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        value_tree = self._build_value_tree(values_box, self._schedule_value_columns, height=6, labels={
-            "override": "Schedule Default Value",
-            "value": "Value Used",
-        })
-
-        def refresh_values():
-            self._render_tree(value_tree, pd.DataFrame(self._schedule_value_rows(schedule)), self._schedule_value_columns)
-
-        def edit_value(event):
-            row_id = value_tree.identify_row(event.y)
-            if not row_id:
-                return
-            family_name, parameter_name = value_tree.item(row_id, "values")[:2]
-            current = schedule.family_overrides.get(family_name, {}).get(parameter_name, {}).get("value", "")
-
-            def save(value):
-                saved = self._override_value((family_name, selected_name), parameter_name, value)
-                refresh_values()
-                return saved
-
-            self._edit_value_dialog(
-                form,
-                "Override Schedule Default Value",
-                f"{selected_name}: {family_name}",
-                "" if current is None else str(current),
-                save,
-                placeholder="Blank Uses Family Default Value",
-                field_label=f"{parameter_name} =",
-            )
-
-        value_tree.bind("<Double-1>", edit_value)
-        refresh_values()
-
-        ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(0, 10))
+        ttk.Button(group_controls, text="Group Selected Headers", command=begin_header_group).pack(side="left")
+        ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(8, 10))
 
     # --- files ------------------------------------------------------------------
 

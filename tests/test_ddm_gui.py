@@ -14,7 +14,7 @@ from config.app_paths import (
     TEST_DATABASE_CSV_PATH,
     get_database_output_paths,
 )
-from ddm_gui import DDMGUI, ScheduleHeaderCanvas
+from ddm_gui import DDMGUI, OverrideTable
 from ddm_tables import catalog_from_tables
 from revit_parameter_manager import Catalog
 import revit_parameter_manager as model
@@ -792,7 +792,7 @@ def test_gui_rename_updates_every_reference_to_the_parameter(monkeypatch):
 
 def answering(answer, asked=None):
     """A stand-in for the override prompt: picks the connected labels in ``answer["pick"]``."""
-    def ask(param_name, value, location, connected, ask_parameter):
+    def ask(param_name, value, location, connected, ask_parameter, attribute="value"):
         if asked is not None:
             asked.append((param_name, value, location, [label for _location, label in connected], ask_parameter))
         if answer is None:
@@ -850,7 +850,6 @@ def test_family_override_offers_the_familys_schedules(monkeypatch):
     assert gui.catalog.resolved_value(("F1", "S1"), "Width") == "5"
     # S2 had its own override; picking it replaces that with the new value.
     assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "5"
-    assert [row["override"] for row in gui._family_value_rows(gui.catalog.get_family("F1"))] == ["5"]
 
 
 def test_override_can_become_the_parameter_default(monkeypatch):
@@ -907,19 +906,83 @@ def test_override_question_wording():
     assert parameter == "Clear Parameter Default Value?\nWidth = (no value)"
 
 
-def test_schedule_value_rows_show_overrides_and_effective_values(monkeypatch):
+def cells(rows, label, section=None):
+    """``(text, state, editable)`` for each cell of the row with ``label`` (in ``section``)."""
+    current = None
+    for row in rows:
+        current = row["section"] or current
+        if row["label"] == label and (section is None or current == section):
+            return [(cell["text"], cell["state"], cell["editable"]) for cell in row["cells"]]
+    raise AssertionError(f"No row {label!r} in {section!r}")
+
+
+def test_schedule_table_shows_each_level_and_where_values_come_from(monkeypatch):
     gui = three_family_gui()
     monkeypatch.setattr(gui, "_ask_override_scope", answering({}))
     gui._override_value(("F1", None), "Width", "5")
     gui._override_value(("F2", "S1"), "Width", "9")
+    gui._override_value(("F3", None), "Width", "Height * 2", "formula")
 
-    rows = gui._schedule_value_rows(gui.catalog.get_schedule("S1"))
+    rows = gui._schedule_table_rows(gui.catalog.get_schedule("S1"))
 
-    assert rows == [
-        {"family_name": "F1", "parameter_name": "Width", "override": "", "value": "5"},
-        {"family_name": "F2", "parameter_name": "Width", "override": "9", "value": "9"},
-        {"family_name": "F3", "parameter_name": "Width", "override": "", "value": "1"},
-    ]
+    assert [row["section"] for row in rows if row["section"]] == ["Parameter", "F1", "F2", "F3"]
+    assert cells(rows, "Name", "Parameter") == [("Width", "set", False)]
+    assert cells(rows, "Default Value", "Parameter") == [("1", "set", False)]
+    assert cells(rows, "Default Value", "F1") == [("5", "inherited", True)]
+    assert cells(rows, "Default Value", "F2") == [("9", "set", True)]
+    assert cells(rows, "Default Value", "F3") == [("1", "inherited", True)]
+    # Formula and group under belong to the family: shown in a schedule, not editable there.
+    assert cells(rows, "Formula", "F3") == [("Height * 2", "inherited", False)]
+    assert cells(rows, "Group Under", "F3") == [("", "inherited", False)]
+
+
+def test_family_table_edits_family_level_and_shades_missing_columns(monkeypatch):
+    gui = gui_from_tables(
+        params=pd.DataFrame([
+            {"name": "Width", "dtype": "Length", "instance_param": True, "default_value": "1", "group_under": "Dimensions"},
+            {"name": "Height", "dtype": "Length", "instance_param": True},
+        ]),
+        families=pd.DataFrame([{"name": "F1", "category": "Doors"}]),
+        links=pd.DataFrame([
+            {"family_name": "F1", "parameter_name": "Width"},
+            {"family_name": "F1", "parameter_name": "Height"},
+        ]),
+    )
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({}))
+    gui._override_value(("F1", None), "Height", "Construction", "group_under")
+
+    rows = gui._family_window_rows(gui.catalog.get_family("F1"))
+
+    assert cells(rows, "Group Under", "Parameter") == [("Dimensions", "set", False), ("", "set", False)]
+    assert cells(rows, "Group Under", "F1") == [("Dimensions", "inherited", True), ("Construction", "set", True)]
+    assert cells(rows, "Default Value", "F1") == [("1", "inherited", True), ("", "inherited", True)]
+
+    schedule_rows = gui._schedule_table_rows(gui.catalog.add_schedule("S", ["F1"], field_names=["Width", "Ghost"]))
+    assert cells(schedule_rows, "Default Value", "F1") == [("1", "inherited", True)]
+
+
+def test_formula_override_offers_only_the_parameter_default(monkeypatch):
+    gui = three_family_gui()
+    asked = []
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({"parameter": True}, asked))
+
+    gui._override_value(("F1", None), "Width", "Height * 2", "formula")
+
+    assert asked == [("Width", "Height * 2", ("F1", None), [], True)]
+    assert gui.catalog.get_family("F1").overrides == {"Width": {"formula": "Height * 2"}}
+    assert gui.catalog.get_param("Width").formula == "Height * 2"
+
+
+def test_override_question_wording_for_formula_and_group_under():
+    gui = three_family_gui()
+
+    heading, _list_label, parameter = gui._override_questions("Width", "Height * 2", ("F1", None), "formula")
+    assert heading == "Override Family Default Formula\nF1\nWidth = Height * 2"
+    assert parameter == "Override Parameter Default Formula?\nWidth = Height * 2"
+
+    heading, _list_label, parameter = gui._override_questions("Width", None, ("F1", None), "group_under")
+    assert heading == "Clear Family Default Group Under\nF1\nWidth Group Under = (no value)"
+    assert parameter == "Clear Parameter Default Group Under?\nWidth Group Under = (no value)"
 
 
 def run_in_dialog(root, action):
@@ -1104,7 +1167,7 @@ def test_value_dialog_puts_the_parameter_label_on_the_box_line():
 
 
 def test_schedule_header_text_wraps_at_underscores_and_camel_case():
-    canvas = object.__new__(ScheduleHeaderCanvas)
+    canvas = object.__new__(OverrideTable)
     canvas.header_font = SimpleNamespace(measure=lambda text: len(text) * 6)
 
     lines = canvas._wrap_header_segment("IPS_EQUIP_AirDesign", 40)
@@ -1202,14 +1265,11 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         gui._open_detail_window("schedule", "Schedule A")
         root.update()
         schedule_popup = find_window(root, "Schedule Details: Schedule A")
-        header_grid = next(
-            widget for widget in descendants(schedule_popup) if isinstance(widget, ScheduleHeaderCanvas)
-        )
-        assert header_grid.parameter_names == ["Length", "Width"]
+        table = next(widget for widget in descendants(schedule_popup) if isinstance(widget, OverrideTable))
+        assert table.parameter_names == ["Length", "Width"]
 
-        header_grid._on_double_click(
-            SimpleNamespace(x=header_grid.column_widths[0] + 10, y=header_grid.header_top + 10)
-        )
+        header_y = table.header_top + 10
+        table._on_double_click(SimpleNamespace(x=table.column_offsets[1] + 10, y=header_y))
         root.update()
         width_dialog = find_window(schedule_popup, "Schedule Column Settings")
         width_entries = [widget for widget in descendants(width_dialog) if isinstance(widget, ttk.Entry)]
@@ -1218,13 +1278,12 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
 
         schedule = gui.catalog.get_schedule("Schedule A")
         assert schedule.grid_column_width_overrides == {"Width": 2.25}
-        assert header_grid.column_widths[1] == 108
+        assert table.column_widths[1] == 2.25 * table.pixels_per_inch
 
-        header_y = header_grid.header_top + 10
-        header_grid._on_mouse_down(SimpleNamespace(x=10, y=header_y, state=0))
-        header_grid._on_mouse_drag(SimpleNamespace(x=header_grid.column_width + 10, y=header_y))
-        assert header_grid.get_selected_parameter_names() == ["Length", "Width"]
-        find_button(schedule_popup, "Group Selected").invoke()
+        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 10, y=header_y, state=0))
+        table._on_mouse_drag(SimpleNamespace(x=table.column_offsets[1] + 10, y=header_y))
+        assert table.get_selected_parameter_names() == ["Length", "Width"]
+        find_button(schedule_popup, "Group Selected Headers").invoke()
         root.update()
         dialog = find_window(schedule_popup, "Name Header Group")
         next(widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)).insert(0, "Dimensions")
@@ -1232,14 +1291,29 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
 
         assert schedule.header_groups[0]["caption"] == "Dimensions"
         assert schedule.header_groups[0]["parameter_names"] == ["Length", "Width"]
-        assert len(header_grid.group_layout) == 1
+        assert len(table.group_layout) == 1
 
-        value_tree = next(
-            widget for widget in descendants(schedule_popup)
-            if isinstance(widget, ttk.Treeview) and "override" in widget.cget("columns")
+        assert cells(table.rows, "Default Value", "Family_A")[1] == ("Override Width", "set", True)
+
+        # Double-click Family_A's Width value, type a new one and save.
+        monkeypatch.setattr(gui, "_ask_override_scope", answering({}))
+        row_index = next(
+            index for index, row in enumerate(table.rows)
+            if row.get("family") == "Family_A" and row.get("attribute") == "value"
         )
-        rows = [value_tree.item(item, "values") for item in value_tree.get_children()]
-        assert ("Family_A", "Width", "Override Width", "Override Width") in rows
+        table._on_double_click(SimpleNamespace(
+            x=table.column_offsets[1] + 10,
+            y=table.body_top + row_index * table.row_height + 5,
+        ))
+        root.update()
+        editor = find_window(schedule_popup, "Override Schedule Default Value")
+        entry = next(widget for widget in descendants(editor) if isinstance(widget, gui_module.PlaceholderEntry))
+        entry.delete(0, tk.END)
+        entry.insert(0, "3.5")
+        find_button(editor, "Save").invoke()
+
+        assert gui.catalog.resolved_value(("Family_A", "Schedule A"), "Width") == "3.5"
+        assert cells(table.rows, "Default Value", "Family_A")[1] == ("3.5", "set", True)
     finally:
         root.destroy()
 
@@ -1254,12 +1328,27 @@ def test_family_window_lists_values_and_saves_fields(tmp_path, monkeypatch):
         root.update()
         form = find_window(root, "Family Details")
 
-        value_tree = next(
-            widget for widget in descendants(form)
-            if isinstance(widget, ttk.Treeview) and "override" in widget.cget("columns")
+        fam = gui.catalog.families[0]
+        table = next(widget for widget in descendants(form) if isinstance(widget, OverrideTable))
+        assert table.parameter_names == [param.name for param in fam.custom_params]
+        assert not table.show_header
+
+        # Double-click Family_A's Length formula and override it.
+        monkeypatch.setattr(gui, "_ask_override_scope", answering({}))
+        row_index = next(
+            index for index, row in enumerate(table.rows)
+            if row.get("family") == fam.name and row.get("attribute") == "formula"
         )
-        listed = [value_tree.item(item, "values")[0] for item in value_tree.get_children()]
-        assert listed == [param.name for param in gui.catalog.families[0].custom_params]
+        table._on_double_click(SimpleNamespace(
+            x=table.column_offsets[0] + 10, y=table.body_top + row_index * table.row_height + 5,
+        ))
+        root.update()
+        editor = find_window(form, "Override Family Default Formula")
+        entry = next(widget for widget in descendants(editor) if isinstance(widget, gui_module.PlaceholderEntry))
+        entry.delete(0, tk.END)
+        entry.insert(0, "Width * 2")
+        find_button(editor, "Save").invoke()
+        assert fam.overrides[table.parameter_names[0]] == {"formula": "Width * 2"}
 
         description = next(
             widget for widget in descendants(form)
