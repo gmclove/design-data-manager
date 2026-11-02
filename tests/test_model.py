@@ -232,7 +232,7 @@ def test_saved_file_is_readable_json(catalog, tmp_path):
 	build_sample(catalog)
 	path = catalog.save(tmp_path / 'catalog.json')
 	data = json.loads(path.read_text() if hasattr(path, 'read_text') else open(path).read())
-	assert data['version'] == 2
+	assert data['version'] == 3
 	assert [param['name'] for param in data['params']] == ['Width', 'Height', 'Area']
 	assert data['families'][0]['param_names'] == ['Width', 'Height', 'Area']
 	assert [param['name'] for param in data['families'][0]['custom_params']] == ['LocalOnly']
@@ -427,3 +427,111 @@ def test_blank_param_names_rejected_in_catalog(catalog):
 			catalog.add_param(name, 'Text')
 	param = catalog.add_param('  Width  ', 'Length')
 	assert param.name == 'Width'
+
+
+# --- schedule fields and override locations ---------------------------------
+
+@pytest.fixture
+def scheduled(catalog):
+	catalog.add_param('Width', 'Length', value=1)
+	catalog.add_param('Height', 'Length', value=2)
+	catalog.add_param('Depth', 'Length')
+	catalog.add_family('F1', ['Width', 'Height', 'Depth'])
+	catalog.add_family('F2', ['Width'])
+	catalog.add_schedule('S1', ['F1', 'F2'], field_names=['Width', 'Height'])
+	catalog.add_schedule('S2', ['F1'])
+	return catalog
+
+
+def test_schedule_field_names_pick_and_order_columns(scheduled):
+	schedule = scheduled.get_schedule('S1')
+	assert [param.name for param in schedule.params] == ['Width', 'Height']
+	assert schedule.family_param_names(scheduled.get_family('F2')) == ['Width']
+
+	schedule.set_field_names(['Height', 'Width'])
+	assert [param.name for param in schedule.params] == ['Height', 'Width']
+
+	all_fields = scheduled.get_schedule('S2')
+	assert {param.name for param in all_fields.params} >= {'Width', 'Height', 'Depth'}
+
+
+def test_schedule_flags_fields_no_family_has(scheduled):
+	schedule = scheduled.get_schedule('S1')
+	schedule.set_field_names(['Width', 'Ghost'])
+	assert schedule.status == 'Error'
+	assert 'Ghost' in schedule.validation_message
+
+
+def test_override_locations_cover_families_and_schedule_entries(scheduled):
+	assert scheduled.override_locations('Width') == [
+		('F1', None), ('F2', None), ('F1', 'S1'), ('F2', 'S1'), ('F1', 'S2'),
+	]
+	# S1 doesn't show Depth, so only the family and the all-fields schedule can override it.
+	assert scheduled.override_locations('Depth') == [('F1', None), ('F1', 'S2')]
+
+
+def test_schedule_override_beats_family_override_beats_default(scheduled):
+	assert scheduled.resolved_value(('F1', 'S1'), 'Width') == 1
+
+	scheduled.apply_override(('F1', None), 'Width', value=5)
+	assert scheduled.resolved_value(('F1', None), 'Width') == 5
+	assert scheduled.resolved_value(('F1', 'S1'), 'Width') == 5
+	assert scheduled.resolved_value(('F1', 'S2'), 'Width') == 5
+
+	scheduled.apply_override(('F1', 'S1'), 'Width', value=9)
+	assert scheduled.resolved_value(('F1', 'S1'), 'Width') == 9
+	assert scheduled.resolved_value(('F1', 'S2'), 'Width') == 5
+	assert scheduled.resolved_value(('F2', 'S1'), 'Width') == 1
+
+	scheduled.apply_override(('F1', 'S1'), 'Width', value=None)
+	assert scheduled.resolved_value(('F1', 'S1'), 'Width') == 5
+	assert 'F1' not in scheduled.get_schedule('S1').family_overrides
+	scheduled.apply_override(('F1', None), 'Width', value=None)
+	assert 'Width' not in scheduled.get_family('F1').overrides
+
+
+def test_schedule_override_requires_family_in_schedule_with_param(scheduled):
+	with pytest.raises(ValueError):
+		scheduled.apply_override(('F2', 'S2'), 'Width', value=3)
+	with pytest.raises(ValueError):
+		scheduled.apply_override(('F2', 'S1'), 'Height', value=3)
+
+
+def test_renames_and_removals_follow_schedule_fields_and_overrides(scheduled):
+	scheduled.apply_override(('F1', 'S1'), 'Width', value=9)
+	scheduled.get_schedule('S1').add_header_group('Size', ['Width', 'Height'])
+
+	scheduled.rename_param('Width', 'Span', keep_guid=True)
+	schedule = scheduled.get_schedule('S1')
+	assert schedule.field_names == ['Span', 'Height']
+	assert schedule.family_overrides == {'F1': {'Span': {'value': 9}}}
+
+	scheduled.get_family('F1').name = 'Frame'
+	assert schedule.family_overrides == {'Frame': {'Span': {'value': 9}}}
+
+	scheduled.remove_param('Height')
+	assert schedule.field_names == ['Span']
+	assert schedule.header_groups == []
+
+
+def test_schedule_fields_and_family_overrides_round_trip(scheduled, tmp_path):
+	scheduled.apply_override(('F1', 'S1'), 'Width', value=9)
+	path = scheduled.save(tmp_path / 'catalog.json')
+
+	loaded, _ = Catalog.load(path)
+
+	schedule = loaded.get_schedule('S1')
+	assert schedule.field_names == ['Width', 'Height']
+	assert loaded.resolved_value(('F1', 'S1'), 'Width') == 9
+	assert loaded.get_schedule('S2').field_names is None
+
+
+def test_version_2_catalogs_still_load(scheduled):
+	data = scheduled.to_dict()
+	data['version'] = 2
+	for schedule in data['schedules']:
+		del schedule['field_names'], schedule['family_overrides']
+
+	loaded = Catalog.from_dict(data)
+
+	assert loaded.get_schedule('S1').field_names is None

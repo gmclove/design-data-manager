@@ -46,6 +46,25 @@ Build through the catalog: `catalog.add_param(...)`, `catalog.add_family(name, p
 - `Schedule.header_groups` stores group captions, member parameter names (which must be
   contiguous in the schedule) and header-row bounds.
 - A schedule lists each parameter once, even when several of its families share it.
+- `Schedule.field_names` picks the schedule's columns, in order. `None` (the default) shows
+  every parameter of every family.
+
+## Overriding values
+
+A parameter's value can be overridden in two places:
+
+- **For a family everywhere:** `Fam.overrides`, set with `Fam.override_param(...)`.
+- **For a family in one schedule only:** `Schedule.family_overrides`, set with
+  `Schedule.override_family_param(...)`.
+
+The schedule override wins over the family override, which wins over the parameter's default.
+Passing `None` for an attribute clears that override.
+
+`Catalog.override_locations(param_name)` lists every place a parameter can be overridden, as
+`(family_name, None)` for a family or `(family_name, schedule_name)` for one schedule entry.
+`Catalog.apply_override(location, param_name, ...)` sets or clears an override at one of them,
+and `Catalog.resolved_value(location, param_name)` gives the effective value there. The GUI uses
+these to ask where else an override should apply.
 
 Header groups store stable parameter names rather than Revit column indices. A Revit adapter
 resolves those names to the visible schedule columns when it calls `ViewSchedule.GroupHeaders`,
@@ -83,7 +102,7 @@ be remapped to the new GUID if it changes.
 
 ## Persistence
 
-`Catalog.save(path, extra=None)` writes versioned JSON (`version: 2`); `Catalog.load(path)`
+`Catalog.save(path, extra=None)` writes versioned JSON (`version: 3`; version 2 files still load); `Catalog.load(path)`
 returns `(catalog, extra)`. Families store catalog parameters by name and family-local
 parameters in full; schedules in a catalog store family names. A standalone schedule's
 `to_dict()` embeds its families instead.

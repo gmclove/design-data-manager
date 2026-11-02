@@ -16,7 +16,9 @@ from config.revit_dtype_definitions import get_dtype_row
 from config.revit_family_category_definitions import get_family_category_row
 from formula import FORMULA_FUNCTIONS, check_syntax, rename_reference, scan_references, tokenize
 
-CATALOG_FORMAT_VERSION = 2
+CATALOG_FORMAT_VERSION = 3
+# Version 2 files lack schedule field lists and per-schedule family overrides; both default.
+READABLE_CATALOG_FORMAT_VERSIONS = (2, 3)
 
 GUID_CHANGE_WARNING = (
 	"Renaming parameter '{old_name}' to '{new_name}' will assign it a new GUID. "
@@ -34,6 +36,17 @@ def _clean_name(name, label='Parameter'):
 	if name is None or not str(name).strip():
 		raise ValueError('{} name is required.'.format(label))
 	return str(name).strip()
+
+
+def _merge_overrides(existing, overrides):
+	"""Apply ``overrides`` on top of ``existing``; a ``None`` value clears that override."""
+	merged = dict(existing)
+	for attribute, value in overrides.items():
+		if value is None:
+			merged.pop(attribute, None)
+		else:
+			merged[attribute] = value
+	return merged
 
 
 class Param(object):
@@ -305,7 +318,10 @@ class Fam(object):
 			return
 		if self.catalog is not None:
 			self.catalog._check_family_name_free(new_name, ignore=self)
+		old_name = self._name
 		self._name = new_name
+		if self.catalog is not None:
+			self.catalog._family_renamed(old_name, new_name)
 
 	def _validate_category_name(self, category):
 		if category is None:
@@ -400,11 +416,15 @@ class Fam(object):
 		return param
 
 	def override_param(self, param_name, **overrides):
+		"""Override attributes of a parameter in this family. ``None`` clears an override."""
 		Param.validate_overrides(overrides)
 
 		self._find_param(param_name)
-		param_overrides = self.overrides.setdefault(param_name, {})
-		param_overrides.update(overrides)
+		param_overrides = _merge_overrides(self.overrides.get(param_name, {}), overrides)
+		if param_overrides:
+			self.overrides[param_name] = param_overrides
+		else:
+			self.overrides.pop(param_name, None)
 		resolved_param = self._find_param(param_name).with_overrides(
 			**param_overrides)
 		self._validate_formula_references(self.resolved_params())
@@ -509,18 +529,33 @@ class FamType(Fam):
 
 
 class Schedule(object):
+	"""Families scheduled together.
+
+	``field_names`` picks the schedule's columns, in order; ``None`` shows every
+	parameter of every family. ``family_overrides`` holds values overridden for one
+	family in this schedule only (``{family: {parameter: {attribute: value}}}``);
+	they take precedence over the family's own overrides.
+	"""
+
 	def __init__(self, name=None, fams=None, header_text_overrides=None,
-				 header_groups=None, grid_column_width_overrides=None, catalog=None):
+				 header_groups=None, grid_column_width_overrides=None, catalog=None,
+				 field_names=None, family_overrides=None):
 		self._name = None
 		self.catalog = None
 		self.name = name
 		self.fams = []
 		self.params = []
+		self.field_names = None if field_names is None else [_clean_name(name) for name in field_names]
 		self.header_text_overrides = dict(header_text_overrides or {})
 		self.grid_column_width_overrides = {
 			param_name: Param._coerce_grid_column_width(width)
 			for param_name, width in (grid_column_width_overrides or {}).items()
 		}
+		self.family_overrides = {}
+		for family_name, param_overrides in (family_overrides or {}).items():
+			for param_name, overrides in param_overrides.items():
+				Param.validate_overrides(overrides)
+				self.family_overrides.setdefault(family_name, {})[param_name] = dict(overrides)
 		self.header_groups = []
 		self.status = 'Ready'
 		self.validation_message = ''
@@ -562,8 +597,58 @@ class Schedule(object):
 
 	def remove_family(self, family_name):
 		self.fams = [fam for fam in self.fams if fam.name != family_name]
+		self.family_overrides.pop(family_name, None)
 		self.refresh_params()
 		self.validate()
+
+	def get_family(self, family_name):
+		return next((fam for fam in self.fams if fam.name == family_name), None)
+
+	def set_field_names(self, field_names):
+		self.field_names = None if field_names is None else [_clean_name(name) for name in field_names]
+		if self.field_names is not None:
+			# A header group can't span a field that is no longer in the schedule.
+			kept = set(self.field_names)
+			self.header_groups = [
+				group for group in self.header_groups if set(group['parameter_names']) <= kept
+			]
+		self.refresh_params()
+		self.validate()
+
+	def family_param_names(self, fam):
+		"""The schedule's columns that ``fam`` has, in schedule order."""
+		names = [param.name for param in fam.params]
+		if self.field_names is None:
+			return names
+		return [name for name in self.field_names if name in names]
+
+	def override_family_param(self, family_name, param_name, **overrides):
+		"""Override a parameter for one family in this schedule only. ``None`` clears."""
+		Param.validate_overrides(overrides)
+		fam = self.get_family(family_name)
+		if fam is None:
+			raise ValueError("Family '{}' is not in schedule '{}'.".format(family_name, self.name))
+		fam._find_param(param_name)
+		family_overrides = self.family_overrides.setdefault(family_name, {})
+		param_overrides = _merge_overrides(family_overrides.get(param_name, {}), overrides)
+		if param_overrides:
+			family_overrides[param_name] = param_overrides
+		else:
+			family_overrides.pop(param_name, None)
+		if not family_overrides:
+			self.family_overrides.pop(family_name, None)
+		return self.resolved_family_param(fam, param_name)
+
+	def resolved_family_params(self, fam):
+		"""``fam``'s parameters with family and then schedule overrides applied."""
+		schedule_overrides = self.family_overrides.get(fam.name, {})
+		return [
+			param.with_overrides(**schedule_overrides.get(param.name, {}))
+			for param in fam.resolved_params()
+		]
+
+	def resolved_family_param(self, fam, param_name):
+		return next(param for param in self.resolved_family_params(fam) if param.name == param_name)
 
 	def validate(self):
 		self.status = 'Ready'
@@ -579,27 +664,51 @@ class Schedule(object):
 			if fam.status == 'Error':
 				issues.append(f"Family '{fam.name}': {fam.validation_message}")
 
+		if self.field_names is not None:
+			available = {param.name for fam in self.fams for param in fam.params}
+			missing = [name for name in self.field_names if name not in available]
+			if missing:
+				issues.append('Field(s) not on any family in the schedule: {}'.format(', '.join(missing)))
+			duplicates = sorted({name for name in self.field_names if self.field_names.count(name) > 1})
+			if duplicates:
+				issues.append('Duplicate field(s): {}'.format(', '.join(duplicates)))
+
+		for family_name, param_overrides in self.family_overrides.items():
+			fam = self.get_family(family_name)
+			if fam is None:
+				issues.append("Overrides for family '{}', which is not in the schedule".format(family_name))
+				continue
+			family_names = {param.name for param in fam.params}
+			for param_name in param_overrides:
+				if param_name not in family_names:
+					issues.append("Override for '{}' on family '{}', which doesn't have it".format(
+						param_name, family_name))
+
 		if issues:
 			self.status = 'Error'
 			self.validation_message = '; '.join(issues)
 		return self
 
 	def refresh_params(self):
-		self.params = []
-		seen_param_names = set()
+		params_by_name = {}
 		for fam in self.fams:
 			for param in fam.resolved_params():
-				if param.name in seen_param_names:
-					continue
-				seen_param_names.add(param.name)
-				param_overrides = {}
-				if param.name in self.header_text_overrides:
-					param_overrides['header_text'] = self.header_text_overrides[param.name]
-				if param.name in self.grid_column_width_overrides:
-					param_overrides['grid_column_width'] = self.grid_column_width_overrides[param.name]
-				if param_overrides:
-					param = param.with_overrides(**param_overrides)
-				self.params.append(param)
+				params_by_name.setdefault(param.name, param)
+		order = list(params_by_name) if self.field_names is None else [
+			name for name in self.field_names if name in params_by_name
+		]
+
+		self.params = []
+		for param_name in dict.fromkeys(order):
+			param = params_by_name[param_name]
+			param_overrides = {}
+			if param.name in self.header_text_overrides:
+				param_overrides['header_text'] = self.header_text_overrides[param.name]
+			if param.name in self.grid_column_width_overrides:
+				param_overrides['grid_column_width'] = self.grid_column_width_overrides[param.name]
+			if param_overrides:
+				param = param.with_overrides(**param_overrides)
+			self.params.append(param)
 
 	def add_header_group(self, caption, parameter_names, top_row=0, bottom_row=0):
 		clean_caption = '' if caption is None else str(caption).strip()
@@ -652,6 +761,11 @@ class Schedule(object):
 		else:
 			data['fams'] = [fam.to_dict() for fam in self.fams]
 		data.update({
+			'field_names': None if self.field_names is None else list(self.field_names),
+			'family_overrides': {
+				family_name: {param_name: dict(overrides) for param_name, overrides in param_overrides.items()}
+				for family_name, param_overrides in self.family_overrides.items()
+			},
 			'header_text_overrides': dict(self.header_text_overrides),
 			'grid_column_width_overrides': dict(self.grid_column_width_overrides),
 			'header_groups': [
@@ -681,6 +795,8 @@ class Schedule(object):
 			header_groups=data.get('header_groups', []),
 			grid_column_width_overrides=data.get('grid_column_width_overrides', {}),
 			catalog=catalog,
+			field_names=data.get('field_names'),
+			family_overrides=data.get('family_overrides', {}),
 		)
 
 	def override_param(self, param_name, **overrides):
@@ -735,6 +851,26 @@ class Schedule(object):
 				new_name if name == old_name else name
 				for name in group['parameter_names']
 			]
+		if self.field_names is not None:
+			self.field_names = [new_name if name == old_name else name for name in self.field_names]
+		for param_overrides in self.family_overrides.values():
+			if old_name in param_overrides:
+				param_overrides[new_name] = param_overrides.pop(old_name)
+
+	def _param_removed(self, param_name):
+		if self.field_names is not None:
+			self.set_field_names([name for name in self.field_names if name != param_name])
+		for family_name in list(self.family_overrides):
+			self.family_overrides[family_name].pop(param_name, None)
+			if not self.family_overrides[family_name]:
+				del self.family_overrides[family_name]
+		self.header_text_overrides.pop(param_name, None)
+		self.grid_column_width_overrides.pop(param_name, None)
+		self.refresh_params()
+
+	def _family_renamed(self, old_name, new_name):
+		if old_name in self.family_overrides:
+			self.family_overrides[new_name] = self.family_overrides.pop(old_name)
 
 	def rename_param(self, current_name, new_name, keep_guid=False):
 		renamed = []
@@ -827,7 +963,7 @@ class Catalog(object):
 				fam.params.remove(param)
 				fam.overrides.pop(name, None)
 		for schedule in self.schedules:
-			schedule.refresh_params()
+			schedule._param_removed(name)
 		return param
 
 	def remove_family(self, name):
@@ -854,6 +990,56 @@ class Catalog(object):
 		if param is None:
 			raise ValueError('Parameter not found: {}'.format(current_name))
 		return param.rename(new_name, keep_guid=keep_guid)
+
+	# --- overrides --------------------------------------------------------
+
+	def override_locations(self, param_name):
+		"""Every place ``param_name`` can be overridden.
+
+		A location is ``(family_name, None)`` for the family everywhere, or
+		``(family_name, schedule_name)`` for that family in one schedule only.
+		"""
+		locations = []
+		for fam in self.families:
+			if any(param.name == param_name for param in fam.params):
+				locations.append((fam.name, None))
+		for schedule in self.schedules:
+			for fam in schedule.fams:
+				if param_name in schedule.family_param_names(fam):
+					locations.append((fam.name, schedule.name))
+		return locations
+
+	def apply_override(self, location, param_name, **overrides):
+		"""Set (or, with ``None`` values, clear) overrides at one location."""
+		family_name, schedule_name = location
+		if schedule_name is None:
+			fam = self.get_family(family_name)
+			if fam is None:
+				raise ValueError('Family not found: {}'.format(family_name))
+			result = fam.override_param(param_name, **overrides)
+		else:
+			schedule = self.get_schedule(schedule_name)
+			if schedule is None:
+				raise ValueError('Schedule not found: {}'.format(schedule_name))
+			result = schedule.override_family_param(family_name, param_name, **overrides)
+		for schedule in self.schedules:
+			schedule.refresh_params()
+		return result
+
+	def resolved_value(self, location, param_name, attribute='value'):
+		"""The effective value of ``attribute`` at a location, after overrides."""
+		family_name, schedule_name = location
+		fam = self.get_family(family_name)
+		if fam is None:
+			raise ValueError('Family not found: {}'.format(family_name))
+		if schedule_name is None:
+			params = fam.resolved_params()
+		else:
+			params = self.get_schedule(schedule_name).resolved_family_params(fam)
+		param = next((param for param in params if param.name == param_name), None)
+		if param is None:
+			raise ValueError("Family '{}' has no parameter '{}'.".format(family_name, param_name))
+		return getattr(param, attribute)
 
 	# --- registration (called by the model constructors) -----------------
 
@@ -897,6 +1083,10 @@ class Catalog(object):
 			schedule._param_renamed(old_name, new_name)
 			schedule.refresh_params()
 
+	def _family_renamed(self, old_name, new_name):
+		for schedule in self.schedules:
+			schedule._family_renamed(old_name, new_name)
+
 	# --- validation -------------------------------------------------------
 
 	def validate(self):
@@ -929,7 +1119,7 @@ class Catalog(object):
 	@classmethod
 	def from_dict(cls, data):
 		version = data.get('version')
-		if version != CATALOG_FORMAT_VERSION:
+		if version not in READABLE_CATALOG_FORMAT_VERSIONS:
 			raise ValueError('Unsupported catalog format version: {}'.format(version))
 
 		catalog = cls()
