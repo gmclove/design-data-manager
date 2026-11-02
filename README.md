@@ -18,9 +18,20 @@ Catalog, validate and sync Revit parameters, families and schedules.
 
 ## Setup
 
+The project environment lives in the `.conda/` folder inside the repo. Run things with it
+directly, no activation needed:
+
+```powershell
+.\.conda\python.exe ddm_gui.py
+```
+
+or activate it from an Anaconda Prompt with `conda activate .\.conda`. In VS Code, pick
+`.conda\python.exe` with **Python: Select Interpreter**.
+
+To create it on a new machine:
+
 ```bash
-conda env create -f environment.yml
-conda activate design-data-manager
+conda env create -f environment.yml -p ./.conda
 ```
 
 Or with pip: `pip install -e ".[dev]"` (Python 3.12+, with Tkinter available).
