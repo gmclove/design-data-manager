@@ -1,4 +1,4 @@
-# Design Data Manager: notes for Claude
+# Design Data Manager: handoff notes for Claude
 
 ## Plan
 The living development plan is a Claude Docs doc: https://claude.ai/artifact/EVpeSRoyvJHmLp6cW37dtZ
