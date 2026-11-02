@@ -1436,7 +1436,7 @@ def test_family_list_edits_in_place_on_one_click_and_opens_window_on_two(tmp_pat
         click = SimpleNamespace(x=x + width // 2, y=y + height // 2)
 
         # One click: after the double-click delay, an entry opens over the cell.
-        gui._on_family_tree_click(click)
+        gui._on_tree_click(click, "families")
         assert gui._pending_tree_edit is not None
         root.after(gui._single_click_delay_ms + 50, root.quit)
         root.mainloop()
@@ -1456,11 +1456,45 @@ def test_family_list_edits_in_place_on_one_click_and_opens_window_on_two(tmp_pat
         assert fam.description == "Edited in place"
 
         # Two clicks: the pending edit is cancelled and the family window opens.
-        gui._on_family_tree_click(click)
+        gui._on_tree_click(click, "families")
         gui._on_family_tree_double_click(click)
         assert gui._pending_tree_edit is None
         root.update()
         find_window(root, "Family Details")
+        assert getattr(gui, "_tree_cell_editor", None) is None
+    finally:
+        root.destroy()
+
+
+def test_parameter_list_edits_in_place_on_one_click_and_pops_up_on_two(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.geometry("1200x800")
+    try:
+        gui = DDMGUI(root)
+        gui.notebook.select(gui.params_tab)
+        root.update()
+        tree = gui.param_tree
+        param = gui.catalog.params[0]
+        column = gui._get_table_columns("params").index("header_text")
+        x, y, width, height = tree.bbox(tree.get_children()[0], f"#{column + 1}")
+        click = SimpleNamespace(x=x + width // 2, y=y + height // 2)
+
+        gui._on_tree_click(click, "params")
+        root.after(gui._single_click_delay_ms + 50, root.quit)
+        root.mainloop()
+        editor, finish = gui._tree_cell_editor
+        editor.delete(0, tk.END)
+        editor.insert(0, "Edited Header")
+        finish(True)
+        assert param.header_text == "Edited Header"
+
+        # Two clicks: no in-place editor, the edit pop-up opens instead.
+        gui._on_tree_click(click, "params")
+        gui._on_tree_double_click(click, "params")
+        assert gui._pending_tree_edit is None
+        root.update()
+        find_window(root, "Edit Default Header Text")
         assert getattr(gui, "_tree_cell_editor", None) is None
     finally:
         root.destroy()

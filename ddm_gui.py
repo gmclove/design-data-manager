@@ -917,7 +917,7 @@ class DDMGUI:
     def _configure_detail_clicks(self):
         if self.family_tree is not None:
             # One click edits the cell in place; two clicks open the family window.
-            self.family_tree.bind("<Button-1>", self._on_family_tree_click, add="+")
+            self.family_tree.bind("<Button-1>", lambda event: self._on_tree_click(event, "families"), add="+")
             self.family_tree.bind("<Double-1>", self._on_family_tree_double_click)
         if self.group_tree is not None:
             self.group_tree.bind("<Double-1>", self._open_selected_schedule_window)
@@ -926,6 +926,8 @@ class DDMGUI:
         if tree is None:
             return
         if table_name in {"params"}:
+            # One click edits the cell in place; two clicks open the edit pop-up.
+            tree.bind("<Button-1>", lambda event, name=table_name: self._on_tree_click(event, name), add="+")
             tree.bind("<Double-1>", lambda event, name=table_name: self._on_tree_double_click(event, name))
 
     @staticmethod
@@ -939,6 +941,8 @@ class DDMGUI:
         return None
 
     def _on_tree_double_click(self, event, table_name: str):
+        self._cancel_pending_tree_edit()
+        self._finish_tree_cell_edit(False)
         tree = self.param_tree if table_name == "params" else self.family_tree
         if tree is None:
             return
@@ -1563,15 +1567,16 @@ class DDMGUI:
             self.root.after_cancel(pending)
             self._pending_tree_edit = None
 
-    def _on_family_tree_click(self, event):
+    def _on_tree_click(self, event, table_name: str):
         self._cancel_pending_tree_edit()
-        cell = self._tree_cell_at(self.family_tree, "families", event)
+        tree = self.param_tree if table_name == "params" else self.family_tree
+        cell = self._tree_cell_at(tree, table_name, event)
         if cell is None:
             return
 
         def start():
             self._pending_tree_edit = None
-            self._start_tree_cell_edit(self.family_tree, "families", *cell)
+            self._start_tree_cell_edit(tree, table_name, *cell)
 
         # Wait in case this is the first click of a double-click.
         self._pending_tree_edit = self.root.after(self._single_click_delay_ms, start)
