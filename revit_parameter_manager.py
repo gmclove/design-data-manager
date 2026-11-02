@@ -374,11 +374,29 @@ class Fam(object):
 				)
 			)
 
-		issues.extend(self._validate_formula_references(self.params))
+		issues.extend(self._validate_formula_overrides())
+		issues.extend(self._validate_formula_references(self.resolved_params()))
 		if issues:
 			self.status = 'Error'
 			self.validation_message = '; '.join(issues)
 		return self
+
+	def _validate_formula_overrides(self):
+		"""Check the formulas this family overrides, like ``Param.validate`` checks its own."""
+		known_names = self.known_names()
+		issues = []
+		for param_name, overrides in self.overrides.items():
+			formula = overrides.get('formula')
+			if not formula:
+				continue
+			problems = check_syntax(tokenize(formula, known_names))
+			_, unknown = scan_references(formula, known_names)
+			if unknown:
+				problems.append('references parameter(s) that do not exist yet: {}'.format(
+					', '.join(sorted(unknown))))
+			if problems:
+				issues.append("Formula override for '{}': {}".format(param_name, '; '.join(problems)))
+		return issues
 
 	def _validate_formula_references(self, params_to_validate):
 		known_param_names = self.known_names()
@@ -441,6 +459,9 @@ class Fam(object):
 		for param in self.params:
 			if param.catalog is None and param.formula:
 				param.formula = rename_reference(param.formula, old_name, new_name, known_names)
+		for overrides in self.overrides.values():
+			if overrides.get('formula'):
+				overrides['formula'] = rename_reference(overrides['formula'], old_name, new_name, known_names)
 		if old_name in self.overrides:
 			overrides = self.overrides.pop(old_name)
 			self.overrides.setdefault(new_name, {}).update(overrides)
@@ -509,9 +530,10 @@ class Fam(object):
 
 class FamType(Fam):
 	def __init__(self, fam, type_name):
+		# Set before the base constructor, whose validate() resolves params through the parent.
+		self.parent_fam = fam
 		super(FamType, self).__init__(fam.name, fam.client, fam.country,
 									 fam.description, fam.category, fam.custom_params)
-		self.parent_fam = fam
 		self.type_name = type_name
 		# Validate against the parent's catalog without registering the type as a
 		# separate family (it shares the parent's name).
@@ -534,8 +556,11 @@ class Schedule(object):
 	``field_names`` picks the schedule's columns, in order; ``None`` shows every
 	parameter of every family. ``family_overrides`` holds values overridden for one
 	family in this schedule only (``{family: {parameter: {attribute: value}}}``);
-	they take precedence over the family's own overrides.
+	they take precedence over the family's own overrides. Only the value can be
+	overridden in a schedule: formula and group under belong to the family in Revit.
 	"""
+
+	FAMILY_OVERRIDABLE_ATTRIBUTES = ('value',)
 
 	def __init__(self, name=None, fams=None, header_text_overrides=None,
 				 header_groups=None, grid_column_width_overrides=None, catalog=None,
@@ -554,7 +579,7 @@ class Schedule(object):
 		self.family_overrides = {}
 		for family_name, param_overrides in (family_overrides or {}).items():
 			for param_name, overrides in param_overrides.items():
-				Param.validate_overrides(overrides)
+				self._validate_family_overrides(overrides)
 				self.family_overrides.setdefault(family_name, {})[param_name] = dict(overrides)
 		self.header_groups = []
 		self.status = 'Ready'
@@ -624,7 +649,7 @@ class Schedule(object):
 
 	def override_family_param(self, family_name, param_name, **overrides):
 		"""Override a parameter for one family in this schedule only. ``None`` clears."""
-		Param.validate_overrides(overrides)
+		self._validate_family_overrides(overrides)
 		fam = self.get_family(family_name)
 		if fam is None:
 			raise ValueError("Family '{}' is not in schedule '{}'.".format(family_name, self.name))
@@ -638,6 +663,16 @@ class Schedule(object):
 		if not family_overrides:
 			self.family_overrides.pop(family_name, None)
 		return self.resolved_family_param(fam, param_name)
+
+	@classmethod
+	def _validate_family_overrides(cls, overrides):
+		Param.validate_overrides(overrides)
+		not_allowed = set(overrides) - set(cls.FAMILY_OVERRIDABLE_ATTRIBUTES)
+		if not_allowed:
+			raise ValueError(
+				'Only the value can be overridden in a schedule; {} belong to the family.'.format(
+					', '.join(sorted(not_allowed)))
+			)
 
 	def resolved_family_params(self, fam):
 		"""``fam``'s parameters with family and then schedule overrides applied."""

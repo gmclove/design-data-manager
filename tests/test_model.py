@@ -527,3 +527,45 @@ def test_version_2_catalogs_still_load(scheduled):
 	loaded = Catalog.from_dict(data)
 
 	assert loaded.get_schedule('S1').field_names is None
+
+
+# --- formula and group under overrides ----------------------------------------
+
+def test_schedule_overrides_are_values_only(scheduled):
+	with pytest.raises(ValueError, match='Only the value'):
+		scheduled.apply_override(('F1', 'S1'), 'Width', formula='Height * 2')
+	with pytest.raises(ValueError, match='Only the value'):
+		scheduled.apply_override(('F1', 'S1'), 'Width', group_under='Dimensions')
+
+
+def test_family_can_override_formula_and_group_under(scheduled):
+	scheduled.apply_override(('F1', None), 'Width', formula='Height * 2', group_under='Dimensions')
+
+	assert scheduled.resolved_value(('F1', None), 'Width', 'formula') == 'Height * 2'
+	assert scheduled.resolved_value(('F1', 'S1'), 'Width', 'group_under') == 'Dimensions'
+	assert scheduled.resolved_value(('F2', None), 'Width', 'formula') is None
+
+
+def test_family_formula_override_is_validated(scheduled):
+	fam = scheduled.get_family('F1')
+	fam.override_param('Width', formula='Height * (2')
+	fam.validate()
+	assert fam.status == 'Error'
+	assert "Formula override for 'Width'" in fam.validation_message
+
+	fam.override_param('Width', formula='Ghost * 2')
+	fam.validate()
+	assert 'Ghost' in fam.validation_message
+
+	# F2 has Width but not Height, so an override referencing Height is outside the family.
+	scheduled.get_family('F2').override_param('Width', formula='Height * 2')
+	scheduled.get_family('F2').validate()
+	assert 'not associated with family' in scheduled.get_family('F2').validation_message
+
+
+def test_rename_updates_family_formula_overrides(scheduled):
+	scheduled.apply_override(('F1', None), 'Width', formula='Height * 2')
+
+	scheduled.rename_param('Height', 'Tall', keep_guid=True)
+
+	assert scheduled.get_family('F1').overrides['Width']['formula'] == 'Tall * 2'
