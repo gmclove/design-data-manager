@@ -1500,6 +1500,42 @@ def test_parameter_list_edits_in_place_on_one_click_and_pops_up_on_two(tmp_path,
         root.destroy()
 
 
+def test_override_windows_have_an_override_rules_button(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        windows = [("family", 0, "Family Details"),
+                   ("schedule", gui.catalog.schedules[0].name, f"Schedule Details: {gui.catalog.schedules[0].name}")]
+        for item_type, key, title in windows:
+            gui._open_detail_window(item_type, key)
+            root.update()
+            form = find_window(root, title)
+            find_button(form, "ⓘ Override Rules").invoke()
+            root.update()
+            info = find_window(root, "Override Rules")
+            text = next(widget for widget in descendants(info) if isinstance(widget, tk.Text))
+            for heading, _body in gui_module.OVERRIDE_RULES:
+                assert heading in text.get("1.0", tk.END)
+            find_button(info, "Close").invoke()
+            root.update()
+            assert form.grab_current() is form  # the modal window gets its grab back
+            form.destroy()
+
+        # The where-else prompt has the button too.
+        found = []
+        failures = run_in_dialog(root, lambda: (
+            found.append(find_button(find_window(root, "Override Default Value"), "ⓘ Override Rules")),
+            find_button(find_window(root, "Override Default Value"), "Cancel").invoke(),
+        ))
+        fam = gui.catalog.families[0]
+        gui._ask_override_scope(fam.custom_params[0].name, "7", (fam.name, None), [], True)
+        assert not failures and found
+    finally:
+        root.destroy()
+
+
 def test_family_window_lists_values_and_saves_fields(tmp_path, monkeypatch):
     monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
     root = tk.Tk()

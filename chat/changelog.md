@@ -2,6 +2,12 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-02: Override Rules info button
+- Family window, schedule window and the "where else" override prompt have an
+  "ⓘ Override Rules" button that opens a read-only explanation of the override logic
+  (`OVERRIDE_RULES` in `ddm_gui.py`). README has a matching "Overriding Default Values" section;
+  keep the two in step.
+
 ## 2026-11-01: GUI on the catalog, override prompt (branch `gui-on-catalog`)
 - Model: schedules pick their columns (`field_names`) and hold per-family value overrides that
   apply in that schedule only; `Catalog.apply_override` / `resolved_value`. Catalog format version 3 (version 2 still loads).

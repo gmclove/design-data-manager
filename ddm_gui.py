@@ -87,6 +87,56 @@ def _wrap_text_segment(text, max_width, font):
 # Label of the schedule table row that sets every family's Schedule Default Value at once.
 ALL_FAMILIES = "All Families"
 
+# Shown by the Info button on the override windows. Keep in step with the README's
+# "Overriding Default Values" section.
+OVERRIDE_RULES = (
+    ("Three Levels of Default Value", (
+        "Parameter Default Value: set on the parameter itself. Every family and schedule uses it "
+        "unless something more specific overrides it.\n"
+        "Family Default Value: set for one family. It replaces the Parameter Default Value for that "
+        "family, in every schedule the family is in.\n"
+        "Schedule Default Value: set for one family in one schedule. It replaces the Family and "
+        "Parameter Default Values in that schedule only."
+    )),
+    ("Which Value Wins", (
+        "The most specific level wins: Schedule Default Value, then Family Default Value, then "
+        "Parameter Default Value. Clearing an override (delete the value and save) lets the level "
+        "above show through again."
+    )),
+    ("What Can Be Overridden", (
+        "Default Value: at all three levels.\n"
+        "Formula and Group Under: at the Parameter and Family levels only. They describe the family, "
+        "so a schedule shows them read-only."
+    )),
+    ("Reading the Tables", (
+        "Black text: set at this level.\n"
+        "Gray text: inherited from the level above.\n"
+        "Shaded cell: doesn't apply, for example the family doesn't have that parameter. In a "
+        "schedule, an \"Add Parameter to Family\" button adds the missing parameter to the family.\n"
+        "Double-click a cell to edit it in place. Enter or clicking away saves, Tab moves to the "
+        "next cell, Escape cancels."
+    )),
+    ("The All Families Row", (
+        "In a schedule, the All Families row is a shortcut, not another level. A value set there "
+        "becomes the Schedule Default Value of every family in the schedule that has that column. "
+        "It shows the shared value, \"(Varies)\" when the families differ, or blank when none is "
+        "set. Leaving a \"(Varies)\" cell unchanged changes nothing."
+    )),
+    ("Where Else to Override", (
+        "After you change a Family or Schedule Default Value you're asked where else it should go:\n"
+        "From a schedule: pick other families in the same schedule to get the same value.\n"
+        "From a family: pick the schedules that family is in to get the same value.\n"
+        "Tick \"Override Parameter Default Value?\" to make the value the parameter's default for "
+        "everything that doesn't override it.\n"
+        "Formula and Group Under changes only offer the parameter checkbox, since schedules can't "
+        "hold them."
+    )),
+    ("Renames", (
+        "Overrides follow parameter and family renames, including parameter names used inside "
+        "formula overrides."
+    )),
+)
+
 
 class OverrideTable(tk.Canvas):
     """A grid of default values: header rows, then labelled rows of cells.
@@ -1278,11 +1328,50 @@ class DDMGUI:
 
         buttons = ttk.Frame(dialog)
         buttons.pack(fill="x", side="bottom", padx=10, pady=8)
+        self._info_button(buttons).pack(side="left")
         ttk.Button(buttons, text="Apply", command=apply).pack(side="right")
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 6))
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
         dialog.wait_window()
         return result["answer"]
+
+    def _info_button(self, parent):
+        return ttk.Button(parent, text="ⓘ Override Rules", command=lambda: self._show_override_rules(parent))
+
+    def _show_override_rules(self, parent):
+        """A read-only window explaining how default value overrides work."""
+        owner = parent.winfo_toplevel()
+        info = tk.Toplevel(owner)
+        info.title("Override Rules")
+        info.transient(owner)
+        info.geometry("620x560")
+
+        frame = ttk.Frame(info)
+        frame.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+        text = tk.Text(frame, wrap="word", relief="flat", padx=8, pady=6, font=("Segoe UI", 10),
+                       background="#ffffff", spacing3=2)
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.tag_configure("heading", font=("Segoe UI", 11, "bold"), foreground="#1f2937", spacing1=8)
+        for heading, body in OVERRIDE_RULES:
+            text.insert(tk.END, heading + "\n", "heading")
+            text.insert(tk.END, body + "\n")
+        text.configure(state="disabled")
+        text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        # The override windows are modal; hand the grab over and back.
+        previous_grab = owner.grab_current()
+
+        def close():
+            info.destroy()
+            if previous_grab is not None and previous_grab.winfo_exists():
+                previous_grab.grab_set()
+
+        ttk.Button(info, text="Close", command=close).pack(side="right", padx=10, pady=8)
+        info.protocol("WM_DELETE_WINDOW", close)
+        info.grab_set()
+        return info
 
     # --- default value tables -----------------------------------------------------
 
@@ -1690,7 +1779,10 @@ class DDMGUI:
         form.transient(self.root)
         form.grab_set()
         form.geometry("960x760")
-        ttk.Label(form, text=title, style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
+        title_bar = ttk.Frame(form)
+        title_bar.pack(fill="x", padx=12, pady=(10, 4))
+        ttk.Label(title_bar, text=title, style="Title.TLabel").pack(side="left")
+        self._info_button(title_bar).pack(side="right")
 
         row = self.families_df.iloc[row_index]
         entries = {}
@@ -1754,7 +1846,10 @@ class DDMGUI:
         form.grab_set()
         form.geometry("1040x760")
 
-        ttk.Label(form, text=f"Schedule: {selected_name}", style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
+        title_bar = ttk.Frame(form)
+        title_bar.pack(fill="x", padx=12, pady=(10, 4))
+        ttk.Label(title_bar, text=f"Schedule: {selected_name}", style="Title.TLabel").pack(side="left")
+        self._info_button(title_bar).pack(side="right")
         ttk.Label(form, text=f"Status: {schedule.status}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(0, 6))
         ttk.Label(form, text=f"Validation: {schedule.validation_message or 'None'}", wraplength=1000, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
 
