@@ -16,6 +16,17 @@ changelog row (newest first).
   remapped to the new GUID) and can choose to keep the current GUID. See `guid_change_warning`.
 - Model objects are the source of truth; the GUI should be a view on them.
 - Versioned JSON replaces pickle for saves.
+- Each parameter stores its GUID (`guid` column in the GUI tables). A blank GUID defaults to the
+  name-based `uuid5` the exporters always produced (`parameter_guid` in
+  `revit_shared_parameter_export.py`), so earlier exports stay consistent. Both exporters use the
+  stored GUID, which is what makes "keep the current GUID" on rename actually work.
+- Renaming a parameter in the GUI rewrites every reference to the old name: family links,
+  schedule entries, schedule header groups and other parameters' formulas (whole-name matches via
+  `formula.rename_reference`). Header text still equal to the old name follows the rename; custom
+  header text is kept. Renaming onto a name another parameter uses is rejected, because it would
+  merge their references irreversibly.
+- Deferred: linking families and schedules to parameters by GUID instead of by name (makes renames
+  free, but changes the save format). Revisit when the model becomes the GUI's source of truth.
 
 ## Handoff state (2026-11-01)
 - `catalog-model` was deprecated, merged into `dev` and deleted. `dev` and `main` now have the
@@ -29,6 +40,10 @@ changelog row (newest first).
 - `main` and `dev` are identical (dev merged into main on 2026-11-01); `catalog-model` is deleted.
 - Known failing test (pre-existing on `dev`):
   `ddm_gui_test.py::test_main_tab_table_headings_wrap_after_column_resize` (heading padding).
+- Second machine (Windows, HTTPS remote) is synced: local `dev` and `main` fast-forwarded to
+  origin on 2026-11-01; 112 tests pass, only the known failure above.
+- Paused on the second machine: the parameter rename work (GUID prompt, reference updates) is done
+  and merged; nothing in progress.
 - Git pushes work from the first machine over SSH. A new machine needs its own SSH key added
   at https://github.com/settings/keys.
 - Open question: on the Schedules tab, is an override value per family within a schedule, or
