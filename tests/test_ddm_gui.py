@@ -1144,6 +1144,40 @@ def test_placeholder_entry_shows_gray_hint_until_typing_and_never_returns_it():
         root.destroy()
 
 
+def test_add_parameter_button_links_a_missing_schedule_column_to_the_family():
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = make_test_gui()
+        gui.root = root
+        schedule = gui.catalog.get_schedule("Safety and Clearance")
+        rows_builder = lambda: gui._schedule_table_rows(schedule)  # noqa: E731
+        names = gui._get_schedule_parameter_names(schedule)
+        table = OverrideTable(
+            root, names, rows=rows_builder(),
+            on_cell_action=lambda row, column: gui._add_parameter_from_table(table, rows_builder, row, column),
+        )
+        column = names.index("ServiceClearance")
+        family_k_rows = [index for index, row in enumerate(table.rows) if row.get("family") == "Family_K"]
+        assert all(table.rows[index]["cells"][column]["action"] == "Add Parameter to Family" for index in family_k_rows)
+        # The family's rows in that column merge into one button.
+        assert table._action_span(family_k_rows[1], column) == (family_k_rows[0], len(family_k_rows))
+
+        left, top, _width, _height = table.cell_bbox(family_k_rows[1], column)
+        table._on_mouse_down(SimpleNamespace(x=left + 10, y=top + 5, state=0))
+
+        assert "ServiceClearance" in [param.name for param in gui.catalog.get_family("Family_K").params]
+        assert cells(table.rows, "Default Value", "Family_K")[column] == ("", "inherited", True)
+        assert not any(
+            cell.get("action") for row in table.rows if row.get("family") == "Family_K" for cell in row["cells"]
+        )
+        # Family_L still lacks ClearanceHeight, so its button stays.
+        family_l_value = next(row for row in table.rows if row.get("family") == "Family_L")
+        assert family_l_value["cells"][names.index("ClearanceHeight")]["action"] == "Add Parameter to Family"
+    finally:
+        root.destroy()
+
+
 def test_table_cells_edit_in_place_with_cancel_and_tab():
     root = tk.Tk()
     root.withdraw()

@@ -107,7 +107,7 @@ class OverrideTable(tk.Canvas):
 
     def __init__(self, master, parameter_names, header_texts=None, groups=None, rows=None,
                  show_header=True, on_header_double_click=None, on_cell_double_click=None,
-                 grid_column_widths=None):
+                 grid_column_widths=None, on_cell_action=None):
         super().__init__(master, background="#ffffff", highlightthickness=0)
         self.parameter_names = list(parameter_names)
         self.header_texts = dict(header_texts or {})
@@ -119,6 +119,7 @@ class OverrideTable(tk.Canvas):
         self.selection_anchor = None
         self.on_header_double_click = on_header_double_click
         self.on_cell_double_click = on_cell_double_click
+        self.on_cell_action = on_cell_action
         self.column_width = 170
         self.column_widths = []
         self.column_offsets = []
@@ -132,6 +133,7 @@ class OverrideTable(tk.Canvas):
         self.bind("<Button-1>", self._on_mouse_down)
         self.bind("<B1-Motion>", self._on_mouse_drag)
         self.bind("<Double-Button-1>", self._on_double_click)
+        self.bind("<Motion>", self._on_motion)
         self.set_grid_column_widths(grid_column_widths or [1.0] * len(self.parameter_names))
         self.set_groups(groups or [])
 
@@ -294,6 +296,11 @@ class OverrideTable(tk.Canvas):
 
     def _on_mouse_down(self, event):
         self.finish_cell_edit(commit=True)
+        action = self._action_at(event)
+        if action is not None:
+            if self.on_cell_action is not None:
+                self.on_cell_action(*action)
+            return
         index = self._parameter_index_at(event)
         if index is None:
             return
@@ -422,6 +429,9 @@ class OverrideTable(tk.Canvas):
             self._label_cell(self.section_width, top, self.label_width, self.row_height, row.get("label", ""), fill="#f8faf9")
             for index, cell in enumerate(row["cells"]):
                 left = self.column_offsets[index]
+                if cell.get("action"):
+                    self._draw_action_cell(row_index, index)
+                    continue
                 state = cell.get("state", "set")
                 if state == "none":
                     fill = "#e5e9e7"
@@ -437,6 +447,54 @@ class OverrideTable(tk.Canvas):
                         text=self._fit_text(cell["text"], self.column_widths[index] - 12), anchor="w",
                         font=self.body_font, fill="#9ca3af" if state == "inherited" else "#111827",
                     )
+
+    def _action_span(self, row_index: int, column_index: int):
+        """The first row and row count of the action button covering this cell.
+
+        Consecutive rows of the same family with the same action in a column merge
+        into one button.
+        """
+        def same(index):
+            row = self.rows[index]
+            return (
+                row.get("family") == self.rows[row_index].get("family")
+                and row["cells"][column_index].get("action") == self.rows[row_index]["cells"][column_index]["action"]
+            )
+
+        first = row_index
+        while first > 0 and same(first - 1):
+            first -= 1
+        last = row_index
+        while last + 1 < len(self.rows) and same(last + 1):
+            last += 1
+        return first, last - first + 1
+
+    def _draw_action_cell(self, row_index: int, column_index: int):
+        first, count = self._action_span(row_index, column_index)
+        if first != row_index:
+            return
+        left, top, width, _height = self.cell_bbox(row_index, column_index)
+        height = count * self.row_height
+        self.create_rectangle(left, top, left + width, top + height, fill="#e5e9e7", outline="#c8d2ce")
+        self.create_rectangle(
+            left + 6, top + 6, left + width - 6, top + height - 6,
+            fill="#dce9e4", outline="#7a9187",
+        )
+        self.create_text(
+            left + width / 2, top + height / 2,
+            text=self.rows[row_index]["cells"][column_index]["action"],
+            width=max(1, width - 20), justify="center", font=self.label_font,
+        )
+
+    def _action_at(self, event):
+        """``(row_index, column_index)`` of the action button under the event, or ``None``."""
+        cell = self._cell_at(event)
+        if cell is None or not self.rows[cell[0]]["cells"][cell[1]].get("action"):
+            return None
+        return cell
+
+    def _on_motion(self, event):
+        self.configure(cursor="hand2" if self._action_at(event) else "")
 
     def _fit_text(self, text: str, max_width: int) -> str:
         """``text`` on one line, cut short with an ellipsis if it is wider than ``max_width``."""
@@ -1246,7 +1304,8 @@ class DDMGUI:
         ``schedule`` its Schedule Default values (only the value is editable there).
 
         A value set at this level is ``"set"``; one that comes from a level above is
-        ``"inherited"``; a column the family doesn't have is ``"none"``.
+        ``"inherited"``; a column the family doesn't have is ``"none"``, with an
+        "Add Parameter to Family" action when the parameter can be added.
         """
         if schedule is None:
             resolved = {param.name: param for param in fam.resolved_params()}
@@ -1262,7 +1321,10 @@ class DDMGUI:
             for name in parameter_names:
                 param = resolved.get(name)
                 if param is None:
-                    cells.append(self._table_cell(None, "none"))
+                    cell = self._table_cell(None, "none")
+                    if self.catalog.get_param(name) is not None:
+                        cell["action"] = "Add Parameter to Family"
+                    cells.append(cell)
                     continue
                 is_set = editable and attribute in own_overrides.get(name, {})
                 cells.append(self._table_cell(getattr(param, attribute), "set" if is_set else "inherited", editable))
@@ -1285,6 +1347,18 @@ class DDMGUI:
     def _family_window_rows(self, fam) -> List[dict]:
         parameter_names = [param.name for param in fam.custom_params]
         return self._parameter_table_rows(parameter_names, [fam]) + self._family_table_rows(fam, parameter_names)
+
+    def _add_parameter_from_table(self, table: "OverrideTable", rows_builder, row_index: int, column_index: int):
+        """The "Add Parameter to Family" button: link the column's parameter to the row's family."""
+        fam = self.catalog.get_family(table.rows[row_index]["family"])
+        param = self.catalog.get_param(table.parameter_names[column_index])
+        try:
+            fam.add_param(param)
+        except ValueError as exc:
+            messagebox.showerror("Cannot add parameter", str(exc), parent=table.winfo_toplevel())
+            return
+        self.validate_all()
+        table.set_rows(rows_builder())
 
     def _edit_table_cell(self, table: "OverrideTable", rows_builder, schedule_name, row_index: int, column_index: int):
         """Edit one table cell in place; on commit, run the override prompt and refresh.
@@ -1575,6 +1649,9 @@ class DDMGUI:
             on_header_double_click=edit_schedule_header,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
                 table, rows_builder, selected_name, row_index, column_index
+            ),
+            on_cell_action=lambda row_index, column_index: self._add_parameter_from_table(
+                table, rows_builder, row_index, column_index
             ),
             grid_column_widths=[
                 self._get_schedule_grid_column_width(schedule, name) for name in parameter_names

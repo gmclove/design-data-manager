@@ -14,6 +14,7 @@ first machine: copy its open items into this file, then treat this file as the p
 - [x] Linking by GUID instead of by name: no longer needed. In the catalog, families and
       schedules hold the parameter objects themselves, and names are only written out at save
       time, so a rename can't leave a stale reference.
+- [ ] Remove a parameter from a family in the GUI (adding works from the schedule table).
 - [ ] Add and remove parameters, families and schedules from the GUI (today the GUI only edits
       what a loaded file contains), and pick a schedule's families and columns.
 - [x] Override Formula and Group Under (family and parameter level) in the override tables.

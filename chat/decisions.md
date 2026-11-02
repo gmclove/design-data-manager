@@ -29,7 +29,11 @@ superseded rather than deleting it.
   only), a Parameter block (Name, Default Value, Formula, Group Under; read-only), then one block
   per family (Default Value, Formula, Group Under). Values set at that level are black,
   inherited ones gray, columns a family doesn't have are shaded. Double-click a value to
-  override it, a header for column settings.
+  edit it in place (Enter/Tab/click away commits, Escape cancels; the override prompt follows),
+  a header for column settings.
+- **A family missing a schedule column gets an "Add Parameter to Family" button** (user's
+  mockup, 2026-11-01), merged over that family's rows in the column. Clicking it links the
+  parameter to the family.
 - Rejected along the way: a list of every family and schedule in the catalog, and a yes/no
   "also override for the family in every schedule" question.
 

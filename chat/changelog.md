@@ -19,6 +19,8 @@ Newest first. One entry per piece of work; link commits where useful.
   column headers, Parameter block, one block per family, for Default Value, Formula and Group
   Under. Formula and Group Under are family-level only; schedules show them read-only. Family
   formula overrides are now validated and follow renames.
+- Table cells are edited in place (no value pop-up). A family missing a schedule column shows an
+  "Add Parameter to Family" button there.
 
 ## 2026-11-01: Housekeeping
 - GUI default save moved from the tracked fixture `data/test_data/test_data.ddm.pkl` to untracked
