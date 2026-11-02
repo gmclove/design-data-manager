@@ -48,6 +48,20 @@ def test_shared_parameter_guids_are_stable_across_exports():
     assert first == second
 
 
+def test_shared_parameter_export_uses_stored_guid():
+    parameters = pd.DataFrame(
+        [
+            {"name": "Renamed", "dtype": "Number", "guid": "kept-guid"},
+            {"name": "Unsaved", "dtype": "Number", "guid": ""},
+        ]
+    )
+
+    rows = list(csv.reader(io.StringIO(generate_shared_parameter_content(parameters)), delimiter="\t"))
+
+    assert rows[7][1] == "kept-guid"
+    assert rows[8][1] == str(uuid.uuid5(uuid.UUID("3a7af2e6-3e41-4e49-9775-d3ef946f6bc4"), "Unsaved"))
+
+
 def test_shared_parameter_export_rejects_duplicate_names_and_unknown_types():
     duplicate_parameters = pd.DataFrame(
         [

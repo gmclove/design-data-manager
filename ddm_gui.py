@@ -5,6 +5,7 @@ import os
 import pickle
 import re
 import tkinter.font as tkfont
+import uuid
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
@@ -29,7 +30,8 @@ except ImportError:  # pragma: no cover
 
 from revit_schedule_macro_generator import generate_schedule_macro_source
 from revit_parameter_scheduler_export import generate_rfps_content
-from revit_shared_parameter_export import generate_shared_parameter_content
+from revit_shared_parameter_export import generate_shared_parameter_content, parameter_guid
+from revit_parameter_manager import guid_change_warning
 
 
 def _wrap_text_segment(text, max_width, font):
@@ -297,7 +299,7 @@ class DDMGUI:
 
     _default_grid_column_width_in = 1.0
     _database_csv_columns = [
-        "record_type", "name", "header_text", "grid_column_width", "dtype", "group_under",
+        "record_type", "name", "guid", "header_text", "grid_column_width", "dtype", "group_under",
         "formula", "instance_param", "default_value", "status", "validation_message", "client", "country",
         "category", "description", "family_name", "parameter_name", "group_name",
         "header_text_override", "grid_column_width_override", "override_entry", "caption",
@@ -305,7 +307,7 @@ class DDMGUI:
     ]
 
     _table_columns = {
-        "params": ["name", "header_text", "grid_column_width", "dtype", "group_under", "formula", "instance_param", "default_value", "status", "validation_message"],
+        "params": ["name", "header_text", "grid_column_width", "dtype", "group_under", "formula", "instance_param", "default_value", "status", "validation_message", "guid"],
         "families": ["name", "client", "country", "category", "description", "status", "validation_message"],
         "links": ["family_name", "parameter_name"],
         "groups": ["family_name", "group_name", "parameter_name", "header_text_override", "grid_column_width_override", "override_entry", "status", "validation_message"],
@@ -334,6 +336,7 @@ class DDMGUI:
         "override_entry": "Override Entry",
         "family_count": "Family Count",
         "parameter_count": "Parameter Count",
+        "guid": "GUID",
     }
 
     _schedule_summary_columns = ["name", "family_count", "parameter_count", "status", "validation_message"]
@@ -439,7 +442,7 @@ class DDMGUI:
         self.schedule_models = {}
 
         self._table_columns = {
-            "params": ["name", "header_text", "grid_column_width", "dtype", "group_under", "formula", "instance_param", "status", "validation_message"],
+            "params": ["name", "header_text", "grid_column_width", "dtype", "group_under", "formula", "instance_param", "status", "validation_message", "guid"],
             "families": ["name", "client", "country", "category", "description", "status", "validation_message"],
             "links": ["family_name", "parameter_name"],
             "groups": ["family_name", "group_name", "parameter_name", "header_text_override", "grid_column_width_override", "override_entry", "status", "validation_message"],
@@ -903,7 +906,7 @@ class DDMGUI:
         row_index = tree.index(row_id)
         current_value = tree.item(row_id, "values")[column_number] if column_number < len(tree.item(row_id, "values")) else ""
         field_name = columns[column_number]
-        if field_name in {"status", "validation_message"}:
+        if field_name in {"status", "validation_message", "guid"}:
             return
         dropdown_values = self._revit_dropdown_values(field_name)
 
@@ -939,11 +942,19 @@ class DDMGUI:
         entry.focus_set()
         entry.selection_range(0, tk.END)
 
+        # A rename opens a GUID prompt, which takes focus and fires <FocusOut>.
+        committing = False
+
         def commit_edit():
+            nonlocal committing
+            if committing:
+                return
+            committing = True
             try:
                 self._apply_cell_value(table_name, row_index, field_name, value_var.get())
             except ValueError as exc:
                 messagebox.showerror("Invalid value", str(exc), parent=popup)
+                committing = False
                 return
             popup.destroy()
 
@@ -1098,7 +1109,8 @@ class DDMGUI:
                 param = next((item for item in Param._instances if item.name == name), None)
                 if param is None:
                     param = Param(
-                        name=name, dtype=dtype, group_under=row.get("group_under") or None, value=row.get("value"),
+                        name=name, dtype=dtype, guid=parameter_guid(name, row.get("guid")),
+                        group_under=row.get("group_under") or None, value=row.get("value"),
                         formula=None, instance_param=instance_param,
                         header_text=header_text,
                         grid_column_width=grid_column_width,
@@ -1198,6 +1210,7 @@ class DDMGUI:
             self.params_df["grid_column_width"] = self._default_grid_column_width_in
         if "grid_column_width_override" not in self.family_groups_df.columns:
             self.family_groups_df["grid_column_width_override"] = ""
+        self._ensure_param_guids()
 
         warnings: List[str] = []
         param_models, family_models, family_param_map, schedule = self._build_model_validation_snapshot()
@@ -1330,6 +1343,39 @@ class DDMGUI:
         else:
             self.warning_text.insert("1.0", "Validation passed. No warnings found.")
 
+    def _ensure_param_guids(self):
+        """Store a GUID on every parameter, starting from the name-based GUID earlier exports used."""
+        if "guid" not in self.params_df.columns:
+            self.params_df["guid"] = ""
+        self.params_df["guid"] = self.params_df["guid"].astype(object)
+        for idx, row in self.params_df.iterrows():
+            name = str(row.get("name") or "").strip()
+            if name:
+                self.params_df.at[idx, "guid"] = parameter_guid(name, row.get("guid"))
+
+    def _confirm_param_rename(self, row_index: int, new_name: str) -> bool:
+        """Ask whether a rename assigns a new GUID. Returns False if the rename is cancelled."""
+        self._ensure_param_guids()
+        old_name = str(self.params_df.at[row_index, "name"] or "").strip()
+        if not old_name or new_name == old_name:
+            return True
+
+        choice = messagebox.askyesnocancel(
+            "Parameter GUID will change",
+            guid_change_warning(old_name, new_name)
+            + "\n\nYes: assign a new GUID (default)"
+            + "\nNo: keep the current GUID"
+            + "\nCancel: don't rename",
+            icon=messagebox.WARNING,
+            default=messagebox.YES,
+            parent=getattr(self, "root", None),
+        )
+        if choice is None:
+            return False
+        if choice:
+            self.params_df.at[row_index, "guid"] = str(uuid.uuid4())
+        return True
+
     def _apply_cell_value(self, table_name: str, row_index: int, column_name: str, new_value):
         if table_name == "params":
             df = self.params_df
@@ -1349,11 +1395,15 @@ class DDMGUI:
 
         if column_name in {"status", "validation_message"}:
             raise ValueError(f"{self._humanize_column_name(column_name)} is generated by validation and cannot be edited.")
+        if table_name == "params" and column_name == "guid":
+            raise ValueError("GUID is assigned automatically and changes only when a parameter is renamed.")
 
         if table_name == "params" and column_name == "name":
             new_value = "" if new_value is None else str(new_value).strip()
             if not new_value:
                 raise ValueError("Parameter name is required.")
+            if not self._confirm_param_rename(row_index, new_value):
+                return
         elif table_name == "params" and column_name == "grid_column_width":
             raw_width = "" if new_value is None else str(new_value).strip()
             if not raw_width:
@@ -1921,6 +1971,7 @@ class DDMGUI:
             self.family_groups_df["header_text_override"] = ""
         if "grid_column_width_override" not in self.family_groups_df.columns:
             self.family_groups_df["grid_column_width_override"] = ""
+        self._ensure_param_guids()
         self.schedule_models = {}
         self.checkpoint_path = Path(checkpoint_path)
         self.render_tables()

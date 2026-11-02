@@ -33,6 +33,11 @@ def _text(value):
     return str(value).strip()
 
 
+def parameter_guid(name, guid=None):
+    """Return the parameter's stored GUID, or the stable GUID derived from its name."""
+    return _text(guid) or str(uuid.uuid5(_GUID_NAMESPACE, name))
+
+
 def generate_shared_parameter_content(params_df: pd.DataFrame) -> str:
     """Return a Revit-format shared-parameter file with stable parameter GUIDs."""
     parameters = []
@@ -55,7 +60,7 @@ def generate_shared_parameter_content(params_df: pd.DataFrame) -> str:
 
         parameters.append(
             [
-                str(uuid.uuid5(_GUID_NAMESPACE, name)),
+                parameter_guid(name, parameter.get("guid")),
                 name,
                 data_type,
                 "",

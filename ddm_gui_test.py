@@ -739,6 +739,48 @@ def test_gui_cell_edit_updates_dataframe():
     assert gui.params_df.at[0, "status"] == "Ready"
 
 
+def test_parameter_guid_defaults_to_name_based_export_guid():
+    gui = make_test_gui()
+    gui.validate_all()
+
+    for _, row in gui.params_df.iterrows():
+        assert row["guid"] == gui_module.parameter_guid(row["name"])
+
+
+def test_gui_rename_prompts_and_assigns_new_guid_or_keeps_current(monkeypatch):
+    gui = make_test_gui()
+    gui.validate_all()
+    original_name = gui.params_df.at[0, "name"]
+    original_guid = gui.params_df.at[0, "guid"]
+    prompts = []
+    answers = iter([None, False, True])
+
+    def answer(title, message, **kwargs):
+        prompts.append(message)
+        return next(answers)
+
+    monkeypatch.setattr(gui_module.messagebox, "askyesnocancel", answer)
+
+    gui._apply_cell_value("params", 0, "name", "Cancelled")
+    assert gui.params_df.at[0, "name"] == original_name
+    assert gui.params_df.at[0, "guid"] == original_guid
+    assert f"'{original_name}' to 'Cancelled'" in prompts[0]
+
+    gui._apply_cell_value("params", 0, "name", "KeptGuid")
+    assert gui.params_df.at[0, "name"] == "KeptGuid"
+    assert gui.params_df.at[0, "guid"] == original_guid
+
+    gui._apply_cell_value("params", 0, "name", "NewGuid")
+    assert gui.params_df.at[0, "name"] == "NewGuid"
+    assert gui.params_df.at[0, "guid"] not in {original_guid, gui_module.parameter_guid("NewGuid")}
+
+    try:
+        gui._apply_cell_value("params", 0, "guid", "hand-typed")
+        raise AssertionError("GUID should not be editable")
+    except ValueError as exc:
+        assert "assigned automatically" in str(exc)
+
+
 def test_group_override_entry_updates_schedule_table():
     gui = make_test_gui()
     gui.family_groups_df = pd.DataFrame(

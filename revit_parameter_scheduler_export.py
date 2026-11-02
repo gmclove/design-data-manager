@@ -2,11 +2,11 @@
 
 import csv
 import io
-import uuid
 
 import pandas as pd
 
 from config.revit_dtype_definitions import REVIT_DTYPE_TABLE
+from revit_shared_parameter_export import parameter_guid
 
 
 RFPS_COLUMNS = [
@@ -29,7 +29,6 @@ RFPS_COLUMNS = [
     "UserModifiable",
 ]
 
-_GUID_NAMESPACE = uuid.UUID("3a7af2e6-3e41-4e49-9775-d3ef946f6bc4")
 _DATA_TYPE_EXPORT_NAMES = dict(
     zip(REVIT_DTYPE_TABLE["Data Types"], REVIT_DTYPE_TABLE["Export Name"])
 )
@@ -102,7 +101,7 @@ def generate_rfps_content(
         records.append(
             {
                 "TemplateName": family_name,
-                "GUID": str(uuid.uuid5(_GUID_NAMESPACE, parameter_name)),
+                "GUID": parameter_guid(parameter_name, parameter.get("guid")),
                 "Name": parameter_name,
                 "DataType": data_type,
                 "GroupNumber": "1",
