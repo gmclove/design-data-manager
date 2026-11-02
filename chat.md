@@ -1,0 +1,35 @@
+# Design Data Manager: handoff notes for Claude
+
+## Plan
+The living development plan is a Claude Docs doc: https://claude.ai/artifact/EVpeSRoyvJHmLp6cW37dtZ
+Read it at the start of a session (status, known issues, short-term checklist, decisions,
+changelog) and update it after finishing work: tick checklist items, mark issues fixed, add a
+changelog row (newest first).
+
+## Workflow
+- Merge finished work into both `dev` and `main`.
+- Work happens on feature branches; commit/push only when asked.
+- Run tests with `pytest` (config in `pyproject.toml` / `pytest.ini`).
+
+## Decisions so far
+- Renaming a parameter assigns a new GUID by default. The user is warned (Revit labels must be
+  remapped to the new GUID) and can choose to keep the current GUID. See `guid_change_warning`.
+- Model objects are the source of truth; the GUI should be a view on them.
+- Versioned JSON replaces pickle for saves.
+
+## Handoff state (2026-11-01)
+- `catalog-model` is deprecated: it was merged into `dev` and deleted. `dev` now has the
+  formula tokenizer and syntax checks (`formula.py`), the `Catalog` object (no more
+  `_instances` globals), JSON `Catalog.save`/`load`, the `FamType` fix, and the header text,
+  column width and header group features from the parallel rework.
+- `ddm_gui.py` is the GUI. Its tables are still its source of truth; each validation builds a
+  fresh `Catalog` from them. Next step: make the model the GUI's source of truth and switch
+  its saves to `Catalog.save` (check with the user who is editing `ddm_gui.py` first; someone
+  pushes Copilot-authored commits to `dev`/`main` in parallel, so always `git fetch` first).
+- `main` has not received this merge yet; only `dev` was asked for.
+- Known failing test (pre-existing on `dev`):
+  `ddm_gui_test.py::test_main_tab_table_headings_wrap_after_column_resize` (heading padding).
+- Git pushes work from the first machine over SSH. A new machine needs its own SSH key added
+  at https://github.com/settings/keys.
+- Open question: on the Schedules tab, is an override value per family within a schedule, or
+  for the family everywhere?

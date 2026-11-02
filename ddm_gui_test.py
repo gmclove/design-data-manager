@@ -404,21 +404,26 @@ def make_test_gui():
 
 def test_schedule_name_is_required_and_unique():
     module = load_model_module()
-    Schedule = module.Schedule
+    catalog = module.Catalog()
 
-    first = Schedule(name="Mechanical Schedule")
+    first = catalog.add_schedule("Mechanical Schedule")
     assert first.name == "Mechanical Schedule"
 
     try:
-        Schedule(name="Mechanical Schedule")
+        catalog.add_schedule("Mechanical Schedule")
         raise AssertionError("Duplicate schedule names should fail")
+    except ValueError:
+        pass
+
+    try:
+        module.Schedule(name="   ")
+        raise AssertionError("Blank schedule names should fail")
     except ValueError:
         pass
 
 
 def test_schedule_header_text_override_uses_parameter_default_and_round_trips():
     module = load_model_module()
-    module.Schedule._instances = []
     default_param = module.Param("Width", "Length")
     custom_param = module.Param("Height", "Length", header_text="Overall Height")
     family = module.Fam(name="Header Family", category="Doors", params=[default_param, custom_param])
@@ -433,14 +438,12 @@ def test_schedule_header_text_override_uses_parameter_default_and_round_trips():
     assert next(param.header_text for param in schedule.params if param.name == "Height") == "Schedule Height"
 
     serialized_schedule = schedule.to_dict()
-    module.Schedule._instances = []
     restored = module.Schedule.from_dict(serialized_schedule)
     assert next(param.header_text for param in restored.params if param.name == "Height") == "Schedule Height"
 
 
 def test_parameter_grid_column_width_can_be_overridden_per_schedule():
     module = load_model_module()
-    module.Schedule._instances = []
     width_param = module.Param("Width", "Length", grid_column_width=1.25)
     family = module.Fam(name="Width Family", category="Doors", params=[width_param])
     schedule = module.Schedule(name="Width Schedule", fams=[family])
@@ -450,7 +453,6 @@ def test_parameter_grid_column_width_can_be_overridden_per_schedule():
     assert next(param.grid_column_width for param in schedule.params if param.name == "Width") == 2.5
 
     serialized_schedule = schedule.to_dict()
-    module.Schedule._instances = []
     restored = module.Schedule.from_dict(serialized_schedule)
     assert restored.grid_column_width_overrides == {"Width": 2.5}
     restored.override_param("Width", grid_column_width=None)
@@ -499,7 +501,6 @@ def test_family_validation_rejects_duplicate_parameters():
 
 def test_schedule_contains_a_shared_parameter_only_once():
     module = load_model_module()
-    module.Schedule._instances = []
     family_a = module.Fam(
         name="Schedule Family A",
         category="Doors",
@@ -614,7 +615,6 @@ def test_sync_is_blocked_when_validation_errors_exist(monkeypatch):
 
 def test_schedule_header_groups_round_trip_with_parameter_references():
     module = load_model_module()
-    module.Schedule._instances = []
     family = module.Fam(
         name="Grouped Header Family",
         category="Doors",
@@ -628,7 +628,6 @@ def test_schedule_header_groups_round_trip_with_parameter_references():
 
     schedule.add_header_group("Size", ["Width", "Height"], top_row=0, bottom_row=0)
     serialized_schedule = schedule.to_dict()
-    module.Schedule._instances = []
     restored = module.Schedule.from_dict(serialized_schedule)
 
     assert restored.header_groups == [

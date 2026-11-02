@@ -4,136 +4,95 @@
 
 ```mermaid
 flowchart TD
-    A["Param._instances"] --> B["Param objects"]
-    B --> C{"validate()"}
-    C --> D["parse formula identifiers"]
-    D --> E{"identifier is allowed keyword?"}
-    E -->|"No"| F{"identifier matches a real Param name?"}
-    F -->|"No"| G["status = Error"]
-    F -->|"Yes"| H["valid"]
-    G --> I["validation_message"]
-
-    J["Schedule._instances"] --> K["Schedule objects"]
-    K --> L["self.fams"]
-    L --> M["Fam objects"]
-    M --> N["self.params"]
-    N --> O["Param objects"]
-
-    M --> P{"Fam.validate()"}
-    P --> Q["family has name?"]
-    Q -->|"No"| R["Error"]
-    Q -->|"Yes"| S["check formula refs in family params"]
-    S --> T{"any ref not in family_param_names?"}
-    T -->|"Yes"| U["Error"]
-    T -->|"No"| V["Ready"]
-
-    K --> W{"Schedule.validate()"}
-    W --> X["loop fams"]
-    X --> Y{"fam.status == Error?"}
-    Y -->|"Yes"| Z["aggregate family errors"]
-    Y -->|"No"| AA["continue"]
-    Z --> AB["status = Error"]
-
-    AC["ParameterManagerState"] --> AD["pickle checkpoint"]
-    AD --> AE["schedule.to_dict()"]
-    AE --> AF["Schedule.from_dict()"]
-    AF --> AG["rebuild object graph"]
+    C["Catalog"] --> P["params: Param definitions"]
+    C --> F["families: Fam"]
+    C --> S["schedules: Schedule"]
+    F -->|"shares"| P
+    F --> CP["own copies of the common IPS_GROUP_* params"]
+    F --> O["overrides by parameter name"]
+    S -->|"references"| F
+    S --> H["header text / column width overrides, header groups"]
+    T["FamType"] -->|"layers overrides on"| F
+    C --> V{"Catalog.validate()"}
+    V --> PV["Param.validate(): syntax + unknown references"]
+    V --> FV["Fam.validate(): name, duplicates, references outside the family"]
+    V --> SV["Schedule.validate(): rolls up family errors"]
+    C <--> J[("JSON: Catalog.save / Catalog.load")]
 ```
 
-## Current storage model
+## Ownership
 
-This project does not yet use a real database. The live data is stored in memory through Python object references:
+Everything that belongs together lives in a [`Catalog`](revit_parameter_manager.py). There are
+no global registries, so two catalogs never see each other's names.
 
-- `Param._instances` stores all parameter objects
-- each `Param` stores its default grid column width in inches; the Revit macro generator converts it to feet for the API
-- `Schedule._instances` stores all schedule objects
-- `Schedule.fams` stores family objects
-- `Schedule.header_groups` stores group captions, member parameter names, and header-row bounds
-- `Schedule.grid_column_width_overrides` stores per-schedule widths in inches keyed by parameter name
-- each `Fam` stores its own `params` and `overrides`
-- `ParameterManagerState.save()` serializes the schedule to a local pickle file
+- `Catalog.params` holds the parameter definitions. Names are required and unique within a catalog.
+- `Catalog.families` holds families. A family's catalog parameters are the *same objects*
+  as the catalog's, so editing or renaming a definition affects every family that uses it.
+- Each family also gets its own copies of the common `IPS_GROUP_*` parameters (same GUIDs),
+  so changing one family's copy never leaks into another family.
+- `Catalog.schedules` holds schedules, which reference families.
+- Objects built without a catalog (`Param('Width', 'Length')`) are standalone: they validate
+  against their own contents only.
 
-Header groups store stable parameter names rather than Revit column indices. A Revit adapter can resolve those names to the visible schedule columns when it calls `ViewSchedule.GroupHeaders`, since Revit's left/right indices exclude hidden fields.
-The effective grid width is the schedule override when present, otherwise the parameter default. Widths are entered and stored in inches; the Revit macro generator converts them to feet for `ScheduleField.GridColumnWidth`.
+Build through the catalog: `catalog.add_param(...)`, `catalog.add_family(name, param_names)`,
+`catalog.add_schedule(name, family_names)`, and the matching `remove_*` methods.
 
-Relevant code:
+## Schedules: headers and column widths
 
-- [revit_parameter_manager.py](revit_parameter_manager.py#L7-L39)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L251-L443)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L444-L557)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L559-L585)
+- Each `Param` has a default `header_text` (its name unless set) and a default
+  `grid_column_width` in inches.
+- `Schedule.header_text_overrides` and `Schedule.grid_column_width_overrides` hold per-schedule
+  values keyed by parameter name; `Schedule.override_param(...)` sets or clears them.
+- `Schedule.header_groups` stores group captions, member parameter names (which must be
+  contiguous in the schedule) and header-row bounds.
+- A schedule lists each parameter once, even when several of its families share it.
 
-## How validation works
+Header groups store stable parameter names rather than Revit column indices. A Revit adapter
+resolves those names to the visible schedule columns when it calls `ViewSchedule.GroupHeaders`,
+since Revit's left/right indices exclude hidden fields. The effective grid width is the
+schedule override when present, otherwise the parameter default; the Revit macro generator
+converts inches to feet for `ScheduleField.GridColumnWidth`.
 
-### `Param.validate()`
+## Formulas
 
-In [revit_parameter_manager.py](revit_parameter_manager.py#L120-L167), `Param.validate()`:
+[formula.py](formula.py) tokenizes formulas. Known parameter names are matched first, longest
+first and only on identifier boundaries, so `Rough Width` is one reference and `Width` never
+matches inside `GlassWidth`. Leftover identifiers that are not formula functions (`IF`, `MAX`,
+`PI`, ...) are unknown references.
 
-1. reads the formula and ignores quoted strings
-2. matches known parameter names from `Param._instances`, longest first, on identifier
-   boundaries (so `Rough Width` is one reference and `Width` never matches inside `GlassWidth`)
-3. treats any remaining identifier that is not a formula function (`ABS`, `MAX`, `IF`, ...) as unknown
+`check_syntax` reports unbalanced parentheses, unterminated strings, unexpected characters, and
+missing values or operators.
 
-If anything is unknown, it marks the parameter as `Error`. The scanning lives in
-[formula.py](formula.py) and is shared by `Param`, `Fam`, and parameter renames.
+## Validation
 
-### `Fam.validate()`
+- `Param.validate()` flags syntax problems and references to names the catalog doesn't know.
+- `Fam.validate()` flags a family with no name, no parameters of its own, duplicate
+  parameters, or formulas that reference catalog parameters the family doesn't include.
+- `Schedule.validate()` rolls up its families' errors.
+- `Catalog.validate()` runs all three and returns `(kind, name, message)` for each error.
 
-In [revit_parameter_manager.py](revit_parameter_manager.py#L275-L318), `Fam.validate()`:
+## Renames and GUIDs
 
-1. confirms the family has a name
-2. confirms it contains parameters
-3. checks each parameter formula
-4. compares referenced identifiers with:
-   - known global parameter names
-   - the family’s own parameter names
+`Catalog.rename_param` (or `Param.rename`, `Fam.rename_param`, `Schedule.rename_param`) rewrites
+every formula that references the parameter, and moves overrides, schedule header/width
+overrides and header-group members keyed by its old name.
 
-If a formula references a parameter that exists globally but is not attached to that family, it flags the family as invalid.
-
-### `Schedule.validate()`
-
-In [revit_parameter_manager.py](revit_parameter_manager.py#L483-L501), `Schedule.validate()`:
-
-1. iterates through each family in `self.fams`
-2. calls `fam.validate()`
-3. rolls up any family errors into the schedule status
-
-So the schedule is a summary validator and aggregator, rather than the original source of truth.
-
-## How overrides are checked
-
-Overrides are stored in memory on the model objects rather than in a database table:
-
-- `Fam.overrides` holds override dictionaries by parameter name
-- `Fam.override_param(...)` validates allowed keys with `Param.validate_overrides(...)`
-- `Schedule.override_param(...)` applies overrides across families and refreshes the flattened params list
-
-Relevant code:
-
-- [revit_parameter_manager.py](revit_parameter_manager.py#L350-L365)
-- [revit_parameter_manager.py](revit_parameter_manager.py#L520-L557)
+A rename assigns a **new GUID by default**. Pass `keep_guid=True` to keep the current one.
+`guid_change_warning()` gives the text to show first: Revit labels that use the parameter must
+be remapped to the new GUID if it changes.
 
 ## Persistence
 
-The only persistence mechanism currently in use is the checkpoint file created by `ParameterManagerState`:
+`Catalog.save(path, extra=None)` writes versioned JSON (`version: 2`); `Catalog.load(path)`
+returns `(catalog, extra)`. Families store catalog parameters by name and family-local
+parameters in full; schedules in a catalog store family names. A standalone schedule's
+`to_dict()` embeds its families instead.
 
-- [revit_parameter_manager.py](revit_parameter_manager.py#L559-L585)
+## GUI
 
-It saves:
+[ddm_gui.py](ddm_gui.py) keeps its data in DataFrames (the tables are its source of truth) and
+saves them in its own CSV/checkpoint files. On every validation it builds a fresh `Catalog` from
+the tables and copies each object's status and message back into the rows.
 
-- `version`
-- `schedule`: `self.schedule.to_dict()`
-- schedule-level header groups as part of the schedule dictionary
-
-and reloads with `Schedule.from_dict(...)`.
-
-## Short summary
-
-The current architecture is:
-
-- live in-memory object graph
-- validation performed by object methods
-- checkpoint persistence via pickle
-- no separate database table/query layer yet
-
-This gives you a model-first validation setup where the core objects are the source of truth, and the UI simply reflects that state.
+Making the model the GUI's source of truth (and switching its saves to `Catalog.save`) is still
+open; see the development plan.

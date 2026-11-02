@@ -1069,10 +1069,9 @@ class DDMGUI:
         Param = model_module.Param
         Fam = model_module.Fam
         Schedule = model_module.Schedule
-
-        current_param_names = set(str(name).strip() for name in self.params_df["name"].dropna().astype(str).tolist() if str(name).strip())
-        existing_instances = getattr(Param, "_instances", [])
-        Param._instances = [param for param in existing_instances if param.name not in current_param_names]
+        # Each validation pass builds a fresh catalog from the tables, so names
+        # from earlier passes (or deleted rows) never leak into this one.
+        catalog = model_module.Catalog()
 
         param_models = []
         for _, row in self.params_df.iterrows():
@@ -1107,7 +1106,7 @@ class DDMGUI:
                         grid_column_width = float(grid_column_width)
                     except (TypeError, ValueError):
                         raise ValueError("Grid column width must be a number in inches.") from None
-                param = next((item for item in Param._instances if item.name == name), None)
+                param = catalog.get_param(name)
                 if param is None:
                     param = Param(
                         name=name, dtype=dtype, guid=parameter_guid(name, row.get("guid")),
@@ -1115,6 +1114,7 @@ class DDMGUI:
                         formula=None, instance_param=instance_param,
                         header_text=header_text,
                         grid_column_width=grid_column_width,
+                        catalog=catalog,
                     )
                 else:
                     param.dtype = dtype
@@ -1181,6 +1181,7 @@ class DDMGUI:
                     description=row.get("description"),
                     category=row.get("category"),
                     params=family_params,
+                    catalog=catalog,
                 )
                 family.validate()
                 family_models[family_name] = family
@@ -1197,7 +1198,7 @@ class DDMGUI:
                 family.validation_message = str(exc)
                 family_models[family_name] = family
 
-        schedule = Schedule(fams=list(family_models.values()))
+        schedule = Schedule(fams=list(family_models.values()), catalog=catalog)
         schedule.validate()
 
         return param_models, family_models, family_param_map, schedule

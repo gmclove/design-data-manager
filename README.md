@@ -2,7 +2,8 @@
 
 Catalog, validate and sync Revit parameters, families and schedules.
 
-- `revit_parameter_manager.py`: the model (`Param`, `Fam`, `FamType`, `Schedule`) and its validation
+- `revit_parameter_manager.py`: the model (`Catalog`, `Param`, `Fam`, `FamType`, `Schedule`), validation and JSON save/load
+- `formula.py`: formula tokenizer, syntax checks and reference scanning
 - `ddm_gui.py`: Tkinter review/edit GUI
 - `quickbase_integration.py`: Quickbase REST client and sync service (work in progress)
 - `config/`: Revit reference tables (data types, family categories, property-palette groups)
