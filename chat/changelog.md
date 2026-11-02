@@ -11,7 +11,7 @@ Newest first. One entry per piece of work; link commits where useful.
   removed, config lives in `pyproject.toml`.
 - README: correct conda env name, list the export modules, `tests/`, `data/` and `chat/`.
 - `parameter_model_overview.md`: GUI section covers stored GUIDs and rename reference updates.
-- Second machine's git identity set to George (repo-local).
+- Second machine's git identity set to gmclove (repo-local).
 
 ## 2026-11-01: AI notes moved to `chat/` folder
 - `chat.md` split into `chat/handoff.md`, `plan.md`, `decisions.md` and this changelog, with a

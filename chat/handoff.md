@@ -16,7 +16,7 @@ folder works.
 - **First machine:** pushes over SSH; commits authored as George.
 - **Second machine** (Windows, OneDrive path, HTTPS remote): commits before 2026-11-01's
   housekeeping are authored as "GitHub Copilot" (its old git identity), not a separate person.
-  Its repo-local git identity is now George. It cannot reach claude.ai artifacts (corporate TLS inspection: `UNABLE_TO_VERIFY_LEAF_SIGNATURE`),
+  Its repo-local git identity is now gmclove <george.love077@gmail.com>. It cannot reach claude.ai artifacts (corporate TLS inspection: `UNABLE_TO_VERIFY_LEAF_SIGNATURE`),
   which is why the plan moved into this folder. Fix would be `NODE_EXTRA_CA_CERTS` pointing at the
   IPS root certificate.
 - A new machine needs its own SSH key added at https://github.com/settings/keys.
