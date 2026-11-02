@@ -1,8 +1,8 @@
-import importlib.util
+import importlib
 import os
 import pickle
 import re
-from pathlib import Path
+import uuid
 from typing import Iterable, List, Optional, Sequence
 
 import pandas as pd
@@ -24,7 +24,7 @@ class ParameterCatalogGUI:
     """Simple dataframe-first GUI for reviewing validation state and syncing to Quickbase."""
 
     _table_columns = {
-        "params": ["name", "dtype", "group_under", "formula", "instance_param", "status", "validation_message"],
+        "params": ["name", "dtype", "group_under", "formula", "instance_param", "status", "validation_message", "guid"],
         "families": ["name", "client", "country", "category", "description", "status", "validation_message"],
         "links": ["family_name", "parameter_name"],
         "groups": ["family_name", "group_name", "parameter_name", "override_entry", "status", "validation_message"],
@@ -46,6 +46,7 @@ class ParameterCatalogGUI:
         "parameter_name": "Parameter Name",
         "group_name": "Group Name",
         "override_entry": "Override Entry",
+        "guid": "GUID",
     }
 
     def __init__(self, root: tk.Tk):
@@ -142,7 +143,7 @@ class ParameterCatalogGUI:
         self.group_tree = None
 
         self._table_columns = {
-            "params": ["name", "dtype", "group_under", "formula", "instance_param", "status", "validation_message"],
+            "params": ["name", "dtype", "group_under", "formula", "instance_param", "status", "validation_message", "guid"],
             "families": ["name", "client", "country", "category", "description", "status", "validation_message"],
             "links": ["family_name", "parameter_name"],
             "groups": ["family_name", "group_name", "parameter_name", "override_entry", "status", "validation_message"],
@@ -308,6 +309,8 @@ class ParameterCatalogGUI:
         row_index = tree.index(row_id)
         current_value = tree.item(row_id, "values")[column_number] if column_number < len(tree.item(row_id, "values")) else ""
         field_name = columns[column_number]
+        if field_name == "guid":
+            return
         dropdown_values = self._revit_dropdown_values(field_name)
 
         popup = tk.Toplevel(self.root)
@@ -338,7 +341,13 @@ class ParameterCatalogGUI:
         entry.focus_set()
         entry.selection_range(0, tk.END)
 
+        committed = False
+
         def commit_edit():
+            nonlocal committed
+            if committed:
+                return
+            committed = True
             self._apply_cell_value(table_name, row_index, field_name, value_var.get())
             popup.destroy()
 
@@ -465,17 +474,12 @@ class ParameterCatalogGUI:
             tree.insert("", "end", values=["" if value is None else value for value in values])
 
     def _load_revit_parameter_manager(self):
-        module_path = Path(__file__).with_name("revit-parameter-manager.py")
-        if not module_path.exists():
-            return None
+        # Reload gives each validation pass fresh class-level registries
+        # (Param._instances, Schedule._instances). Remove once the model owns its
+        # state through a Catalog object (plan step 4).
+        import revit_parameter_manager
 
-        spec = importlib.util.spec_from_file_location("revit_parameter_manager_model", module_path)
-        if spec is None or spec.loader is None:
-            return None
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        return importlib.reload(revit_parameter_manager)
 
     def _build_model_validation_snapshot(self):
         model_module = self._load_revit_parameter_manager()
@@ -504,6 +508,7 @@ class ParameterCatalogGUI:
                     param = Param(
                         name=name,
                         dtype=dtype,
+                        guid=str(row.get("guid") or "") or None,
                         group_under=row.get("group_under") or None,
                         value=row.get("value"),
                         formula=None,
@@ -591,6 +596,7 @@ class ParameterCatalogGUI:
         if not hasattr(self, "group_tree"):
             self.group_tree = None
 
+        self._ensure_param_guids()
         warnings: List[str] = []
         param_models, family_models, family_param_map, schedule = self._build_model_validation_snapshot()
 
@@ -634,6 +640,49 @@ class ParameterCatalogGUI:
         else:
             self.warning_text.insert("1.0", "Validation passed. No warnings found.")
 
+    def _ensure_param_guids(self):
+        """Give every parameter row a stable GUID so validation passes don't mint new ones."""
+        if "guid" not in self.params_df.columns:
+            self.params_df["guid"] = ""
+        for idx, value in self.params_df["guid"].items():
+            if not str(value or "").strip() or str(value) == "nan":
+                self.params_df.at[idx, "guid"] = str(uuid.uuid4())
+
+    def _confirm_guid_change(self, old_name: str, new_name: str) -> Optional[bool]:
+        """Ask whether a rename should assign a new GUID.
+
+        Returns True for a new GUID (the default), False to keep the current one,
+        or None to cancel the rename.
+        """
+        model = self._load_revit_parameter_manager()
+        return messagebox.askyesnocancel(
+            "Parameter GUID will change",
+            model.guid_change_warning(old_name, new_name)
+            + "\n\nYes: assign a new GUID (default)"
+            + "\nNo: keep the current GUID"
+            + "\nCancel: don't rename",
+            icon=messagebox.WARNING,
+            default=messagebox.YES,
+        )
+
+    def _rename_param_row(self, row_index: int, new_name: str) -> bool:
+        """Apply a rename from the GUI, prompting about the GUID. Returns False if cancelled."""
+        self._ensure_param_guids()
+        old_name = str(self.params_df.at[row_index, "name"] or "").strip()
+        new_name = str(new_name or "").strip()
+        if not new_name or new_name == old_name:
+            return new_name == old_name
+
+        if old_name:
+            choice = self._confirm_guid_change(old_name, new_name)
+            if choice is None:
+                return False
+            if choice:
+                self.params_df.at[row_index, "guid"] = str(uuid.uuid4())
+
+        self.params_df.at[row_index, "name"] = new_name
+        return True
+
     def _apply_cell_value(self, table_name: str, row_index: int, column_name: str, new_value):
         if table_name == "params":
             df = self.params_df
@@ -651,7 +700,10 @@ class ParameterCatalogGUI:
         if row_index < 0 or row_index >= len(df):
             return
 
-        if column_name == "instance_param":
+        if table_name == "params" and column_name == "name":
+            if not self._rename_param_row(row_index, new_value):
+                return
+        elif column_name == "instance_param":
             normalized = str(new_value).strip().lower()
             df.at[row_index, column_name] = normalized in {"true", "1", "yes", "y"}
         else:

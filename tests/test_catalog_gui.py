@@ -1,4 +1,4 @@
-import importlib.util
+import importlib
 from pathlib import Path
 import tkinter as tk
 
@@ -7,12 +7,13 @@ import pandas as pd
 from parameter_catalog_gui import ParameterCatalogGUI
 
 
+TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
+
+
 def load_model_module():
-    module_path = Path(__file__).with_name("revit-parameter-manager.py")
-    spec = importlib.util.spec_from_file_location("revit_parameter_manager_model", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    import revit_parameter_manager
+
+    return importlib.reload(revit_parameter_manager)
 
 
 class DummyText:
@@ -24,7 +25,7 @@ class DummyText:
 
 
 def load_test_case():
-    params_df = pd.read_csv("test_data/parameter_catalog_test_data.csv", keep_default_na=False)
+    params_df = pd.read_csv(TEST_DATA_DIR / "parameter_catalog_test_data.csv", keep_default_na=False)
     params_df["instance_param"] = params_df["instance_param"].astype(str).str.upper().eq("TRUE")
     params_df["validation_message"] = params_df["validation_message"].fillna("").astype(str)
 
@@ -432,6 +433,55 @@ def test_main_tabs_are_parameters_families_and_schedules():
         assert tab_texts == ["Parameters", "Families", "Schedules"]
     finally:
         root.destroy()
+
+
+
+def _rename_row(gui, choice, new_name="PanelLength"):
+    gui._confirm_guid_change = lambda old, new: choice
+    gui.validate_all()
+    before = gui.params_df.at[0, "guid"]
+    gui._apply_cell_value("params", 0, "name", new_name)
+    return before, gui.params_df.at[0, "guid"]
+
+
+def test_param_rows_get_stable_guids_across_validation():
+    gui = load_test_case()
+    gui.validate_all()
+    first = gui.params_df["guid"].tolist()
+    gui.validate_all()
+    assert gui.params_df["guid"].tolist() == first
+    assert all(first)
+
+
+def test_gui_rename_assigns_new_guid_when_confirmed():
+    gui = load_test_case()
+    before, after = _rename_row(gui, True)
+    assert gui.params_df.at[0, "name"] == "PanelLength"
+    assert after != before
+
+
+def test_gui_rename_can_keep_guid():
+    gui = load_test_case()
+    before, after = _rename_row(gui, False)
+    assert gui.params_df.at[0, "name"] == "PanelLength"
+    assert after == before
+
+
+def test_gui_rename_cancel_leaves_row_unchanged():
+    gui = load_test_case()
+    before, after = _rename_row(gui, None)
+    assert gui.params_df.at[0, "name"] == "Length"
+    assert after == before
+
+
+def test_gui_rename_prompt_not_shown_when_name_unchanged():
+    gui = load_test_case()
+
+    def fail(old, new):
+        raise AssertionError("prompt should not be shown")
+
+    gui._confirm_guid_change = fail
+    gui._apply_cell_value("params", 0, "name", "Length")
 
 
 if __name__ == "__main__":
