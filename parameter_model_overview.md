@@ -4,40 +4,40 @@
 
 ```mermaid
 flowchart TD
-    A[Param._instances] --> B[Param objects]
-    B --> C{validate()}
-    C --> D[parse formula identifiers]
-    D --> E{identifier is allowed keyword?}
-    E -->|No| F{identifier matches a real Param name?}
-    F -->|No| G[status = Error]
-    F -->|Yes| H[valid]
-    G --> I[validation_message]
+    A["Param._instances"] --> B["Param objects"]
+    B --> C{"validate()"}
+    C --> D["parse formula identifiers"]
+    D --> E{"identifier is allowed keyword?"}
+    E -->|"No"| F{"identifier matches a real Param name?"}
+    F -->|"No"| G["status = Error"]
+    F -->|"Yes"| H["valid"]
+    G --> I["validation_message"]
 
-    J[Schedule._instances] --> K[Schedule objects]
-    K --> L[self.fams]
-    L --> M[Fam objects]
-    M --> N[self.params]
-    N --> O[Param objects]
+    J["Schedule._instances"] --> K["Schedule objects"]
+    K --> L["self.fams"]
+    L --> M["Fam objects"]
+    M --> N["self.params"]
+    N --> O["Param objects"]
 
-    M --> P{Fam.validate()}
-    P --> Q[family has name?]
-    Q -->|No| R[Error]
-    Q -->|Yes| S[check formula refs in family params]
-    S --> T{any ref not in family_param_names?}
-    T -->|Yes| U[Error]
-    T -->|No| V[Ready]
+    M --> P{"Fam.validate()"}
+    P --> Q["family has name?"]
+    Q -->|"No"| R["Error"]
+    Q -->|"Yes"| S["check formula refs in family params"]
+    S --> T{"any ref not in family_param_names?"}
+    T -->|"Yes"| U["Error"]
+    T -->|"No"| V["Ready"]
 
-    K --> W{Schedule.validate()}
-    W --> X[loop fams]
-    X --> Y{fam.status == Error?}
-    Y -->|Yes| Z[aggregate family errors]
-    Y -->|No| AA[continue]
-    Z --> AB[status = Error]
+    K --> W{"Schedule.validate()"}
+    W --> X["loop fams"]
+    X --> Y{"fam.status == Error?"}
+    Y -->|"Yes"| Z["aggregate family errors"]
+    Y -->|"No"| AA["continue"]
+    Z --> AB["status = Error"]
 
-    AC[ParameterManagerState] --> AD[pickle checkpoint]
-    AD --> AE[schedule.to_dict()]
-    AE --> AF[Schedule.from_dict()]
-    AF --> AG[rebuild object graph]
+    AC["ParameterManagerState"] --> AD["pickle checkpoint"]
+    AD --> AE["schedule.to_dict()"]
+    AE --> AF["Schedule.from_dict()"]
+    AF --> AG["rebuild object graph"]
 ```
 
 ## Current storage model
@@ -45,10 +45,16 @@ flowchart TD
 This project does not yet use a real database. The live data is stored in memory through Python object references:
 
 - `Param._instances` stores all parameter objects
+- each `Param` stores its default grid column width in inches; the Revit macro generator converts it to feet for the API
 - `Schedule._instances` stores all schedule objects
 - `Schedule.fams` stores family objects
+- `Schedule.header_groups` stores group captions, member parameter names, and header-row bounds
+- `Schedule.grid_column_width_overrides` stores per-schedule widths in inches keyed by parameter name
 - each `Fam` stores its own `params` and `overrides`
 - `ParameterManagerState.save()` serializes the schedule to a local pickle file
+
+Header groups store stable parameter names rather than Revit column indices. A Revit adapter can resolve those names to the visible schedule columns when it calls `ViewSchedule.GroupHeaders`, since Revit's left/right indices exclude hidden fields.
+The effective grid width is the schedule override when present, otherwise the parameter default. Widths are entered and stored in inches; the Revit macro generator converts them to feet for `ScheduleField.GridColumnWidth`.
 
 Relevant code:
 
@@ -117,6 +123,7 @@ It saves:
 
 - `version`
 - `schedule`: `self.schedule.to_dict()`
+- schedule-level header groups as part of the schedule dictionary
 
 and reloads with `Schedule.from_dict(...)`.
 

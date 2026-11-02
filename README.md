@@ -3,7 +3,7 @@
 Catalog, validate and sync Revit parameters, families and schedules.
 
 - `revit_parameter_manager.py`: the model (`Param`, `Fam`, `FamType`, `Schedule`) and its validation
-- `parameter_catalog_gui.py`: Tkinter review/edit GUI
+- `ddm_gui.py`: Tkinter review/edit GUI
 - `quickbase_integration.py`: Quickbase REST client and sync service (work in progress)
 - `config/`: Revit reference tables (data types, family categories, property-palette groups)
 - `parameter_model_overview.md`: how the model and validation fit together
@@ -20,7 +20,7 @@ Or with pip: `pip install -e ".[dev]"` (Python 3.12+, with Tkinter available).
 ## Run
 
 ```bash
-python parameter_catalog_gui.py   # launch the GUI
+python ddm_gui.py                 # launch the GUI
 pytest                            # run the tests
 ```
 

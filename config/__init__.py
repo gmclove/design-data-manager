@@ -1,1 +1,1 @@
-"""Configuration catalogs for the Revit parameter manager."""
+"""Configuration definitions for the Revit parameter manager."""
