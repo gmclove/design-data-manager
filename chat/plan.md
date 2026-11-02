@@ -28,4 +28,7 @@ first machine: copy its open items into this file, then treat this file as the p
 - `tests/test_ddm_gui.py::test_main_tab_table_headings_wrap_after_column_resize` fails (heading
   padding assertion). Pre-existing on `dev`.
 - On the second machine, Tk sometimes fails to start inside tests ("Can't find a usable
-  tk.tcl"), so a different GUI test can fail on any given run. Rerunning passes.
+  tk.tcl", "couldn't read file ... auto.tcl: no such file" for a file that exists), so a
+  different GUI test can fail on any given run. Rerunning passes. Suspected cause: the `.conda`
+  environment sits inside the OneDrive folder, and OneDrive sync makes reads fail now and then.
+  Worth trying an environment outside OneDrive.

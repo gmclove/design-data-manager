@@ -1052,6 +1052,35 @@ def test_wide_variety_examples_cover_multiple_families_and_schedules():
 
 # --- header canvas and tables ------------------------------------------------
 
+def test_placeholder_entry_shows_gray_hint_until_typing_and_never_returns_it():
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        entry = gui_module.PlaceholderEntry(root, placeholder="Blank Uses Family Default Value")
+
+        assert entry.get() == ""
+        assert ttk.Entry.get(entry) == "Blank Uses Family Default Value"
+        assert entry.cget("style") == "Placeholder.TEntry"
+
+        # Deleting or moving through the hint is ignored; typing a character clears it first.
+        assert entry._on_key(SimpleNamespace(keysym="BackSpace", char="\b")) == "break"
+        entry._on_key(SimpleNamespace(keysym="7", char="7"))
+        assert ttk.Entry.get(entry) == ""
+        assert entry.cget("style") == "TEntry"
+        ttk.Entry.insert(entry, 0, "7")
+        assert entry.get() == "7"
+
+        entry.delete(0, tk.END)
+        entry._show_if_empty()
+        assert entry.get() == ""
+        assert ttk.Entry.get(entry) == "Blank Uses Family Default Value"
+
+        entry.insert(0, "2.25")
+        assert entry.get() == "2.25"
+    finally:
+        root.destroy()
+
+
 def test_schedule_header_text_wraps_at_underscores_and_camel_case():
     canvas = object.__new__(ScheduleHeaderCanvas)
     canvas.header_font = SimpleNamespace(measure=lambda text: len(text) * 6)

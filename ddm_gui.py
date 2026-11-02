@@ -310,6 +310,66 @@ class ScheduleHeaderCanvas(tk.Canvas):
 
 
 
+class PlaceholderEntry(ttk.Entry):
+    """A ``ttk.Entry`` that shows gray instructions while it is empty.
+
+    The placeholder clears when the user starts typing (not on focus, so a focused
+    box still shows it) and comes back when the box is emptied. ``get()`` returns
+    ``""`` while the placeholder is showing.
+    """
+
+    _style_name = "Placeholder.TEntry"
+
+    def __init__(self, master, placeholder: str = "", **kwargs):
+        super().__init__(master, **kwargs)
+        self.placeholder = placeholder
+        self._normal_style = kwargs.get("style", "TEntry")
+        self._showing = False
+        ttk.Style(self).configure(self._style_name, foreground="#9ca3af")
+        self.bind("<KeyPress>", self._on_key, add="+")
+        self.bind("<KeyRelease>", lambda _event: self._show_if_empty(), add="+")
+        self.bind("<FocusIn>", lambda _event: self._park_cursor(), add="+")
+        self.bind("<ButtonRelease-1>", lambda _event: self._park_cursor(), add="+")
+        self.bind("<FocusOut>", lambda _event: self._show_if_empty(), add="+")
+        self._show_if_empty()
+
+    def get(self):
+        return "" if self._showing else super().get()
+
+    def insert(self, index, string):
+        self._hide()
+        super().insert(index, string)
+
+    def _show_if_empty(self):
+        if self._showing or not self.placeholder or super().get():
+            return
+        super().insert(0, self.placeholder)
+        self.configure(style=self._style_name)
+        self._showing = True
+        self._park_cursor()
+
+    def _hide(self):
+        if not self._showing:
+            return
+        super().delete(0, tk.END)
+        self.configure(style=self._normal_style)
+        self._showing = False
+
+    def _park_cursor(self):
+        if self._showing:
+            self.selection_clear()
+            self.icursor(0)
+
+    def _on_key(self, event):
+        if not self._showing:
+            return None
+        if event.keysym in {"BackSpace", "Delete", "Left", "Right", "Home", "End"}:
+            return "break"
+        if event.char and event.char.isprintable():
+            self._hide()
+        return None
+
+
 class DDMGUI:
     """Tkinter review/edit GUI over a parameter ``Catalog``.
 
@@ -1001,23 +1061,24 @@ class DDMGUI:
         dialog.wait_window()
         return result["answer"]
 
-    def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save):
+    def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save, placeholder: str = ""):
         """A small dialog for one value. ``on_save(value)`` returns ``False`` to keep it open."""
         editor = tk.Toplevel(parent)
         editor.title(title)
         editor.transient(parent)
         editor.grab_set()
-        editor.geometry("420x170")
+        editor.geometry("420x150")
         ttk.Label(editor, text=prompt, style="Section.TLabel", wraplength=400).pack(anchor="w", padx=10, pady=(10, 4))
-        value_var = tk.StringVar(value=current_value)
-        entry = ttk.Entry(editor, textvariable=value_var)
+        entry = PlaceholderEntry(editor, placeholder=placeholder)
+        if current_value:
+            entry.insert(0, current_value)
+            entry.selection_range(0, tk.END)
         entry.pack(fill="x", padx=10, pady=4)
         entry.focus_set()
-        entry.selection_range(0, tk.END)
 
         def save():
             try:
-                saved = on_save(value_var.get())
+                saved = on_save(entry.get())
             except ValueError as exc:
                 messagebox.showerror("Invalid value", str(exc), parent=editor)
                 return
@@ -1224,9 +1285,10 @@ class DDMGUI:
             self._edit_value_dialog(
                 form,
                 "Override Family Default Value",
-                f"{fam.name}\n{parameter_name} =\n(Blank Uses the Parameter Default Value)",
+                f"{fam.name}\n{parameter_name} =",
                 "" if current is None else str(current),
                 save,
+                placeholder="Blank Uses Parameter Default Value",
             )
 
         value_tree.bind("<Double-1>", edit_value)
@@ -1281,27 +1343,25 @@ class DDMGUI:
                 editor.transient(form)
                 editor.grab_set()
                 editor.geometry("420x210")
-                ttk.Label(
-                    editor,
-                    text=f"Header text (blank uses '{default_header}'): ",
-                    style="Section.TLabel",
-                ).pack(anchor="w", padx=10, pady=(10, 4))
-                header_var = tk.StringVar(value=current_override)
-                header_entry = ttk.Entry(editor, textvariable=header_var)
+                ttk.Label(editor, text="Schedule Header Text", style="Section.TLabel").pack(
+                    anchor="w", padx=10, pady=(10, 4)
+                )
+                header_entry = PlaceholderEntry(editor, placeholder=default_header)
+                if current_override:
+                    header_entry.insert(0, current_override)
                 header_entry.pack(fill="x", padx=10, pady=4)
-                ttk.Label(
-                    editor,
-                    text=f"Column width in inches (blank uses {default_width:g} in):",
-                    style="Section.TLabel",
-                ).pack(anchor="w", padx=10, pady=(8, 4))
-                width_var = tk.StringVar(value=current_width_override)
-                width_entry = ttk.Entry(editor, textvariable=width_var)
+                ttk.Label(editor, text="Schedule Column Width (in)", style="Section.TLabel").pack(
+                    anchor="w", padx=10, pady=(8, 4)
+                )
+                width_entry = PlaceholderEntry(editor, placeholder=f"{default_width:g}")
+                if current_width_override:
+                    width_entry.insert(0, current_width_override)
                 width_entry.pack(fill="x", padx=10, pady=4)
                 header_entry.focus_set()
 
                 def save_header_override():
                     try:
-                        self._set_schedule_column(selected_name, parameter_name, header_var.get(), width_var.get())
+                        self._set_schedule_column(selected_name, parameter_name, header_entry.get(), width_entry.get())
                     except ValueError as exc:
                         messagebox.showwarning("Invalid width", str(exc), parent=editor)
                         return
@@ -1417,9 +1477,10 @@ class DDMGUI:
             self._edit_value_dialog(
                 form,
                 "Override Schedule Default Value",
-                f"{selected_name}: {family_name}\n{parameter_name} =\n(Blank Uses the Family Default Value)",
+                f"{selected_name}: {family_name}\n{parameter_name} =",
                 "" if current is None else str(current),
                 save,
+                placeholder="Blank Uses Family Default Value",
             )
 
         value_tree.bind("<Double-1>", edit_value)

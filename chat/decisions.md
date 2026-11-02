@@ -34,6 +34,9 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   - **Schedule Default Value**: one family's value in one schedule.
   The verb is "Override" or "Clear", e.g. "Override Schedule Default Value for These Families?".
 - **Context lines name the place plainly:** `Family_A`, or `Schedule A: Family_A`.
+- **Instructions inside a text box are gray placeholder text** (`PlaceholderEntry`), in Title Case,
+  e.g. "Blank Uses Family Default Value", or the default the box falls back to (`Width`, `1`).
+  The hint clears when typing starts and returns when the box is emptied.
 - Keep wording in one place (`DDMGUI._override_questions`) so it's easy to adjust.
 
 ## GUI
