@@ -930,16 +930,21 @@ class DDMGUI:
         return True
 
     def _override_questions(self, param_name: str, value, location):
-        """The wording of the override prompt: ``(heading, list label, parameter checkbox)``."""
+        """The wording of the override prompt: ``(heading, list label, parameter checkbox)``.
+
+        The three levels are always named the same way: Parameter Default Value
+        (the parameter's own value), Family Default Value (a family's override) and
+        Schedule Default Value (one family's value in one schedule).
+        """
         family_name, schedule_name = location
         verb = "Clear" if value is None else "Override"
         assignment = f"{param_name} = {'(no value)' if value is None else value}"
         if schedule_name is None:
-            heading = f"{verb} {family_name} Value\n{assignment}"
-            list_label = f"{verb} {family_name} in Other Schedules?"
+            heading = f"{verb} Family Default Value\n{family_name}\n{assignment}"
+            list_label = f"{verb} Schedule Default Value in These Schedules?"
         else:
-            heading = f"{verb} {family_name} Value in {schedule_name}\n{assignment}"
-            list_label = f"{verb} Other Families in {schedule_name}?"
+            heading = f"{verb} Schedule Default Value\n{schedule_name}: {family_name}\n{assignment}"
+            list_label = f"{verb} Schedule Default Value for These Families?"
         parameter = f"{verb} Parameter Default Value?\n{assignment}"
         return heading, list_label, parameter
 
@@ -951,10 +956,10 @@ class DDMGUI:
         """
         heading, list_label, parameter_text = self._override_questions(param_name, value, location)
         dialog = tk.Toplevel(self.root)
-        dialog.title("Override Value")
+        dialog.title("Override Default Value")
         dialog.transient(self.root)
         dialog.grab_set()
-        dialog.geometry("480x400" if connected else "480x200")
+        dialog.geometry("480x420" if connected else "480x220")
 
         ttk.Label(dialog, text=heading, wraplength=450, justify="left", style="Section.TLabel").pack(
             anchor="w", padx=10, pady=(10, 6)
@@ -1002,7 +1007,7 @@ class DDMGUI:
         editor.title(title)
         editor.transient(parent)
         editor.grab_set()
-        editor.geometry("420x130")
+        editor.geometry("420x170")
         ttk.Label(editor, text=prompt, style="Section.TLabel", wraplength=400).pack(anchor="w", padx=10, pady=(10, 4))
         value_var = tk.StringVar(value=current_value)
         entry = ttk.Entry(editor, textvariable=value_var)
@@ -1056,11 +1061,11 @@ class DDMGUI:
                 })
         return rows
 
-    def _build_value_tree(self, parent, columns: Sequence[str], height: int = 8) -> ttk.Treeview:
+    def _build_value_tree(self, parent, columns: Sequence[str], height: int = 8, labels=None) -> ttk.Treeview:
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
         tree = ttk.Treeview(frame, columns=list(columns), show="headings", height=height)
-        labels = {"override": "Override", "value": "Value"}
+        labels = labels or {}
         for column in columns:
             tree.heading(column, text=labels.get(column, self._humanize_column_name(column)))
             tree.column(column, width=150, anchor="w")
@@ -1193,9 +1198,13 @@ class DDMGUI:
 
         ttk.Button(form, text="Save", command=save_changes, style="Action.TButton").pack(pady=(8, 4))
 
-        values_box = ttk.LabelFrame(form, text="Parameter Values (double-click to override)", padding=8)
+        values_box = ttk.LabelFrame(form, text="Family Default Values (double-click to override)", padding=8)
         values_box.pack(fill="both", expand=True, padx=12, pady=(4, 12))
-        value_tree = self._build_value_tree(values_box, self._value_columns)
+        value_tree = self._build_value_tree(values_box, self._value_columns, labels={
+            "default_value": "Parameter Default Value",
+            "override": "Family Default Value",
+            "value": "Value Used",
+        })
 
         def refresh_values():
             self._render_tree(value_tree, pd.DataFrame(self._family_value_rows(fam)), self._value_columns)
@@ -1214,8 +1223,8 @@ class DDMGUI:
 
             self._edit_value_dialog(
                 form,
-                "Override Value",
-                f"Value of '{parameter_name}' for {fam.name} (blank uses the default):",
+                "Override Family Default Value",
+                f"{fam.name}\n{parameter_name} =\n(Blank Uses the Parameter Default Value)",
                 "" if current is None else str(current),
                 save,
             )
@@ -1383,9 +1392,12 @@ class DDMGUI:
         else:
             ttk.Label(parameter_box, text="No parameters assigned").pack(anchor="w")
 
-        values_box = ttk.LabelFrame(form, text="Values in this Schedule (double-click to override)", padding=8)
+        values_box = ttk.LabelFrame(form, text="Schedule Default Values (double-click to override)", padding=8)
         values_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        value_tree = self._build_value_tree(values_box, self._schedule_value_columns, height=6)
+        value_tree = self._build_value_tree(values_box, self._schedule_value_columns, height=6, labels={
+            "override": "Schedule Default Value",
+            "value": "Value Used",
+        })
 
         def refresh_values():
             self._render_tree(value_tree, pd.DataFrame(self._schedule_value_rows(schedule)), self._schedule_value_columns)
@@ -1404,9 +1416,8 @@ class DDMGUI:
 
             self._edit_value_dialog(
                 form,
-                "Override Value",
-                f"Value of '{parameter_name}' for {family_name} in this schedule "
-                "(blank uses the family's value):",
+                "Override Schedule Default Value",
+                f"{selected_name}: {family_name}\n{parameter_name} =\n(Blank Uses the Family Default Value)",
                 "" if current is None else str(current),
                 save,
             )

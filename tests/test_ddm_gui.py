@@ -897,13 +897,13 @@ def test_override_question_wording():
     gui = three_family_gui()
 
     heading, list_label, parameter = gui._override_questions("Width", "7", ("F1", "S1"))
-    assert heading == "Override F1 Value in S1\nWidth = 7"
-    assert list_label == "Override Other Families in S1?"
+    assert heading == "Override Schedule Default Value\nS1: F1\nWidth = 7"
+    assert list_label == "Override Schedule Default Value for These Families?"
     assert parameter == "Override Parameter Default Value?\nWidth = 7"
 
     heading, list_label, parameter = gui._override_questions("Width", None, ("F1", None))
-    assert heading == "Clear F1 Value\nWidth = (no value)"
-    assert list_label == "Clear F1 in Other Schedules?"
+    assert heading == "Clear Family Default Value\nF1\nWidth = (no value)"
+    assert list_label == "Clear Schedule Default Value in These Schedules?"
     assert parameter == "Clear Parameter Default Value?\nWidth = (no value)"
 
 
@@ -949,7 +949,7 @@ def test_override_dialog_returns_picked_locations_and_parameter_choice():
         shown = {}
 
         def pick_second_and_tick_parameter():
-            dialog = find_window(root, "Override Value")
+            dialog = find_window(root, "Override Default Value")
             listbox = next(widget for widget in descendants(dialog) if isinstance(widget, tk.Listbox))
             shown["listed"] = list(listbox.get(0, tk.END))
             listbox.selection_set(1)
@@ -964,7 +964,7 @@ def test_override_dialog_returns_picked_locations_and_parameter_choice():
         assert shown == {"listed": ["F2", "F3"], "checkbox": "Override Parameter Default Value?\nWidth = 7"}
         assert answer == {"locations": [("F3", "S1")], "parameter": True}
 
-        failures = run_in_dialog(root, lambda: find_button(find_window(root, "Override Value"), "Cancel").invoke())
+        failures = run_in_dialog(root, lambda: find_button(find_window(root, "Override Default Value"), "Cancel").invoke())
         assert gui._ask_override_scope("Width", "7", ("F1", "S1"), connected, True) is None
         assert not failures
     finally:

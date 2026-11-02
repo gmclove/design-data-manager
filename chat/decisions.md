@@ -20,10 +20,21 @@ superseded rather than deleting it.
   - Both: a checkbox to also make it the parameter's default value.
   - Nothing picked by default; Cancel changes nothing; clearing works the same way. Wording lives
     in `DDMGUI._override_questions`.
-- **GUI prompt style:** short Title Case questions followed by a `Parameter = value` line, e.g.
-  "Override Parameter Default Value?" / "Length = 7". No "Also ..." sentences.
 - Rejected along the way: a list of every family and schedule in the catalog, and a yes/no
   "also override for the family in every schedule" question.
+
+## GUI style guide
+User's rules for GUI text (prompts, checkboxes, window sections, column headings):
+- **Short Title Case questions or headings**, each followed by a `Parameter = value` line
+  (`(no value)` when clearing). Example: "Override Parameter Default Value?" / "Length = 7".
+- **No "Also ..." sentences.**
+- **Fixed terms for the three override levels:**
+  - **Parameter Default Value**: the parameter's own value (Parameters tab).
+  - **Family Default Value**: a family's override, used in every schedule the family is in.
+  - **Schedule Default Value**: one family's value in one schedule.
+  The verb is "Override" or "Clear", e.g. "Override Schedule Default Value for These Families?".
+- **Context lines name the place plainly:** `Family_A`, or `Schedule A: Family_A`.
+- Keep wording in one place (`DDMGUI._override_questions`) so it's easy to adjust.
 
 ## GUI
 - **The GUI's catalog is the source of truth; tables are views.** Edits go through model methods
