@@ -18,7 +18,7 @@ changelog row (newest first).
 - Versioned JSON replaces pickle for saves.
 
 ## Handoff state (2026-11-01)
-- `catalog-model` is deprecated: it is fully merged into `dev` (safe to delete). `dev` now has the
+- `catalog-model` was deprecated, merged into `dev` and deleted. `dev` and `main` now have the
   formula tokenizer and syntax checks (`formula.py`), the `Catalog` object (no more
   `_instances` globals), JSON `Catalog.save`/`load`, the `FamType` fix, and the header text,
   column width and header group features from the parallel rework.
@@ -26,7 +26,7 @@ changelog row (newest first).
   fresh `Catalog` from them. Next step: make the model the GUI's source of truth and switch
   its saves to `Catalog.save` (check with the user who is editing `ddm_gui.py` first; someone
   pushes Copilot-authored commits to `dev`/`main` in parallel, so always `git fetch` first).
-- `main` has not received this merge yet; only `dev` was asked for.
+- `main` and `dev` are identical (dev merged into main on 2026-11-01); `catalog-model` is deleted.
 - Known failing test (pre-existing on `dev`):
   `ddm_gui_test.py::test_main_tab_table_headings_wrap_after_column_resize` (heading padding).
 - Git pushes work from the first machine over SSH. A new machine needs its own SSH key added
