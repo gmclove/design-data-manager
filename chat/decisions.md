@@ -7,6 +7,9 @@ superseded rather than deleting it.
 - **Model objects are the source of truth; the GUI should be a view on them.** The `Catalog`
   object owns params, families and schedules (no more class-level `_instances` registries).
 - **Versioned JSON replaces pickle for saves** (`Catalog.save` / `Catalog.load`).
+- **Client and country codes belong to the client/country, not the family** (2026-11-02). The
+  catalog keeps one code per name; families look it up. Codes must be unique per kind. Countries
+  aren't pre-seeded with an ISO list; the dropdown lists what's in the database plus "Add New...".
 
 ## Overrides
 - **Overriding a value offers the connected places and the parameter default** (user decision,
@@ -96,6 +99,3 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   tracked fixtures that the app never writes to by default.
 - **All tests live in `tests/`, named `test_*.py`;** pytest config lives only in `pyproject.toml`.
 - **Line endings are normalized by `.gitattributes`** (LF in the repo), since the machines differ.
-- **Client and country codes belong to the client/country, not the family** (2026-11-02). The
-  catalog keeps one code per name; families look it up. Codes must be unique per kind. Countries
-  aren't pre-seeded with an ISO list; the dropdown lists what's in the database plus "Add New...".
