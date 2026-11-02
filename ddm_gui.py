@@ -1061,19 +1061,27 @@ class DDMGUI:
         dialog.wait_window()
         return result["answer"]
 
-    def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save, placeholder: str = ""):
-        """A small dialog for one value. ``on_save(value)`` returns ``False`` to keep it open."""
+    def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save,
+                           placeholder: str = "", field_label: str = ""):
+        """A small dialog for one value. ``on_save(value)`` returns ``False`` to keep it open.
+
+        ``field_label`` (such as ``"Width ="``) sits on the same line as the box.
+        """
         editor = tk.Toplevel(parent)
         editor.title(title)
         editor.transient(parent)
         editor.grab_set()
-        editor.geometry("420x150")
+        editor.geometry("420x130")
         ttk.Label(editor, text=prompt, style="Section.TLabel", wraplength=400).pack(anchor="w", padx=10, pady=(10, 4))
-        entry = PlaceholderEntry(editor, placeholder=placeholder)
+        field_row = ttk.Frame(editor)
+        field_row.pack(fill="x", padx=10, pady=4)
+        if field_label:
+            ttk.Label(field_row, text=field_label, style="Section.TLabel").pack(side="left", padx=(0, 6))
+        entry = PlaceholderEntry(field_row, placeholder=placeholder)
         if current_value:
             entry.insert(0, current_value)
             entry.selection_range(0, tk.END)
-        entry.pack(fill="x", padx=10, pady=4)
+        entry.pack(side="left", fill="x", expand=True)
         entry.focus_set()
 
         def save():
@@ -1285,10 +1293,11 @@ class DDMGUI:
             self._edit_value_dialog(
                 form,
                 "Override Family Default Value",
-                f"{fam.name}\n{parameter_name} =",
+                fam.name,
                 "" if current is None else str(current),
                 save,
                 placeholder="Blank Uses Parameter Default Value",
+                field_label=f"{parameter_name} =",
             )
 
         value_tree.bind("<Double-1>", edit_value)
@@ -1477,10 +1486,11 @@ class DDMGUI:
             self._edit_value_dialog(
                 form,
                 "Override Schedule Default Value",
-                f"{selected_name}: {family_name}\n{parameter_name} =",
+                f"{selected_name}: {family_name}",
                 "" if current is None else str(current),
                 save,
                 placeholder="Blank Uses Family Default Value",
+                field_label=f"{parameter_name} =",
             )
 
         value_tree.bind("<Double-1>", edit_value)

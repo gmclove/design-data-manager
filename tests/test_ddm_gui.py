@@ -1081,6 +1081,28 @@ def test_placeholder_entry_shows_gray_hint_until_typing_and_never_returns_it():
         root.destroy()
 
 
+def test_value_dialog_puts_the_parameter_label_on_the_box_line():
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = three_family_gui()
+        gui.root = root
+        saved = []
+        editor = gui._edit_value_dialog(
+            root, "Override Schedule Default Value", "S1: F1", "", saved.append,
+            placeholder="Blank Uses Family Default Value", field_label="Width =",
+        )
+        entry = next(widget for widget in descendants(editor) if isinstance(widget, gui_module.PlaceholderEntry))
+        row_labels = [widget.cget("text") for widget in entry.master.winfo_children() if isinstance(widget, ttk.Label)]
+        assert row_labels == ["Width ="]
+
+        entry.insert(0, "7")
+        find_button(editor, "Save").invoke()
+        assert saved == ["7"]
+    finally:
+        root.destroy()
+
+
 def test_schedule_header_text_wraps_at_underscores_and_camel_case():
     canvas = object.__new__(ScheduleHeaderCanvas)
     canvas.header_font = SimpleNamespace(measure=lambda text: len(text) * 6)
