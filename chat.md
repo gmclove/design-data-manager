@@ -18,7 +18,7 @@ changelog row (newest first).
 - Versioned JSON replaces pickle for saves.
 
 ## Handoff state (2026-11-01)
-- `catalog-model` is deprecated: it was merged into `dev` and deleted. `dev` now has the
+- `catalog-model` is deprecated: it is fully merged into `dev` (safe to delete). `dev` now has the
   formula tokenizer and syntax checks (`formula.py`), the `Catalog` object (no more
   `_instances` globals), JSON `Catalog.save`/`load`, the `FamType` fix, and the header text,
   column width and header group features from the parallel rework.
