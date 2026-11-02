@@ -2,16 +2,16 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
-## 2026-11-01: GUI on the catalog, override "where else?" prompt (branch `gui-on-catalog`)
+## 2026-11-01: GUI on the catalog, override prompt (branch `gui-on-catalog`)
 - Model: schedules pick their columns (`field_names`) and hold per-family value overrides that
-  apply in that schedule only; `Catalog.override_locations` / `apply_override` /
-  `resolved_value`. Catalog format version 3 (version 2 still loads).
+  apply in that schedule only; `Catalog.apply_override` / `resolved_value`. Catalog format version 3 (version 2 still loads).
 - `ddm_gui.py` holds a `Catalog`; its tables are views and edits go through the model. Saves are
   JSON (`data/database.ddm.json`) plus readable CSV and Revit exports; CSV and older `.ddm.pkl`
   files still load.
 - New `ddm_tables.py`: catalog <-> tables, with load problems fixed or skipped and reported.
-- Family and schedule detail windows list parameter values; double-click to override, then the
-  "Apply Override Elsewhere?" prompt picks other places to apply it.
+- Family and schedule detail windows list parameter values; double-click to override. A
+  schedule override asks whether to also override it for the family and make it the
+  parameter's default; a family override asks only about the parameter default.
 - Demo database fixed: nine parameters it linked were never defined, and its override values sat
   in the `caption` column so they never loaded.
 - Stray labels the family window used to add to the main window are gone.

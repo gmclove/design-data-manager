@@ -60,11 +60,9 @@ A parameter's value can be overridden in two places:
 The schedule override wins over the family override, which wins over the parameter's default.
 Passing `None` for an attribute clears that override.
 
-`Catalog.override_locations(param_name)` lists every place a parameter can be overridden, as
-`(family_name, None)` for a family or `(family_name, schedule_name)` for one schedule entry.
-`Catalog.apply_override(location, param_name, ...)` sets or clears an override at one of them,
-and `Catalog.resolved_value(location, param_name)` gives the effective value there. The GUI uses
-these to ask where else an override should apply.
+`Catalog.apply_override(location, param_name, ...)` sets or clears an override at a location,
+`(family_name, None)` for the family everywhere or `(family_name, schedule_name)` for one
+schedule, and `Catalog.resolved_value(location, param_name)` gives the effective value there.
 
 Header groups store stable parameter names rather than Revit column indices. A Revit adapter
 resolves those names to the visible schedule columns when it calls `ViewSchedule.GroupHeaders`,
@@ -126,6 +124,7 @@ every reference. A blank GUID in loaded data defaults to the name-based GUID fro
 `parameter_guid()` in [revit_shared_parameter_export.py](revit_shared_parameter_export.py), and
 both Revit exporters use the stored GUID.
 
-Overriding a value, from a family's detail window (family everywhere) or a schedule's detail
-window (that family in that schedule), lists the other places the parameter can be overridden
-(`Catalog.override_locations`) and applies the change to the ones the user picks.
+Values are overridden from a schedule's detail window (that family in that schedule) or a
+family's detail window (the family everywhere). The GUI then asks whether to apply the same
+value to the levels above: from a schedule, to the family and to the parameter's default value;
+from a family, to the parameter's default value.

@@ -462,14 +462,6 @@ def test_schedule_flags_fields_no_family_has(scheduled):
 	assert 'Ghost' in schedule.validation_message
 
 
-def test_override_locations_cover_families_and_schedule_entries(scheduled):
-	assert scheduled.override_locations('Width') == [
-		('F1', None), ('F2', None), ('F1', 'S1'), ('F2', 'S1'), ('F1', 'S2'),
-	]
-	# S1 doesn't show Depth, so only the family and the all-fields schedule can override it.
-	assert scheduled.override_locations('Depth') == [('F1', None), ('F1', 'S2')]
-
-
 def test_schedule_override_beats_family_override_beats_default(scheduled):
 	assert scheduled.resolved_value(('F1', 'S1'), 'Width') == 1
 

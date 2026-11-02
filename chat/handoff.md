@@ -23,6 +23,6 @@ folder works.
 
 ## State (2026-11-01)
 - `dev` and `main` are identical. Feature branch `gui-on-catalog` (second machine) is finished
-  but not merged yet: the GUI on the `Catalog`, JSON saves, and the override "where else?" prompt.
+  but not merged yet: the GUI on the `Catalog`, JSON saves, and the override prompt.
   See [changelog.md](changelog.md).
 - On that branch: 124 tests pass, 1 known failure (see [plan.md](plan.md)).

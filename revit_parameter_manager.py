@@ -993,24 +993,12 @@ class Catalog(object):
 
 	# --- overrides --------------------------------------------------------
 
-	def override_locations(self, param_name):
-		"""Every place ``param_name`` can be overridden.
+	def apply_override(self, location, param_name, **overrides):
+		"""Set (or, with ``None`` values, clear) overrides at one location.
 
 		A location is ``(family_name, None)`` for the family everywhere, or
 		``(family_name, schedule_name)`` for that family in one schedule only.
 		"""
-		locations = []
-		for fam in self.families:
-			if any(param.name == param_name for param in fam.params):
-				locations.append((fam.name, None))
-		for schedule in self.schedules:
-			for fam in schedule.fams:
-				if param_name in schedule.family_param_names(fam):
-					locations.append((fam.name, schedule.name))
-		return locations
-
-	def apply_override(self, location, param_name, **overrides):
-		"""Set (or, with ``None`` values, clear) overrides at one location."""
 		family_name, schedule_name = location
 		if schedule_name is None:
 			fam = self.get_family(family_name)
