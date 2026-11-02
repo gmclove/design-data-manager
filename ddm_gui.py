@@ -882,79 +882,113 @@ class DDMGUI:
 
     # --- value overrides --------------------------------------------------------
 
+    def _connected_override_locations(self, location, param_name: str):
+        """Where else, connected to ``location``, the same override can go.
+
+        From a schedule: the other families in that schedule that show the parameter.
+        From a family: the schedules that family is in that show the parameter.
+        Each is a ``(location, label)`` pair.
+        """
+        family_name, schedule_name = location
+        if schedule_name is not None:
+            schedule = self._get_schedule(schedule_name)
+            return [
+                ((fam.name, schedule_name), fam.name)
+                for fam in schedule.fams
+                if fam.name != family_name and param_name in schedule.family_param_names(fam)
+            ]
+        fam = self.catalog.get_family(family_name)
+        return [
+            ((family_name, schedule.name), schedule.name)
+            for schedule in self.catalog.schedules
+            if fam in schedule.fams and param_name in schedule.family_param_names(fam)
+        ]
+
     def _override_value(self, location, param_name: str, new_value) -> bool:
         """Override (or, with a blank value, clear) a parameter's value at ``location``.
 
         ``location`` is ``(family_name, schedule_name)``, with ``None`` for the family
-        everywhere. The user is asked whether the same change should also go up a
-        level: to the family (from a schedule) and to the parameter's default value.
-        Returns ``False`` if the user cancels.
+        everywhere. The user can pick connected places to get the same change (other
+        families in the schedule, or the family's schedules) and can also make it the
+        parameter's default value. Returns ``False`` if the user cancels.
         """
         value = cell_text(new_value) or None
-        family_name, schedule_name = location
-        questions = []
-        if schedule_name is not None:
-            questions.append("family")
+        connected = self._connected_override_locations(location, param_name)
         param = self.catalog.get_param(param_name)
-        if param is not None:
-            questions.append("parameter")
 
-        answers = {}
-        if questions:
-            answers = self._ask_override_scope(param_name, value, location, questions)
-            if answers is None:
+        answer = {"locations": [], "parameter": False}
+        if connected or param is not None:
+            answer = self._ask_override_scope(param_name, value, location, connected, param is not None)
+            if answer is None:
                 return False
 
-        self.catalog.apply_override(location, param_name, value=value)
-        if answers.get("family"):
-            self.catalog.apply_override((family_name, None), param_name, value=value)
-        if answers.get("parameter"):
+        for target in [location, *answer["locations"]]:
+            self.catalog.apply_override(target, param_name, value=value)
+        if answer["parameter"]:
             param.value = value
         self.validate_all()
         return True
 
     def _override_questions(self, param_name: str, value, location):
-        """The draft wording of the override prompt: ``(heading, {question: text})``."""
+        """The draft wording of the override prompt: ``(heading, list label, parameter checkbox)``."""
         family_name, schedule_name = location
-        where = family_name if schedule_name is None else f"{family_name} in schedule '{schedule_name}'"
+        if schedule_name is None:
+            where = family_name
+            list_label = f"Also apply it to {family_name} in these schedules:"
+        else:
+            where = f"{family_name} in schedule '{schedule_name}'"
+            list_label = f"Also apply it to these families in schedule '{schedule_name}':"
         if value is None:
             heading = f"Clear the override of '{param_name}' for {where}."
-            questions = {
-                "family": f"Also clear it for {family_name} in every schedule?",
-                "parameter": f"Also clear the default value of '{param_name}'?",
-            }
+            parameter = f"Also clear the default value of '{param_name}'"
         else:
             heading = f"Override '{param_name}' with '{value}' for {where}."
-            questions = {
-                "family": f"Also override it for {family_name} in every schedule?",
-                "parameter": f"Also make '{value}' the default value of '{param_name}' "
-                             "(used by every family that doesn't override it)?",
-            }
-        return heading, questions
+            parameter = f"Also make '{value}' the default value of '{param_name}'"
+        return heading, list_label, parameter
 
-    def _ask_override_scope(self, param_name: str, value, location, questions):
-        """Ask the override questions. Returns ``{question: bool}``, or ``None`` to cancel."""
-        heading, texts = self._override_questions(param_name, value, location)
+    def _ask_override_scope(self, param_name: str, value, location, connected, ask_parameter: bool):
+        """Ask where else the override goes.
+
+        ``connected`` is a list of ``(location, label)`` pairs to choose from.
+        Returns ``{"locations": [...], "parameter": bool}``, or ``None`` to cancel.
+        """
+        heading, list_label, parameter_text = self._override_questions(param_name, value, location)
         dialog = tk.Toplevel(self.root)
         dialog.title("Override Value")
         dialog.transient(self.root)
         dialog.grab_set()
-        dialog.geometry("480x200")
+        dialog.geometry("480x360" if connected else "480x170")
 
         ttk.Label(dialog, text=heading, wraplength=450, justify="left", style="Section.TLabel").pack(
             anchor="w", padx=10, pady=(10, 6)
         )
-        variables = {}
-        for question in questions:
-            variables[question] = tk.BooleanVar(value=False)
-            ttk.Checkbutton(dialog, text=texts[question], variable=variables[question]).pack(
-                anchor="w", padx=16, pady=2
-            )
 
-        result = {"answers": None}
+        listbox = None
+        if connected:
+            ttk.Label(dialog, text=list_label, wraplength=450, justify="left").pack(anchor="w", padx=10)
+            list_frame = ttk.Frame(dialog)
+            list_frame.pack(fill="both", expand=True, padx=10, pady=(2, 0))
+            listbox = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, exportselection=False, height=6)
+            for _location, label in connected:
+                listbox.insert(tk.END, label)
+            scroll = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+            listbox.configure(yscrollcommand=scroll.set)
+            listbox.pack(side="left", fill="both", expand=True)
+            scroll.pack(side="right", fill="y")
+            list_buttons = ttk.Frame(dialog)
+            list_buttons.pack(fill="x", padx=10, pady=(2, 4))
+            ttk.Button(list_buttons, text="Select All", command=lambda: listbox.selection_set(0, tk.END)).pack(side="left")
+            ttk.Button(list_buttons, text="Clear", command=lambda: listbox.selection_clear(0, tk.END)).pack(side="left", padx=(6, 0))
+
+        parameter_var = tk.BooleanVar(value=False)
+        if ask_parameter:
+            ttk.Checkbutton(dialog, text=parameter_text, variable=parameter_var).pack(anchor="w", padx=10, pady=4)
+
+        result = {"answer": None}
 
         def apply():
-            result["answers"] = {question: variable.get() for question, variable in variables.items()}
+            chosen = [] if listbox is None else [connected[index][0] for index in listbox.curselection()]
+            result["answer"] = {"locations": chosen, "parameter": parameter_var.get()}
             dialog.destroy()
 
         buttons = ttk.Frame(dialog)
@@ -963,7 +997,7 @@ class DDMGUI:
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 6))
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
         dialog.wait_window()
-        return result["answers"]
+        return result["answer"]
 
     def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save):
         """A small dialog for one value. ``on_save(value)`` returns ``False`` to keep it open."""

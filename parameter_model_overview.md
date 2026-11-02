@@ -125,6 +125,6 @@ every reference. A blank GUID in loaded data defaults to the name-based GUID fro
 both Revit exporters use the stored GUID.
 
 Values are overridden from a schedule's detail window (that family in that schedule) or a
-family's detail window (the family everywhere). The GUI then asks whether to apply the same
-value to the levels above: from a schedule, to the family and to the parameter's default value;
-from a family, to the parameter's default value.
+family's detail window (the family everywhere). The override dialog lists the connected places
+to apply the same value to (from a schedule, the other families in it; from a family, the
+schedules it is in) and offers to make it the parameter's default value.

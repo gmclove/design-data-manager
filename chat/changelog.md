@@ -9,9 +9,9 @@ Newest first. One entry per piece of work; link commits where useful.
   JSON (`data/database.ddm.json`) plus readable CSV and Revit exports; CSV and older `.ddm.pkl`
   files still load.
 - New `ddm_tables.py`: catalog <-> tables, with load problems fixed or skipped and reported.
-- Family and schedule detail windows list parameter values; double-click to override. A
-  schedule override asks whether to also override it for the family and make it the
-  parameter's default; a family override asks only about the parameter default.
+- Family and schedule detail windows list parameter values; double-click to override. The
+  override dialog offers a multi-select of the connected families (from a schedule) or schedules
+  (from a family) plus a checkbox to make it the parameter's default.
 - Demo database fixed: nine parameters it linked were never defined, and its override values sat
   in the `caption` column so they never loaded.
 - Stray labels the family window used to add to the main window are gone.

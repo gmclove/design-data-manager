@@ -9,15 +9,19 @@ superseded rather than deleting it.
 - **Versioned JSON replaces pickle for saves** (`Catalog.save` / `Catalog.load`).
 
 ## Overrides
-- **Overriding a value asks whether to apply it to the levels above** (user decision,
+- **Overriding a value offers the connected places and the parameter default** (user decision,
   2026-11-01). The levels are parameter default value, family override (`Fam.overrides`) and
   schedule override for one family (`Schedule.family_overrides`); the most specific wins.
-  Overriding in a schedule asks two questions: also override it for the family? Also make it the
-  parameter's default? Overriding in a family asks only the parameter question. Both unticked by
-  default; Cancel changes nothing; clearing asks the same way. The wording is a draft
-  (`DDMGUI._override_questions`) for the user to refine.
-- An earlier version listed every other family and schedule to copy the override to; the user
-  rejected it in favour of the questions above.
+  - Override in a schedule: a multi-select list of the other families in that schedule that show
+    the parameter; picked ones get the same override in that schedule.
+  - Override in a family: a multi-select list of the schedules that family is in; picked ones get
+    the value as their schedule override (replacing any value set there, which would otherwise
+    hide the family value).
+  - Both: a checkbox to also make it the parameter's default value.
+  - Nothing picked by default; Cancel changes nothing; clearing works the same way. Wording is a
+    draft in `DDMGUI._override_questions`.
+- Rejected along the way: a list of every family and schedule in the catalog, and a yes/no
+  "also override for the family in every schedule" question.
 
 ## GUI
 - **The GUI's catalog is the source of truth; tables are views.** Edits go through model methods

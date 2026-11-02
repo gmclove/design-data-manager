@@ -790,123 +790,125 @@ def test_gui_rename_updates_every_reference_to_the_parameter(monkeypatch):
 
 # --- value overrides ----------------------------------------------------------
 
-def override_gui():
+def answering(answer, asked=None):
+    """A stand-in for the override prompt: picks the connected labels in ``answer["pick"]``."""
+    def ask(param_name, value, location, connected, ask_parameter):
+        if asked is not None:
+            asked.append((param_name, value, location, [label for _location, label in connected], ask_parameter))
+        if answer is None:
+            return None
+        return {
+            "locations": [where for where, label in connected if label in answer.get("pick", ())],
+            "parameter": answer.get("parameter", False),
+        }
+    return ask
+
+
+def three_family_gui():
+    """F1 and F2 in S1 and S2; F3 only in S1; all three have Width."""
     return gui_from_tables(
-        params=pd.DataFrame([
-            {"name": "Width", "dtype": "Length", "instance_param": True, "default_value": "1"},
-            {"name": "Height", "dtype": "Length", "instance_param": True},
-        ]),
-        families=pd.DataFrame([{"name": "F1", "category": "Doors"}, {"name": "F2", "category": "Doors"}]),
-        links=pd.DataFrame([
-            {"family_name": "F1", "parameter_name": "Width"},
-            {"family_name": "F1", "parameter_name": "Height"},
-            {"family_name": "F2", "parameter_name": "Width"},
-        ]),
+        params=pd.DataFrame([{"name": "Width", "dtype": "Length", "instance_param": True, "default_value": "1"}]),
+        families=pd.DataFrame([{"name": name, "category": "Doors"} for name in ("F1", "F2", "F3")]),
+        links=pd.DataFrame([{"family_name": name, "parameter_name": "Width"} for name in ("F1", "F2", "F3")]),
         entries=pd.DataFrame([
-            {"family_name": "F1", "group_name": "S1", "parameter_name": "Width"},
-            {"family_name": "F2", "group_name": "S1", "parameter_name": "Width"},
-            {"family_name": "F1", "group_name": "S2", "parameter_name": "Width"},
+            {"family_name": family, "group_name": schedule, "parameter_name": "Width"}
+            for family, schedule in (("F1", "S1"), ("F2", "S1"), ("F3", "S1"), ("F1", "S2"), ("F2", "S2"))
         ]),
     )
 
 
-def answering(answers, asked=None):
-    """A stand-in for the override prompt that records what it was asked."""
-    def ask(param_name, value, location, questions):
-        if asked is not None:
-            asked.append((param_name, value, location, list(questions)))
-        return answers if answers is None else {question: answers.get(question, False) for question in questions}
-    return ask
-
-
-def test_schedule_override_asks_about_family_and_parameter(monkeypatch):
-    gui = override_gui()
+def test_schedule_override_offers_the_other_families_in_the_schedule(monkeypatch):
+    gui = three_family_gui()
     asked = []
-    monkeypatch.setattr(gui, "_ask_override_scope", answering({}, asked))
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({"pick": ["F3"]}, asked))
 
     assert gui._override_value(("F1", "S1"), "Width", "7") is True
 
-    assert asked == [("Width", "7", ("F1", "S1"), ["family", "parameter"])]
+    assert asked == [("Width", "7", ("F1", "S1"), ["F2", "F3"], True)]
     catalog = gui.catalog
     assert catalog.resolved_value(("F1", "S1"), "Width") == "7"
-    assert catalog.resolved_value(("F1", "S2"), "Width") == "1"
+    assert catalog.resolved_value(("F3", "S1"), "Width") == "7"
     assert catalog.resolved_value(("F2", "S1"), "Width") == "1"
+    assert catalog.resolved_value(("F1", "S2"), "Width") == "1"
+    assert catalog.get_param("Width").value == "1"
     entries = gui.family_groups_df.set_index(["group_name", "family_name"])
-    assert entries.at[("S1", "F1"), "override_entry"] == "7"
-    assert entries.at[("S2", "F1"), "override_entry"] == ""
+    assert entries.at[("S1", "F3"), "override_entry"] == "7"
+    assert entries.at[("S1", "F2"), "override_entry"] == ""
 
 
-def test_schedule_override_can_go_up_to_the_family(monkeypatch):
-    gui = override_gui()
-    monkeypatch.setattr(gui, "_ask_override_scope", answering({"family": True}))
+def test_family_override_offers_the_familys_schedules(monkeypatch):
+    gui = three_family_gui()
+    asked = []
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({}, asked))
+    gui._override_value(("F1", "S2"), "Width", "9")
 
-    gui._override_value(("F1", "S1"), "Width", "7")
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({"pick": ["S2"]}, asked))
+    gui._override_value(("F1", None), "Width", "5")
 
-    assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "7"
-    assert gui.catalog.get_family("F1").overrides == {"Width": {"value": "7"}}
-    assert gui.catalog.resolved_value(("F2", "S1"), "Width") == "1"
-    assert gui.catalog.get_param("Width").value == "1"
+    assert asked[1] == ("Width", "5", ("F1", None), ["S1", "S2"], True)
+    assert gui.catalog.get_family("F1").overrides == {"Width": {"value": "5"}}
+    assert gui.catalog.resolved_value(("F1", "S1"), "Width") == "5"
+    # S2 had its own override; picking it replaces that with the new value.
+    assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "5"
+    assert [row["override"] for row in gui._family_value_rows(gui.catalog.get_family("F1"))] == ["5"]
 
 
-def test_schedule_override_can_go_up_to_the_parameter_default(monkeypatch):
-    gui = override_gui()
+def test_override_can_become_the_parameter_default(monkeypatch):
+    gui = three_family_gui()
     monkeypatch.setattr(gui, "_ask_override_scope", answering({"parameter": True}))
 
     gui._override_value(("F1", "S1"), "Width", "7")
 
     assert gui.catalog.get_param("Width").value == "7"
-    assert gui.catalog.resolved_value(("F2", "S1"), "Width") == "7"
-    assert gui.catalog.get_family("F1").overrides == {}
+    assert gui.catalog.resolved_value(("F2", "S2"), "Width") == "7"
     assert gui.params_df.set_index("name").at["Width", "default_value"] == "7"
 
 
-def test_family_override_asks_only_about_the_parameter(monkeypatch):
-    gui = override_gui()
-    asked = []
-    monkeypatch.setattr(gui, "_ask_override_scope", answering({}, asked))
-
-    gui._override_value(("F1", None), "Width", "5")
-
-    assert asked == [("Width", "5", ("F1", None), ["parameter"])]
-    assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "5"
-    assert gui.catalog.resolved_value(("F2", "S1"), "Width") == "1"
-    assert [row["override"] for row in gui._family_value_rows(gui.catalog.get_family("F1"))] == ["5", ""]
-
-
-def test_clearing_an_override_can_clear_the_levels_above(monkeypatch):
-    gui = override_gui()
-    monkeypatch.setattr(gui, "_ask_override_scope", answering({"family": True}))
+def test_clearing_an_override_clears_the_picked_locations(monkeypatch):
+    gui = three_family_gui()
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({"pick": ["F2"]}))
     gui._override_value(("F1", "S1"), "Width", "7")
 
     gui._override_value(("F1", "S1"), "Width", "")
 
     assert gui.catalog.resolved_value(("F1", "S1"), "Width") == "1"
-    assert gui.catalog.get_family("F1").overrides == {}
+    assert gui.catalog.resolved_value(("F2", "S1"), "Width") == "1"
+    assert gui.catalog.get_schedule("S1").family_overrides == {}
 
 
 def test_cancelling_the_override_prompt_changes_nothing(monkeypatch):
-    gui = override_gui()
+    gui = three_family_gui()
     monkeypatch.setattr(gui, "_ask_override_scope", answering(None))
 
     assert gui._override_value(("F1", "S1"), "Width", "7") is False
     assert gui.catalog.resolved_value(("F1", "S1"), "Width") == "1"
 
 
+def test_override_with_nothing_to_ask_does_not_prompt(monkeypatch):
+    gui = gui_from_tables(families=pd.DataFrame([{"name": "F1", "category": "Doors"}]))
+    monkeypatch.setattr(gui, "_ask_override_scope", lambda *args: pytest.fail("should not prompt"))
+
+    gui._override_value(("F1", None), "IPS_GROUP_Schedule_Name", "Lobby")
+
+    assert gui.catalog.resolved_value(("F1", None), "IPS_GROUP_Schedule_Name") == "Lobby"
+
+
 def test_override_question_wording():
-    gui = override_gui()
+    gui = three_family_gui()
 
-    heading, questions = gui._override_questions("Width", "7", ("F1", "S1"))
+    heading, list_label, parameter = gui._override_questions("Width", "7", ("F1", "S1"))
     assert heading == "Override 'Width' with '7' for F1 in schedule 'S1'."
-    assert questions["family"] == "Also override it for F1 in every schedule?"
-    assert questions["parameter"].startswith("Also make '7' the default value of 'Width'")
+    assert list_label == "Also apply it to these families in schedule 'S1':"
+    assert parameter == "Also make '7' the default value of 'Width'"
 
-    heading, questions = gui._override_questions("Width", None, ("F1", None))
+    heading, list_label, parameter = gui._override_questions("Width", None, ("F1", None))
     assert heading == "Clear the override of 'Width' for F1."
-    assert questions["parameter"] == "Also clear the default value of 'Width'?"
+    assert list_label == "Also apply it to F1 in these schedules:"
+    assert parameter == "Also clear the default value of 'Width'"
 
 
 def test_schedule_value_rows_show_overrides_and_effective_values(monkeypatch):
-    gui = override_gui()
+    gui = three_family_gui()
     monkeypatch.setattr(gui, "_ask_override_scope", answering({}))
     gui._override_value(("F1", None), "Width", "5")
     gui._override_value(("F2", "S1"), "Width", "9")
@@ -916,6 +918,7 @@ def test_schedule_value_rows_show_overrides_and_effective_values(monkeypatch):
     assert rows == [
         {"family_name": "F1", "parameter_name": "Width", "override": "", "value": "5"},
         {"family_name": "F2", "parameter_name": "Width", "override": "9", "value": "9"},
+        {"family_name": "F3", "parameter_name": "Width", "override": "", "value": "1"},
     ]
 
 
@@ -936,29 +939,33 @@ def run_in_dialog(root, action):
     return failures
 
 
-def test_override_dialog_returns_the_ticked_questions():
+def test_override_dialog_returns_picked_locations_and_parameter_choice():
     root = tk.Tk()
     root.withdraw()
     try:
-        gui = override_gui()
+        gui = three_family_gui()
         gui.root = root
-        shown = []
+        connected = gui._connected_override_locations(("F1", "S1"), "Width")
+        shown = {}
 
-        def tick_family():
+        def pick_second_and_tick_parameter():
             dialog = find_window(root, "Override Value")
-            boxes = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Checkbutton)]
-            shown.extend(box.cget("text") for box in boxes)
-            boxes[0].invoke()
+            listbox = next(widget for widget in descendants(dialog) if isinstance(widget, tk.Listbox))
+            shown["listed"] = list(listbox.get(0, tk.END))
+            listbox.selection_set(1)
+            checkbox = next(widget for widget in descendants(dialog) if isinstance(widget, ttk.Checkbutton))
+            shown["checkbox"] = checkbox.cget("text")
+            checkbox.invoke()
             find_button(dialog, "Apply").invoke()
 
-        failures = run_in_dialog(root, tick_family)
-        answers = gui._ask_override_scope("Width", "7", ("F1", "S1"), ["family", "parameter"])
+        failures = run_in_dialog(root, pick_second_and_tick_parameter)
+        answer = gui._ask_override_scope("Width", "7", ("F1", "S1"), connected, True)
         assert not failures
-        assert shown == list(gui._override_questions("Width", "7", ("F1", "S1"))[1].values())
-        assert answers == {"family": True, "parameter": False}
+        assert shown == {"listed": ["F2", "F3"], "checkbox": "Also make '7' the default value of 'Width'"}
+        assert answer == {"locations": [("F3", "S1")], "parameter": True}
 
         failures = run_in_dialog(root, lambda: find_button(find_window(root, "Override Value"), "Cancel").invoke())
-        assert gui._ask_override_scope("Width", "7", ("F1", "S1"), ["family", "parameter"]) is None
+        assert gui._ask_override_scope("Width", "7", ("F1", "S1"), connected, True) is None
         assert not failures
     finally:
         root.destroy()
