@@ -10,7 +10,7 @@ folder works.
 - Always `git fetch` first: work happens on two machines.
 - Run tests with `pytest`. All tests live in `tests/`; config is `[tool.pytest.ini_options]` in
   `pyproject.toml`. On the second machine use the project env: `./.conda/python.exe -m pytest`.
-- The GUI saves to `data/database.ddm.pkl` (untracked). `data/test_data/` is fixtures only.
+- The GUI saves to `data/database.ddm.json` (untracked). `data/test_data/` is fixtures only.
 
 ## Machines
 - **First machine:** pushes over SSH; commits authored as George.
@@ -21,8 +21,9 @@ folder works.
   IPS root certificate.
 - A new machine needs its own SSH key added at https://github.com/settings/keys.
 
-## State (2026-11-01)
-- `dev` and `main` are identical. Feature branch `gui-on-catalog` (second machine) is finished
-  but not merged yet: the GUI on the `Catalog`, JSON saves, and the override prompt.
-  See [changelog.md](changelog.md).
-- On that branch: 124 tests pass, 1 known failure (see [plan.md](plan.md)).
+## State (2026-11-02)
+- `dev` and `main` are identical and include `gui-on-catalog` (GUI on the `Catalog`, JSON saves,
+  override prompt and tables, in-place editing). See [changelog.md](changelog.md).
+- 139 tests pass; 1 known failure (heading wrap, see [plan.md](plan.md)). On the second machine
+  Tk sometimes fails to start ("can't find a usable init.tcl"), failing a random window test;
+  rerun it alone. Likely cause: the `.conda` env sits inside OneDrive.
