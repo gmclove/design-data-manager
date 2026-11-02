@@ -84,6 +84,10 @@ def _wrap_text_segment(text, max_width, font):
     return lines or [""]
 
 
+# Label of the schedule table row that sets every family's Schedule Default Value at once.
+ALL_FAMILIES = "All Families"
+
+
 class OverrideTable(tk.Canvas):
     """A grid of default values: header rows, then labelled rows of cells.
 
@@ -1337,9 +1341,65 @@ class DDMGUI:
             })
         return rows
 
+    def _all_families_row(self, schedule, parameter_names: Sequence[str]) -> dict:
+        """The All Families row: a shortcut that sets every family's Schedule Default Value.
+
+        A cell shows the shared value when every family with that column agrees,
+        "(Varies)" when they differ, and blank when none has one.
+        """
+        cells = []
+        for name in parameter_names:
+            families = [fam for fam in schedule.fams if name in schedule.family_param_names(fam)]
+            if not families:
+                cells.append(self._table_cell(None, "none"))
+                continue
+            values = {
+                schedule.family_overrides.get(fam.name, {}).get(name, {}).get("value")
+                for fam in families
+            }
+            if len(values) > 1:
+                cells.append(self._table_cell("(Varies)", "inherited", True))
+            else:
+                value = values.pop()
+                cells.append(self._table_cell(value, "inherited" if value is None else "set", True))
+        return {
+            "section": ALL_FAMILIES,
+            "label": "Default Value",
+            "cells": cells,
+            "family": None,
+            "attribute": "value",
+            "all_families": True,
+        }
+
+    def _override_all_families(self, schedule_name: str, param_name: str, new_value) -> bool:
+        """Set (or clear) the Schedule Default Value of every family in the schedule with the column.
+
+        The prompt only offers the Parameter Default Value, since every family is
+        already covered. Returns ``False`` if the user cancels.
+        """
+        value = cell_text(new_value) or None
+        schedule = self._get_schedule(schedule_name)
+        targets = [
+            (fam.name, schedule_name) for fam in schedule.fams
+            if param_name in schedule.family_param_names(fam)
+        ]
+        param = self.catalog.get_param(param_name)
+        answer = {"locations": [], "parameter": False}
+        if param is not None:
+            answer = self._ask_override_scope(param_name, value, (ALL_FAMILIES, schedule_name), [], True)
+            if answer is None:
+                return False
+        for target in targets:
+            self.catalog.apply_override(target, param_name, value=value)
+        if answer["parameter"]:
+            param.value = value
+        self.validate_all()
+        return True
+
     def _schedule_table_rows(self, schedule) -> List[dict]:
         parameter_names = self._get_schedule_parameter_names(schedule)
         rows = self._parameter_table_rows(parameter_names, schedule.fams)
+        rows.append(self._all_families_row(schedule, parameter_names))
         for fam in schedule.fams:
             rows.extend(self._family_table_rows(fam, parameter_names, schedule))
         return rows
@@ -1371,12 +1431,20 @@ class DDMGUI:
         param_name = table.parameter_names[column_index]
         attribute = row["attribute"]
         family_name = row["family"]
-        if schedule_name is None:
+        all_families = row.get("all_families", False)
+        if all_families:
+            cell = row["cells"][column_index]
+            own = {attribute: cell["text"]} if cell["state"] == "set" else {}
+            if cell["text"] == "(Varies)":
+                placeholder = "Varies: Type a Value to Set Every Family"
+            else:
+                placeholder = "Blank Uses Each Family Default Value"
+        elif schedule_name is None:
             own = self.catalog.get_family(family_name).overrides.get(param_name, {})
-            fallback = "Parameter"
+            placeholder = f"Blank Uses Parameter {self._attribute_term(attribute)}"
         else:
             own = self._get_schedule(schedule_name).family_overrides.get(family_name, {}).get(param_name, {})
-            fallback = "Family"
+            placeholder = f"Blank Uses Family {self._attribute_term(attribute)}"
         current = own.get(attribute)
         current = "" if current is None else str(current)
 
@@ -1384,7 +1452,10 @@ class DDMGUI:
             if cell_text(text) == current:
                 return
             try:
-                self._override_value((family_name, schedule_name), param_name, text, attribute)
+                if all_families:
+                    self._override_all_families(schedule_name, param_name, text)
+                else:
+                    self._override_value((family_name, schedule_name), param_name, text, attribute)
             except ValueError as exc:
                 messagebox.showerror("Invalid value", str(exc), parent=table.winfo_toplevel())
             table.set_rows(rows_builder())
@@ -1403,7 +1474,7 @@ class DDMGUI:
             column_index,
             current,
             commit,
-            placeholder=f"Blank Uses {fallback} {self._attribute_term(attribute)}",
+            placeholder=placeholder,
             choices=self._revit_dropdown_values("group_under") if attribute == "group_under" else None,
             on_tab=edit_next,
         )

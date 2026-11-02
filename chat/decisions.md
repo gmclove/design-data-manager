@@ -34,6 +34,12 @@ superseded rather than deleting it.
 - **A family missing a schedule column gets an "Add Parameter to Family" button** (user's
   mockup, 2026-11-01), merged over that family's rows in the column. Clicking it links the
   parameter to the family.
+- **The schedule table has an All Families row** (user's mockup, 2026-11-01) between the
+  Parameter block and the families. It's a shortcut, not a new level: setting a value there sets
+  the Schedule Default Value of every family in the schedule with that column. It shows the shared
+  value, "(Varies)" when families differ, or blank. Its prompt offers only the Parameter Default
+  Value checkbox. Committing an unchanged cell does nothing, so opening a "(Varies)" cell can't
+  wipe the families' values.
 - Rejected along the way: a list of every family and schedule in the catalog, and a yes/no
   "also override for the family in every schedule" question.
 

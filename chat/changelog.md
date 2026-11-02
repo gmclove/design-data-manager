@@ -21,6 +21,7 @@ Newest first. One entry per piece of work; link commits where useful.
   formula overrides are now validated and follow renames.
 - Table cells are edited in place (no value pop-up). A family missing a schedule column shows an
   "Add Parameter to Family" button there.
+- Schedule table All Families row sets every family's Schedule Default Value at once.
 
 ## 2026-11-01: Housekeeping
 - GUI default save moved from the tracked fixture `data/test_data/test_data.ddm.pkl` to untracked

@@ -925,15 +925,53 @@ def test_schedule_table_shows_each_level_and_where_values_come_from(monkeypatch)
 
     rows = gui._schedule_table_rows(gui.catalog.get_schedule("S1"))
 
-    assert [row["section"] for row in rows if row["section"]] == ["Parameter", "F1", "F2", "F3"]
+    assert [row["section"] for row in rows if row["section"]] == ["Parameter", "All Families", "F1", "F2", "F3"]
     assert cells(rows, "Name", "Parameter") == [("Width", "set", False)]
     assert cells(rows, "Default Value", "Parameter") == [("1", "set", False)]
+    assert cells(rows, "Default Value", "All Families") == [("(Varies)", "inherited", True)]
     assert cells(rows, "Default Value", "F1") == [("5", "inherited", True)]
     assert cells(rows, "Default Value", "F2") == [("9", "set", True)]
     assert cells(rows, "Default Value", "F3") == [("1", "inherited", True)]
     # Formula and group under belong to the family: shown in a schedule, not editable there.
     assert cells(rows, "Formula", "F3") == [("Height * 2", "inherited", False)]
     assert cells(rows, "Group Under", "F3") == [("", "inherited", False)]
+
+
+def test_all_families_row_sets_every_familys_schedule_value_at_once(monkeypatch):
+    gui = three_family_gui()
+    asked = []
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({}, asked))
+    schedule = gui.catalog.get_schedule("S1")
+
+    assert cells(gui._schedule_table_rows(schedule), "Default Value", "All Families") == [("", "inherited", True)]
+
+    assert gui._override_all_families("S1", "Width", "7") is True
+
+    assert asked == [("Width", "7", ("All Families", "S1"), [], True)]
+    for family in ("F1", "F2", "F3"):
+        assert gui.catalog.resolved_value((family, "S1"), "Width") == "7"
+    assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "1"
+    assert cells(gui._schedule_table_rows(schedule), "Default Value", "All Families") == [("7", "set", True)]
+
+    gui._override_value(("F2", "S1"), "Width", "9")
+    assert cells(gui._schedule_table_rows(schedule), "Default Value", "All Families") == [("(Varies)", "inherited", True)]
+
+    gui._override_all_families("S1", "Width", "")
+    assert schedule.family_overrides == {}
+
+    heading, _list_label, _parameter = gui._override_questions("Width", "7", ("All Families", "S1"))
+    assert heading == "Override Schedule Default Value\nS1: All Families\nWidth = 7"
+
+
+def test_all_families_row_can_also_set_the_parameter_default_or_cancel(monkeypatch):
+    gui = three_family_gui()
+    monkeypatch.setattr(gui, "_ask_override_scope", answering(None))
+    assert gui._override_all_families("S1", "Width", "7") is False
+    assert gui.catalog.get_schedule("S1").family_overrides == {}
+
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({"parameter": True}))
+    gui._override_all_families("S1", "Width", "7")
+    assert gui.catalog.get_param("Width").value == "7"
 
 
 def test_family_table_edits_family_level_and_shades_missing_columns(monkeypatch):
