@@ -1421,6 +1421,51 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         root.destroy()
 
 
+def test_family_list_edits_in_place_on_one_click_and_opens_window_on_two(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.geometry("1200x800")
+    try:
+        gui = DDMGUI(root)
+        gui.notebook.select(gui.family_tab)
+        root.update()
+        tree = gui.family_tree
+        fam = gui.catalog.families[0]
+        column = gui._get_table_columns("families").index("description")
+        x, y, width, height = tree.bbox(tree.get_children()[0], f"#{column + 1}")
+        click = SimpleNamespace(x=x + width // 2, y=y + height // 2)
+
+        # One click: after the double-click delay, an entry opens over the cell.
+        gui._on_family_tree_click(click)
+        assert gui._pending_tree_edit is not None
+        root.after(gui._single_click_delay_ms + 50, root.quit)
+        root.mainloop()
+        editor, finish = gui._tree_cell_editor
+        assert editor.get() == (fam.description or "")
+        editor.delete(0, tk.END)
+        editor.insert(0, "Edited in place")
+        finish(True)
+        assert fam.description == "Edited in place"
+        assert gui._tree_cell_editor is None
+
+        # Escape-style cancel leaves the value alone.
+        gui._start_tree_cell_edit(tree, "families", tree.get_children()[0], column)
+        editor, finish = gui._tree_cell_editor
+        editor.insert(0, "discard ")
+        finish(False)
+        assert fam.description == "Edited in place"
+
+        # Two clicks: the pending edit is cancelled and the family window opens.
+        gui._on_family_tree_click(click)
+        gui._on_family_tree_double_click(click)
+        assert gui._pending_tree_edit is None
+        root.update()
+        find_window(root, "Family Details")
+        assert getattr(gui, "_tree_cell_editor", None) is None
+    finally:
+        root.destroy()
+
+
 def test_family_window_lists_values_and_saves_fields(tmp_path, monkeypatch):
     monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
     root = tk.Tk()

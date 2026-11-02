@@ -40,6 +40,8 @@ superseded rather than deleting it.
   value, "(Varies)" when families differ, or blank. Its prompt offers only the Parameter Default
   Value checkbox. Committing an unchanged cell does nothing, so opening a "(Varies)" cell can't
   wipe the families' values.
+- **Main Families list: one click edits in place, two clicks open the family window** (user,
+  2026-11-01). A single click waits 300 ms before opening the editor so a double-click can cancel it.
 - Rejected along the way: a list of every family and schedule in the catalog, and a yes/no
   "also override for the family in every schedule" question.
 

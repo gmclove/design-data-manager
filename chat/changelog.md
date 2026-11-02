@@ -22,6 +22,8 @@ Newest first. One entry per piece of work; link commits where useful.
 - Table cells are edited in place (no value pop-up). A family missing a schedule column shows an
   "Add Parameter to Family" button there.
 - Schedule table All Families row sets every family's Schedule Default Value at once.
+- Main Families list: one click edits the cell in place (Enter or clicking away saves, Escape
+  cancels; Category is a dropdown); a double-click opens the family window.
 
 ## 2026-11-01: Housekeeping
 - GUI default save moved from the tracked fixture `data/test_data/test_data.ddm.pkl` to untracked

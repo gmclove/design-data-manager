@@ -916,7 +916,9 @@ class DDMGUI:
 
     def _configure_detail_clicks(self):
         if self.family_tree is not None:
-            self.family_tree.bind("<Double-1>", self._open_selected_family_window)
+            # One click edits the cell in place; two clicks open the family window.
+            self.family_tree.bind("<Button-1>", self._on_family_tree_click, add="+")
+            self.family_tree.bind("<Double-1>", self._on_family_tree_double_click)
         if self.group_tree is not None:
             self.group_tree.bind("<Double-1>", self._open_selected_schedule_window)
 
@@ -1538,6 +1540,112 @@ class DDMGUI:
         return group
 
     # --- detail windows ---------------------------------------------------------
+
+    # Long enough to tell a single click from the first click of a double-click.
+    _single_click_delay_ms = 300
+
+    def _tree_cell_at(self, tree: ttk.Treeview, table_name: str, event):
+        """``(row_id, column_number)`` of the body cell under the event, or ``None``."""
+        if tree.identify_region(event.x, event.y) != "cell":
+            return None
+        row_id = tree.identify_row(event.y)
+        try:
+            column_number = int(tree.identify_column(event.x).replace("#", "")) - 1
+        except ValueError:
+            return None
+        if not row_id or not 0 <= column_number < len(self._get_table_columns(table_name)):
+            return None
+        return row_id, column_number
+
+    def _cancel_pending_tree_edit(self):
+        pending = getattr(self, "_pending_tree_edit", None)
+        if pending is not None:
+            self.root.after_cancel(pending)
+            self._pending_tree_edit = None
+
+    def _on_family_tree_click(self, event):
+        self._cancel_pending_tree_edit()
+        cell = self._tree_cell_at(self.family_tree, "families", event)
+        if cell is None:
+            return
+
+        def start():
+            self._pending_tree_edit = None
+            self._start_tree_cell_edit(self.family_tree, "families", *cell)
+
+        # Wait in case this is the first click of a double-click.
+        self._pending_tree_edit = self.root.after(self._single_click_delay_ms, start)
+
+    def _on_family_tree_double_click(self, event):
+        self._cancel_pending_tree_edit()
+        self._finish_tree_cell_edit(False)
+        self._open_selected_family_window(event)
+
+    def _start_tree_cell_edit(self, tree: ttk.Treeview, table_name: str, row_id: str, column_number: int):
+        """Edit one cell of a main table in place: Enter or clicking away saves, Escape cancels."""
+        self._finish_tree_cell_edit(False)
+        field_name = self._get_table_columns(table_name)[column_number]
+        if field_name in {"status", "validation_message", "guid"} or not tree.exists(row_id):
+            return
+        bbox = tree.bbox(row_id, f"#{column_number + 1}")
+        if not bbox:
+            return
+        row_index = tree.index(row_id)
+        values = tree.item(row_id, "values")
+        current_value = str(values[column_number]) if column_number < len(values) else ""
+
+        dropdown_values = self._revit_dropdown_values(field_name)
+        if dropdown_values:
+            editor = ttk.Combobox(tree, values=[""] + dropdown_values, state="readonly")
+            editor.set(current_value)
+        else:
+            editor = ttk.Entry(tree)
+            editor.insert(0, current_value)
+            editor.selection_range(0, tk.END)
+        x, y, width, height = bbox
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.focus_set()
+
+        finishing = False
+
+        def finish(save: bool):
+            nonlocal finishing
+            if finishing or not editor.winfo_exists():
+                return
+            finishing = True
+            new_value = editor.get()
+            if save and new_value != current_value:
+                try:
+                    self._apply_cell_value(table_name, row_index, field_name, new_value)
+                except ValueError as exc:
+                    messagebox.showerror("Invalid value", str(exc), parent=self.root)
+                    finishing = False
+                    if editor.winfo_exists():
+                        editor.focus_set()
+                    return
+            self._tree_cell_editor = None
+            editor.destroy()
+
+        self._tree_cell_editor = (editor, finish)
+        editor.bind("<Return>", lambda _event: finish(True))
+        editor.bind("<KP_Enter>", lambda _event: finish(True))
+        editor.bind("<Escape>", lambda _event: finish(False))
+
+        def focus_out(_event):
+            # Opening the dropdown list moves focus into the combobox's own popdown.
+            def check():
+                if editor.winfo_exists() and not str(editor.tk.call("focus")).startswith(str(editor)):
+                    finish(True)
+            editor.after_idle(check)
+
+        editor.bind("<FocusOut>", focus_out)
+        if dropdown_values:
+            editor.bind("<<ComboboxSelected>>", lambda _event: finish(True))
+
+    def _finish_tree_cell_edit(self, save: bool):
+        cell_editor = getattr(self, "_tree_cell_editor", None)
+        if cell_editor is not None:
+            cell_editor[1](save)
 
     def _open_selected_family_window(self, event):
         if self.family_tree is None:
