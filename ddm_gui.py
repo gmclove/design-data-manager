@@ -32,6 +32,7 @@ from revit_schedule_macro_generator import generate_schedule_macro_source
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content, parameter_guid
 from revit_parameter_manager import guid_change_warning
+from formula import rename_reference
 
 
 def _wrap_text_segment(text, max_width, font):
@@ -1376,6 +1377,35 @@ class DDMGUI:
             self.params_df.at[row_index, "guid"] = str(uuid.uuid4())
         return True
 
+    def _rename_param_references(self, row_index: int, old_name: str, new_name: str):
+        """Point links, schedule entries, header groups and formulas at a renamed parameter."""
+        for df in (self.family_param_links_df, getattr(self, "family_groups_df", None)):
+            if df is None or "parameter_name" not in df.columns:
+                continue
+            matches = df["parameter_name"].fillna("").astype(str).str.strip() == old_name
+            df.loc[matches, "parameter_name"] = new_name
+
+        for groups in getattr(self, "schedule_header_groups", {}).values():
+            for group in groups:
+                group["parameter_names"] = [
+                    new_name if name == old_name else name
+                    for name in group.get("parameter_names", [])
+                ]
+
+        if "formula" in self.params_df.columns:
+            known_names = {str(name).strip() for name in self.params_df["name"].dropna()}
+            for idx, formula in self.params_df["formula"].items():
+                if isinstance(formula, str) and formula.strip():
+                    self.params_df.at[idx, "formula"] = rename_reference(
+                        formula, old_name, new_name, known_names
+                    )
+
+        # Header text left at its default follows the name; custom header text is kept.
+        if "header_text" in self.params_df.columns:
+            header_text = self.params_df.at[row_index, "header_text"]
+            if isinstance(header_text, str) and header_text.strip() == old_name:
+                self.params_df.at[row_index, "header_text"] = new_name
+
     def _apply_cell_value(self, table_name: str, row_index: int, column_name: str, new_value):
         if table_name == "params":
             df = self.params_df
@@ -1402,8 +1432,18 @@ class DDMGUI:
             new_value = "" if new_value is None else str(new_value).strip()
             if not new_value:
                 raise ValueError("Parameter name is required.")
+            old_name = str(df.at[row_index, "name"] or "").strip()
+            other_names = {
+                str(name).strip()
+                for idx, name in df["name"].dropna().items()
+                if idx != row_index
+            }
+            if new_value != old_name and new_value in other_names:
+                raise ValueError(f"Parameter name '{new_value}' is already in use.")
             if not self._confirm_param_rename(row_index, new_value):
                 return
+            if old_name and new_value != old_name:
+                self._rename_param_references(row_index, old_name, new_value)
         elif table_name == "params" and column_name == "grid_column_width":
             raw_width = "" if new_value is None else str(new_value).strip()
             if not raw_width:

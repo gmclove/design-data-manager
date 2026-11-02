@@ -781,6 +781,51 @@ def test_gui_rename_prompts_and_assigns_new_guid_or_keeps_current(monkeypatch):
         assert "assigned automatically" in str(exc)
 
 
+def test_gui_rename_updates_every_reference_to_the_parameter(monkeypatch):
+    gui = make_test_gui()
+    gui.params_df = pd.DataFrame(
+        [
+            {"name": "Width", "header_text": "Width", "dtype": "Length", "formula": "", "instance_param": True},
+            {"name": "Height", "header_text": "Clear Height", "dtype": "Length", "formula": "", "instance_param": True},
+            {"name": "GlassWidth", "header_text": "GlassWidth", "dtype": "Length", "formula": "", "instance_param": True},
+            {"name": "Area", "header_text": "Area", "dtype": "Area", "formula": "Width * Height + GlassWidth", "instance_param": True},
+        ]
+    )
+    gui.family_param_links_df = pd.DataFrame(
+        [
+            {"family_name": "Family_A", "parameter_name": "Width"},
+            {"family_name": "Family_A", "parameter_name": "GlassWidth"},
+        ]
+    )
+    gui.family_groups_df = pd.DataFrame(
+        [{"family_name": "Family_A", "group_name": "Schedule A", "parameter_name": "Width", "header_text_override": "W"}]
+    )
+    gui.schedule_header_groups = {
+        "Schedule A": [{"caption": "Size", "parameter_names": ["Width", "Height"], "top_row": 0, "bottom_row": 0}]
+    }
+    monkeypatch.setattr(gui_module.messagebox, "askyesnocancel", lambda *args, **kwargs: False)
+
+    gui._apply_cell_value("params", 0, "name", "Rough Width")
+
+    assert gui.params_df.at[0, "header_text"] == "Rough Width"
+    assert gui.params_df.at[3, "formula"] == "Rough Width * Height + GlassWidth"
+    assert gui.family_param_links_df["parameter_name"].tolist() == ["Rough Width", "GlassWidth"]
+    assert gui.family_groups_df.at[0, "parameter_name"] == "Rough Width"
+    assert gui.family_groups_df.at[0, "header_text_override"] == "W"
+    assert gui.schedule_header_groups["Schedule A"][0]["parameter_names"] == ["Rough Width", "Height"]
+
+    gui._apply_cell_value("params", 1, "name", "Tall")
+    assert gui.params_df.at[1, "header_text"] == "Clear Height"
+
+    try:
+        gui._apply_cell_value("params", 1, "name", "GlassWidth")
+        raise AssertionError("Renaming onto another parameter's name should fail")
+    except ValueError as exc:
+        assert "already in use" in str(exc)
+    assert gui.params_df.at[1, "name"] == "Tall"
+    assert gui.family_param_links_df["parameter_name"].tolist() == ["Rough Width", "GlassWidth"]
+
+
 def test_group_override_entry_updates_schedule_table():
     gui = make_test_gui()
     gui.family_groups_df = pd.DataFrame(
