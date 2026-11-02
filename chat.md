@@ -18,9 +18,13 @@ changelog row (newest first).
 - Versioned JSON replaces pickle for saves.
 
 ## Handoff state (2026-11-01)
-- `origin/main` and `origin/dev` (877a149) include a parallel rework: `ddm_gui.py` replaced
+- `origin/main` (87210d9) and `origin/dev` (8107728) include a parallel rework: `ddm_gui.py` replaced
   `parameter_catalog_gui.py`, config modules were renamed `revit_*_definitions.py`, Revit
   exporters were added, and the model gained header text, column widths and header groups.
+- `dev` also has af1b348: `ddm_gui.py` renames now update links, schedules, header groups and
+  formulas. Account for it when porting the Catalog rename logic.
+- Git pushes work from the first machine over SSH (remote `git@github.com:gmclove/design-data-manager.git`).
+  A new machine needs its own SSH key added at https://github.com/settings/keys.
 - Branch `catalog-model` (based on the older layout) holds steps 3-6: formula tokenizer and
   syntax checks (`formula.py`), a `Catalog` object replacing the `_instances` globals, the old GUI
   rewired onto it, JSON saves, and a `FamType` fix. It does not merge cleanly: `ddm_gui.py`
