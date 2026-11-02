@@ -8,7 +8,9 @@ TEST_DATA_DIR = DATA_DIR / "test_data"
 
 DEMO_DATA_PATH = TEST_DATA_DIR / "demo_data.ddm.csv"
 TEST_DATABASE_CSV_PATH = TEST_DATA_DIR / "test_data.ddm.csv"
-DEFAULT_CHECKPOINT_PATH = TEST_DATA_DIR / "test_data.ddm.pkl"
+TEST_CHECKPOINT_PATH = TEST_DATA_DIR / "test_data.ddm.pkl"
+# Working saves live outside test_data/ (untracked), so saving never rewrites fixtures.
+DEFAULT_CHECKPOINT_PATH = DATA_DIR / "database.ddm.pkl"
 
 
 def get_database_output_paths(database_path):

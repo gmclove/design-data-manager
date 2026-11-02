@@ -8,14 +8,15 @@ folder works.
   then merge `dev` into `main`.
 - Commit/push only when the user asks.
 - Always `git fetch` first: work happens on two machines.
-- Run tests with `pytest` (config in `pyproject.toml` / `pytest.ini`). On the second machine use
-  the project env: `./.conda/python.exe -m pytest`.
+- Run tests with `pytest`. All tests live in `tests/`; config is `[tool.pytest.ini_options]` in
+  `pyproject.toml`. On the second machine use the project env: `./.conda/python.exe -m pytest`.
+- The GUI saves to `data/database.ddm.pkl` (untracked). `data/test_data/` is fixtures only.
 
 ## Machines
 - **First machine:** pushes over SSH; commits authored as George.
-- **Second machine** (Windows, OneDrive path, HTTPS remote): commits are authored as
-  "GitHub Copilot" because that is its git `user.name`. These are not a separate person's commits.
-  It cannot reach claude.ai artifacts (corporate TLS inspection: `UNABLE_TO_VERIFY_LEAF_SIGNATURE`),
+- **Second machine** (Windows, OneDrive path, HTTPS remote): commits before 2026-11-01's
+  housekeeping are authored as "GitHub Copilot" (its old git identity), not a separate person.
+  Its repo-local git identity is now George. It cannot reach claude.ai artifacts (corporate TLS inspection: `UNABLE_TO_VERIFY_LEAF_SIGNATURE`),
   which is why the plan moved into this folder. Fix would be `NODE_EXTRA_CA_CERTS` pointing at the
   IPS root certificate.
 - A new machine needs its own SSH key added at https://github.com/settings/keys.

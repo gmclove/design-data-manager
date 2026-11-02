@@ -1803,7 +1803,7 @@ class DDMGUI:
         checkpoint_path = filedialog.asksaveasfilename(
             title="Save DDM Database As",
             initialdir=str(DEFAULT_CHECKPOINT_PATH.parent),
-            initialfile="test_data.ddm.pkl",
+            initialfile=DEFAULT_CHECKPOINT_PATH.name,
             defaultextension=".ddm.pkl",
             filetypes=[
                 ("Pickle databases", "*.ddm.pkl"),

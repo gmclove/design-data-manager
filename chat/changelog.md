@@ -2,6 +2,17 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-01: Housekeeping
+- GUI default save moved from the tracked fixture `data/test_data/test_data.ddm.pkl` to untracked
+  `data/database.ddm.pkl`, so saving no longer rewrites test fixtures (the save also writes CSV,
+  `.cs`, `.rfps` and `.txt` siblings).
+- `.gitattributes` added (`* text=auto`; `.pkl` and the UTF-16 shared-parameter fixture binary).
+- All tests moved into `tests/` (`ddm_gui_test.py` is now `tests/test_ddm_gui.py`); `pytest.ini`
+  removed, config lives in `pyproject.toml`.
+- README: correct conda env name, list the export modules, `tests/`, `data/` and `chat/`.
+- `parameter_model_overview.md`: GUI section covers stored GUIDs and rename reference updates.
+- Second machine's git identity set to George (repo-local).
+
 ## 2026-11-01: AI notes moved to `chat/` folder
 - `chat.md` split into `chat/handoff.md`, `plan.md`, `decisions.md` and this changelog, with a
   README explaining how to use them. The plan moved here because the second machine can't open

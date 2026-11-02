@@ -1,0 +1,7 @@
+# Store text with LF in the repo; each machine checks out its native line endings.
+* text=auto
+
+# Keep these byte-for-byte.
+*.pkl binary
+# Revit shared-parameter files are UTF-16.
+data/test_data/*.txt binary

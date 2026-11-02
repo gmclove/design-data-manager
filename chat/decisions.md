@@ -31,3 +31,7 @@ superseded rather than deleting it.
 - **AI chat notes live in `chat/`** in the repo, so both machines share them through git (moved
   from the single `chat.md`, originally `CLAUDE.md`).
 - **`__pycache__` and `.pyc` files are not tracked.**
+- **Working data stays out of git.** The GUI saves to `data/` (ignored); `data/test_data/` is
+  tracked fixtures that the app never writes to by default.
+- **All tests live in `tests/`, named `test_*.py`;** pytest config lives only in `pyproject.toml`.
+- **Line endings are normalized by `.gitattributes`** (LF in the repo), since the machines differ.

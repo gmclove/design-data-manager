@@ -94,5 +94,11 @@ parameters in full; schedules in a catalog store family names. A standalone sche
 saves them in its own CSV/checkpoint files. On every validation it builds a fresh `Catalog` from
 the tables and copies each object's status and message back into the rows.
 
+The GUI stores each parameter's GUID in a `guid` column. A blank GUID defaults to the name-based
+GUID from `parameter_guid()` in [revit_shared_parameter_export.py](revit_shared_parameter_export.py),
+and both Revit exporters use the stored GUID. Renaming a parameter in the GUI asks whether to
+assign a new GUID, then rewrites the old name in family links, schedule entries, header groups
+and formulas, mirroring `Catalog.rename_param`.
+
 Making the model the GUI's source of truth (and switching its saves to `Catalog.save`) is still
 open; see the development plan.

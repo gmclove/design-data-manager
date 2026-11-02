@@ -11,6 +11,7 @@ import ddm_gui as gui_module
 from config.app_paths import (
     DATA_DIR,
     DEMO_DATA_PATH,
+    TEST_CHECKPOINT_PATH,
     TEST_DATABASE_CSV_PATH,
     get_database_output_paths,
 )
@@ -18,7 +19,7 @@ from ddm_gui import DDMGUI, ScheduleHeaderCanvas
 
 
 def load_model_module():
-    module_path = Path(__file__).with_name("revit_parameter_manager.py")
+    module_path = Path(__file__).resolve().parent.parent / "revit_parameter_manager.py"
     spec = importlib.util.spec_from_file_location("revit_parameter_manager_model", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -1278,14 +1279,14 @@ def test_demo_database_loads_from_tagged_csv():
 def test_database_paths_are_configured_under_data_directory():
     assert DEMO_DATA_PATH.name == "demo_data.ddm.csv"
     assert TEST_DATABASE_CSV_PATH.name == "test_data.ddm.csv"
-    assert gui_module.DEFAULT_CHECKPOINT_PATH.parent == DATA_DIR / "test_data"
-    assert gui_module.DEFAULT_CHECKPOINT_PATH.name == "test_data.ddm.pkl"
+    assert TEST_CHECKPOINT_PATH.parent == DATA_DIR / "test_data"
+    assert gui_module.DEFAULT_CHECKPOINT_PATH == DATA_DIR / "database.ddm.pkl"
     assert get_database_output_paths(gui_module.DEFAULT_CHECKPOINT_PATH) == {
-        "checkpoint": DATA_DIR / "test_data" / "test_data.ddm.pkl",
-        "csv": DATA_DIR / "test_data" / "test_data.ddm.csv",
-        "macro": DATA_DIR / "test_data" / "test_data.cs",
-        "rfps": DATA_DIR / "test_data" / "test_data.rfps",
-        "shared_parameters": DATA_DIR / "test_data" / "test_data.txt",
+        "checkpoint": DATA_DIR / "database.ddm.pkl",
+        "csv": DATA_DIR / "database.ddm.csv",
+        "macro": DATA_DIR / "database.cs",
+        "rfps": DATA_DIR / "database.rfps",
+        "shared_parameters": DATA_DIR / "database.txt",
     }
 
 
@@ -1328,7 +1329,7 @@ def test_unified_test_database_contains_seed_parameters_and_defaults():
     assert all_air_parameters["instance_param"].all()
     assert set(all_air_parameters["default_value"]) == {"-999"}
 
-    with gui_module.DEFAULT_CHECKPOINT_PATH.open("rb") as checkpoint_file:
+    with TEST_CHECKPOINT_PATH.open("rb") as checkpoint_file:
         checkpoint = pickle.load(checkpoint_file)
     checkpoint_air_parameters = checkpoint["params"].loc[
         checkpoint["params"]["name"].str.startswith("DDM_EQUIP_Air_")
