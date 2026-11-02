@@ -26,7 +26,10 @@ PARAM_COLUMNS = [
     "name", "header_text", "grid_column_width", "dtype", "group_under", "formula",
     "instance_param", "default_value", "status", "validation_message", "guid",
 ]
-FAMILY_COLUMNS = ["name", "client", "country", "category", "description", "status", "validation_message"]
+FAMILY_COLUMNS = [
+    "name", "client", "client_code", "country", "country_code", "category", "description",
+    "status", "validation_message",
+]
 LINK_COLUMNS = ["family_name", "parameter_name"]
 ENTRY_COLUMNS = [
     "family_name", "group_name", "parameter_name", "header_text_override",
@@ -34,8 +37,8 @@ ENTRY_COLUMNS = [
 ]
 CSV_COLUMNS = [
     "record_type", "name", "guid", "header_text", "grid_column_width", "dtype", "group_under",
-    "formula", "instance_param", "default_value", "status", "validation_message", "client", "country",
-    "category", "description", "family_name", "parameter_name", "group_name",
+    "formula", "instance_param", "default_value", "status", "validation_message", "client", "client_code",
+    "country", "country_code", "category", "description", "family_name", "parameter_name", "group_name",
     "header_text_override", "grid_column_width_override", "override_entry", "caption",
     "parameter_names", "top_row", "bottom_row",
 ]
@@ -155,6 +158,7 @@ def _load_families(catalog, family_rows, link_rows, issues):
         if category is not None and get_family_category_row(category) is None:
             issues.append(f"Family '{name}' has unknown category '{category}'; category cleared.")
             category = None
+        _load_codes(catalog, name, row, issues)
         catalog.add_family(
             name,
             client=text(row.get("client")) or None,
@@ -184,6 +188,26 @@ def _load_families(catalog, family_rows, link_rows, issues):
         fam.add_param(param)
     for fam in catalog.families:
         fam.validate()
+
+
+def _load_codes(catalog, family_name, row, issues):
+    """Codes sit on each family row; the first family to give a client (or country) a code sets it."""
+    for kind in ("client", "country"):
+        name = text(row.get(kind))
+        code = text(row.get(f"{kind}_code"))
+        if not name or not code:
+            continue
+        current = catalog.code(kind, name)
+        if current and current != code:
+            issues.append(
+                f"Family '{family_name}' gives {kind} '{name}' code '{code}', "
+                f"but it already has '{current}'; kept '{current}'."
+            )
+            continue
+        try:
+            catalog.set_code(kind, name, code)
+        except ValueError as exc:
+            issues.append(f"Family '{family_name}': {exc} Code not loaded.")
 
 
 def _load_schedules(catalog, entry_rows, header_groups, issues):
@@ -293,7 +317,9 @@ def families_table(catalog):
             {
                 "name": _blank(fam.name),
                 "client": _blank(fam.client),
+                "client_code": fam.client_code,
                 "country": _blank(fam.country),
+                "country_code": fam.country_code,
                 "category": _blank(fam.category),
                 "description": _blank(fam.description),
                 "status": fam.status,

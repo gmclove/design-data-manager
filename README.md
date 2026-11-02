@@ -47,6 +47,15 @@ The GUI saves to `data/database.ddm.json` by default, with a readable CSV and th
 alongside. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
 
+## Clients and Countries
+
+A family's **Client** and **Country** are picked from dropdowns listing every client (or country)
+already in the database. To add one that isn't listed, choose **Add New...** and enter its name and
+code. The **Client Code** and **Country Code** columns show the abbreviation of the family's client
+and country, for example ACME or USA. A code belongs to the client or country, not the family, so
+editing it on one family changes it for every family with that client or country. Each code must be
+unique among clients (or among countries).
+
 ## Overriding Default Values
 
 A parameter's default value, formula and Group Under can be overridden for a family, and its

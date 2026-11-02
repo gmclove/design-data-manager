@@ -18,7 +18,11 @@ from formula import FORMULA_FUNCTIONS, check_syntax, rename_reference, scan_refe
 
 CATALOG_FORMAT_VERSION = 3
 # Version 2 files lack schedule field lists and per-schedule family overrides; both default.
+# Client and country codes were added within version 3; files without them load with none.
 READABLE_CATALOG_FORMAT_VERSIONS = (2, 3)
+
+# Families name a client and a country; the catalog keeps one code (abbreviation) for each.
+CODE_KINDS = ('client', 'country')
 
 GUID_CHANGE_WARNING = (
 	"Renaming parameter '{old_name}' to '{new_name}' will assign it a new GUID. "
@@ -335,6 +339,14 @@ class Fam(object):
 	def set_category(self, category):
 		self._validate_category_name(category)
 		self.category = category
+
+	@property
+	def client_code(self):
+		return self.catalog.code('client', self.client) if self.catalog is not None else ''
+
+	@property
+	def country_code(self):
+		return self.catalog.code('country', self.country) if self.catalog is not None else ''
 
 	@property
 	def custom_params(self):
@@ -941,6 +953,8 @@ class Catalog(object):
 		self.params = []
 		self.families = []
 		self.schedules = []
+		# Code (abbreviation) of each client and country, by name: {'client': {name: code}, ...}.
+		self.codes = {kind: {} for kind in CODE_KINDS}
 
 	# --- lookups ----------------------------------------------------------
 
@@ -1011,6 +1025,31 @@ class Catalog(object):
 			if fam in schedule.fams:
 				schedule.remove_family(name)
 		return fam
+
+	# --- client and country codes ------------------------------------------
+
+	def names(self, kind):
+		"""Every client (or country) name with a code or used by a family, sorted."""
+		used = {getattr(fam, kind) for fam in self.families if getattr(fam, kind)}
+		return sorted(set(self.codes[kind]) | used, key=str.lower)
+
+	def code(self, kind, name):
+		"""The code of client (or country) ``name``; ``''`` when it has none."""
+		return self.codes[kind].get(name, '') if name else ''
+
+	def set_code(self, kind, name, code):
+		"""Add client (or country) ``name`` or change its code. Codes are unique per kind."""
+		name = (name or '').strip()
+		code = (code or '').strip()
+		label = kind.capitalize()
+		if not name:
+			raise ValueError('{} name is required.'.format(label))
+		if code:
+			for other_name, other_code in self.codes[kind].items():
+				if other_name != name and other_code.lower() == code.lower():
+					raise ValueError("{} code '{}' is already used by '{}'.".format(label, code, other_name))
+		self.codes[kind][name] = code
+		return code
 
 	def remove_schedule(self, name):
 		schedule = self.get_schedule(name)
@@ -1137,6 +1176,8 @@ class Catalog(object):
 			'params': [param.to_dict() for param in self.params],
 			'families': [fam.to_dict() for fam in self.families],
 			'schedules': [schedule.to_dict() for schedule in self.schedules],
+			'clients': dict(self.codes['client']),
+			'countries': dict(self.codes['country']),
 		}
 
 	@classmethod
@@ -1146,6 +1187,9 @@ class Catalog(object):
 			raise ValueError('Unsupported catalog format version: {}'.format(version))
 
 		catalog = cls()
+		for kind, key in (('client', 'clients'), ('country', 'countries')):
+			for name, code in (data.get(key) or {}).items():
+				catalog.set_code(kind, name, code)
 		for param_data in data.get('params', []):
 			Param.from_dict(param_data, catalog=catalog)
 		for fam_data in data.get('families', []):

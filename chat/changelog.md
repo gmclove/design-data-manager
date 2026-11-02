@@ -2,6 +2,15 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-02: Client and country dropdowns and codes
+- Client and Country are dropdowns (main Families list and family window) with "Add New...",
+  which asks for a name and code.
+- New Client Code and Country Code columns. Codes live on the catalog (`Catalog.codes`, one per
+  client/country, unique per kind); `Fam.client_code` / `country_code` look them up. Editing a code
+  on one family changes it for all families with that client/country.
+- Saved in JSON as `clients` / `countries` (format stays version 3; older files load with no
+  codes) and in the CSV as family-row columns. Conflicting codes in a CSV are reported on load.
+
 ## 2026-11-02: Override Rules info button
 - Family window, schedule window and the "where else" override prompt have an
   "ⓘ Override Rules" button that opens a read-only explanation of the override logic

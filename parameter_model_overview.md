@@ -31,6 +31,11 @@ no global registries, so two catalogs never see each other's names.
 - Each family also gets its own copies of the common `IPS_GROUP_*` parameters (same GUIDs),
   so changing one family's copy never leaks into another family.
 - `Catalog.schedules` holds schedules, which reference families.
+- `Catalog.codes` holds one code (abbreviation) per client and per country:
+  `{'client': {name: code}, 'country': {name: code}}`. A family names its client and country;
+  `fam.client_code` and `fam.country_code` look the code up, so changing a client's code changes it
+  for every family with that client. `catalog.names(kind)`, `catalog.code(kind, name)` and
+  `catalog.set_code(kind, name, code)` read and write them; codes are unique within each kind.
 - Objects built without a catalog (`Param('Width', 'Length')`) are standalone: they validate
   against their own contents only.
 
@@ -107,6 +112,8 @@ be remapped to the new GUID if it changes.
 returns `(catalog, extra)`. Families store catalog parameters by name and family-local
 parameters in full; schedules in a catalog store family names. A standalone schedule's
 `to_dict()` embeds its families instead.
+Client and country codes are saved as `clients` and `countries` maps (files without them load
+with no codes). In the CSV they appear on each family row as `client_code` and `country_code`.
 
 ## GUI
 

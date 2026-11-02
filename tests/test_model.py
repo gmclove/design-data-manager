@@ -569,3 +569,38 @@ def test_rename_updates_family_formula_overrides(scheduled):
 	scheduled.rename_param('Height', 'Tall', keep_guid=True)
 
 	assert scheduled.get_family('F1').overrides['Width']['formula'] == 'Tall * 2'
+
+
+# --- client and country codes ----------------------------------------------
+
+def test_client_and_country_codes_belong_to_the_catalog(catalog):
+	catalog.add_param('Width', 'Length')
+	f1 = catalog.add_family('F1', ['Width'], client='Acme Corp', country='United States')
+	f2 = catalog.add_family('F2', ['Width'], client='Acme Corp', country='Canada')
+
+	assert f1.client_code == ''
+	catalog.set_code('client', 'Acme Corp', ' ACME ')
+	catalog.set_code('country', 'United States', 'USA')
+	assert (f1.client_code, f2.client_code) == ('ACME', 'ACME')
+	assert (f1.country_code, f2.country_code) == ('USA', '')
+
+	# Listed names include ones a family uses before any code is set.
+	assert catalog.names('country') == ['Canada', 'United States']
+	catalog.set_code('client', 'Beta Ltd', 'BETA')
+	assert catalog.names('client') == ['Acme Corp', 'Beta Ltd']
+
+
+def test_codes_must_be_unique_and_round_trip(catalog):
+	catalog.set_code('client', 'Acme Corp', 'ACME')
+	with pytest.raises(ValueError, match="already used by 'Acme Corp'"):
+		catalog.set_code('client', 'Another', 'acme')
+	with pytest.raises(ValueError, match='Client name is required'):
+		catalog.set_code('client', ' ', 'X')
+	catalog.set_code('country', 'Canada', 'ACME')  # codes are unique per kind only
+
+	restored = Catalog.from_dict(json.loads(json.dumps(catalog.to_dict())))
+	assert restored.codes == catalog.codes
+
+	data = catalog.to_dict()
+	del data['clients'], data['countries']
+	assert Catalog.from_dict(data).codes == {'client': {}, 'country': {}}

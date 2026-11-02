@@ -41,7 +41,7 @@ from ddm_tables import (
     text as cell_text,
     write_database_csv,
 )
-from revit_parameter_manager import COMMON_PARAM_NAMES, Catalog, Param, Schedule, guid_change_warning
+from revit_parameter_manager import CODE_KINDS, COMMON_PARAM_NAMES, Catalog, Param, Schedule, guid_change_warning
 from revit_schedule_macro_generator import generate_schedule_macro_source
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content
@@ -86,6 +86,9 @@ def _wrap_text_segment(text, max_width, font):
 
 # Label of the schedule table row that sets every family's Schedule Default Value at once.
 ALL_FAMILIES = "All Families"
+
+# Last choice in the Client and Country dropdowns; opens a dialog to add one that isn't listed.
+ADD_NEW = "Add New..."
 
 # Shown by the Info button on the override windows. Keep in step with the README's
 # "Overriding Default Values" section.
@@ -1190,8 +1193,78 @@ class DDMGUI:
             fam.set_category(value or None)
         elif column_name in {"client", "country", "description"}:
             setattr(fam, column_name, value or None)
+        elif column_name in {"client_code", "country_code"}:
+            # The code belongs to the client (or country), so every family with it changes.
+            kind = column_name[:-len("_code")]
+            if not getattr(fam, kind):
+                raise ValueError(f"Choose a {kind} before setting its code.")
+            self.catalog.set_code(kind, getattr(fam, kind), value)
         else:
             raise ValueError(f"{self._humanize_column_name(column_name)} can't be edited.")
+
+    # --- clients and countries --------------------------------------------------
+
+    def _dropdown_values(self, column_name: str):
+        """Choices for a column's dropdown, or ``None`` for a free-text column."""
+        if column_name in CODE_KINDS:
+            return self.catalog.names(column_name) + [ADD_NEW]
+        return self._revit_dropdown_values(column_name)
+
+    def _ask_new_code_entry(self, kind: str, parent=None):
+        """Ask for a new client (or country) name and code and add it. Returns the name, or ``None``."""
+        label = kind.capitalize()
+        owner = (parent or self.root).winfo_toplevel()
+        dialog = tk.Toplevel(owner)
+        dialog.title(f"Add New {label}")
+        dialog.transient(owner)
+        dialog.geometry("420x200")
+        previous_grab = owner.grab_current()
+
+        ttk.Label(dialog, text=f"Add New {label}", style="Section.TLabel").pack(anchor="w", padx=10, pady=(10, 6))
+        fields = ttk.Frame(dialog)
+        fields.pack(fill="x", padx=10)
+        fields.columnconfigure(1, weight=1)
+        examples = {"client": ("Client Name", "Abbreviation, e.g. ACME"),
+                    "country": ("e.g. United States", "Abbreviation, e.g. USA")}
+        name_hint, code_hint = examples[kind]
+        ttk.Label(fields, text=f"{label} =").grid(row=0, column=0, sticky="w", pady=4)
+        name_entry = PlaceholderEntry(fields, placeholder=name_hint)
+        name_entry.grid(row=0, column=1, sticky="ew", padx=(6, 0), pady=4)
+        ttk.Label(fields, text=f"{label} Code =").grid(row=1, column=0, sticky="w", pady=4)
+        code_entry = PlaceholderEntry(fields, placeholder=code_hint)
+        code_entry.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=4)
+        name_entry.focus_set()
+
+        result = {"name": None}
+
+        def close():
+            dialog.destroy()
+            if previous_grab is not None and previous_grab.winfo_exists():
+                previous_grab.grab_set()
+
+        def add():
+            name = name_entry.get().strip()
+            if name in self.catalog.codes[kind] or name in self.catalog.names(kind):
+                messagebox.showerror("Already Listed", f"{label} '{name}' is already listed.", parent=dialog)
+                return
+            try:
+                self.catalog.set_code(kind, name, code_entry.get())
+            except ValueError as exc:
+                messagebox.showerror("Invalid value", str(exc), parent=dialog)
+                return
+            result["name"] = name
+            close()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", side="bottom", padx=10, pady=8)
+        ttk.Button(buttons, text="Add", command=add).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=close).pack(side="right", padx=(0, 6))
+        dialog.bind("<Return>", lambda _event: add())
+        dialog.bind("<Escape>", lambda _event: close())
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.grab_set()
+        dialog.wait_window()
+        return result["name"]
 
     # --- default value overrides ------------------------------------------------
 
@@ -1688,7 +1761,7 @@ class DDMGUI:
         values = tree.item(row_id, "values")
         current_value = str(values[column_number]) if column_number < len(values) else ""
 
-        dropdown_values = self._revit_dropdown_values(field_name)
+        dropdown_values = self._dropdown_values(field_name)
         if dropdown_values:
             editor = ttk.Combobox(tree, values=[""] + dropdown_values, state="readonly")
             editor.set(current_value)
@@ -1708,6 +1781,8 @@ class DDMGUI:
                 return
             finishing = True
             new_value = editor.get()
+            if new_value == ADD_NEW:
+                new_value = (self._ask_new_code_entry(field_name, tree) if save else None) or current_value
             if save and new_value != current_value:
                 try:
                     self._apply_cell_value(table_name, row_index, field_name, new_value)
@@ -1796,24 +1871,42 @@ class DDMGUI:
                 ).pack(anchor="w", padx=12, pady=(6, 0))
                 continue
             ttk.Label(form, text=self._humanize_column_name(col), style="Section.TLabel").pack(anchor="w", padx=12, pady=(6, 0))
-            dropdown_values = self._revit_dropdown_values(col)
+            dropdown_values = self._dropdown_values(col)
             if dropdown_values:
                 combo = ttk.Combobox(form, values=dropdown_values, state="readonly", width=90)
                 combo.set(str(row.get(col)))
                 entries[col] = combo
                 combo.pack(fill="x", padx=12, pady=(0, 4))
+                if col in CODE_KINDS:
+                    combo.bind("<<ComboboxSelected>>", lambda _event, kind=col: choose_code_entry(kind))
                 continue
             value = tk.StringVar(value=str(row.get(col)))
             entries[col] = value
             ttk.Entry(form, textvariable=value, width=90).pack(fill="x", padx=12, pady=(0, 4))
+
+        chosen = {kind: str(row.get(kind)) for kind in CODE_KINDS}
+
+        def choose_code_entry(kind):
+            """Handle Add New, and show the chosen client's (or country's) code."""
+            combo = entries[kind]
+            if combo.get() == ADD_NEW:
+                name = self._ask_new_code_entry(kind, form)
+                combo.configure(values=self._dropdown_values(kind))
+                combo.set(name if name is not None else chosen[kind])
+            chosen[kind] = combo.get()
+            entries[f"{kind}_code"].set(self.catalog.code(kind, combo.get()))
 
         def save_changes():
             try:
                 # Name first, so a rejected name leaves the other fields untouched.
                 self._set_family_field(fam, "name", entries["name"].get())
                 for col, widget in entries.items():
-                    if col != "name":
-                        self._set_family_field(fam, col, widget.get())
+                    if col == "name":
+                        continue
+                    kind = col[:-len("_code")] if col.endswith("_code") else None
+                    if kind is not None and widget.get() == self.catalog.code(kind, getattr(fam, kind)):
+                        continue  # unchanged; don't touch the shared code
+                    self._set_family_field(fam, col, widget.get())
             except ValueError as exc:
                 messagebox.showerror("Invalid value", str(exc), parent=form)
                 return

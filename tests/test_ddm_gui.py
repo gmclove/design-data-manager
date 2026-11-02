@@ -1726,3 +1726,135 @@ def test_database_output_paths_share_stem_for_json_pickle_and_csv_inputs(tmp_pat
     assert paths[0]["macro"].name == "equipment.cs"
     assert paths[0]["rfps"].name == "equipment.rfps"
     assert paths[0]["shared_parameters"].name == "equipment.txt"
+
+
+# --- clients and countries ----------------------------------------------------
+
+def test_family_table_shows_codes_and_editing_a_code_changes_it_for_the_client():
+    gui = make_test_gui()
+    assert gui._get_table_columns("families")[:5] == ["name", "client", "client_code", "country", "country_code"]
+    assert gui._dropdown_values("client")[-1] == gui_module.ADD_NEW
+    assert "Client B" in gui._dropdown_values("client")
+
+    gui.catalog.get_family("Family_B").client = "Client A"
+    gui._apply_cell_value("families", 0, "client_code", "CLA")
+    assert gui.catalog.get_family("Family_B").client_code == "CLA"
+    assert list(gui.families_df.loc[gui.families_df["client"] == "Client A", "client_code"]) == ["CLA", "CLA"]
+
+    gui.catalog.get_family("Family_A").country = None
+    with pytest.raises(ValueError, match="Choose a country before setting its code"):
+        gui._apply_cell_value("families", 0, "country_code", "US")
+
+
+def test_codes_round_trip_through_csv_and_conflicts_are_reported(tmp_path):
+    gui = make_test_gui()
+    gui.catalog.set_code("client", "Client A", "CLA")
+    gui.catalog.set_code("country", "USA", "US")
+    gui.checkpoint_path = tmp_path / "database.ddm.json"
+    gui.save_checkpoint()
+
+    loaded = make_test_gui()
+    loaded.load_checkpoint(str(tmp_path / "database.ddm.csv"))
+    assert loaded.load_issues == []
+    assert loaded.catalog.get_family("Family_A").client_code == "CLA"
+    assert loaded.catalog.get_family("Family_A").country_code == "US"
+
+    tables = make_test_tables()
+    families = tables["families"].copy()
+    families["client"] = "Client A"
+    families["client_code"] = ["CLA", "OTHER"] + [""] * (len(families) - 2)
+    tables["families"] = families
+    catalog, issues = catalog_from_tables(**tables)
+    assert catalog.code("client", "Client A") == "CLA"
+    assert any("already has 'CLA'" in issue for issue in issues)
+
+
+def test_choosing_add_new_in_the_family_list_adds_a_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.geometry("1200x800")
+    try:
+        gui = DDMGUI(root)
+        gui.notebook.select(gui.family_tab)
+        root.update()
+        tree = gui.family_tree
+        column = gui._get_table_columns("families").index("client")
+
+        def add_new(kind, parent=None):
+            gui.catalog.set_code(kind, "New Client", "NEW")
+            return "New Client"
+
+        monkeypatch.setattr(gui, "_ask_new_code_entry", add_new)
+        gui._start_tree_cell_edit(tree, "families", tree.get_children()[0], column)
+        editor, finish = gui._tree_cell_editor
+        assert editor.cget("values")[-1] == gui_module.ADD_NEW
+        editor.set(gui_module.ADD_NEW)
+        finish(True)
+        fam = gui.catalog.families[0]
+        assert (fam.client, fam.client_code) == ("New Client", "NEW")
+
+        # Cancelling the dialog keeps the old client.
+        monkeypatch.setattr(gui, "_ask_new_code_entry", lambda kind, parent=None: None)
+        gui._start_tree_cell_edit(tree, "families", tree.get_children()[0], column)
+        editor, finish = gui._tree_cell_editor
+        editor.set(gui_module.ADD_NEW)
+        finish(True)
+        assert fam.client == "New Client"
+    finally:
+        root.destroy()
+
+
+def test_add_new_dialog_adds_a_country_with_its_code(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+
+        def fill():
+            dialog = find_window(root, "Add New Country")
+            name_entry, code_entry = [w for w in descendants(dialog) if isinstance(w, gui_module.PlaceholderEntry)]
+            name_entry.insert(0, "Atlantis")
+            code_entry.insert(0, "ATL")
+            find_button(dialog, "Add").invoke()
+
+        failures = run_in_dialog(root, fill)
+        assert gui._ask_new_code_entry("country") == "Atlantis"
+        assert not failures
+        assert gui.catalog.code("country", "Atlantis") == "ATL"
+        assert "Atlantis" in gui._dropdown_values("country")
+    finally:
+        root.destroy()
+
+
+def test_family_window_add_new_client_fills_in_its_code(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        fam = gui.catalog.families[0]
+        old_client = fam.client
+        gui.catalog.set_code("client", old_client, "OLD")
+
+        def add_new(kind, parent=None):
+            gui.catalog.set_code(kind, "New Client", "NEW")
+            return "New Client"
+
+        monkeypatch.setattr(gui, "_ask_new_code_entry", add_new)
+        gui._open_detail_window("family", 0)
+        root.update()
+        form = find_window(root, "Family Details")
+        combo = next(w for w in descendants(form) if isinstance(w, ttk.Combobox) and w.get() == old_client)
+        code_entry = next(w for w in descendants(form) if type(w) is ttk.Entry and w.get() == "OLD")
+        combo.set(gui_module.ADD_NEW)
+        combo.event_generate("<<ComboboxSelected>>")
+        root.update()
+        assert combo.get() == "New Client"
+        assert code_entry.get() == "NEW"
+
+        find_button(form, "Save").invoke()
+        assert (fam.client, fam.client_code) == ("New Client", "NEW")
+        assert gui.catalog.code("client", old_client) == "OLD"  # the old client's code is untouched
+    finally:
+        root.destroy()
