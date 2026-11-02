@@ -209,7 +209,7 @@ def generate_schedule_macro_source(
             lines.extend(
                 [
                     f"                            SchedulableField? {schedulable_field_name} = definition.GetSchedulableFields()",
-                    f"                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), {parameter_literal}, StringComparison.OrdinalIgnoreCase));",
+                    f"                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), {parameter_literal}, StringComparison.OrdinalIgnoreCase));",
                     f"                            if ({schedulable_field_name} == null)",
                     "                            {",
                     f'                                throw new InvalidOperationException("Schedulable parameter not found: " + {parameter_literal});',

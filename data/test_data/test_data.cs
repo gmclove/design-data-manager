@@ -57,7 +57,7 @@ namespace GLoveMacros
                             schedule.Name = "Schedule A";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "Length", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "Length", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "Length");
@@ -74,7 +74,7 @@ namespace GLoveMacros
                                 // Match FormatAllSchedules: continue if a field cannot be centered.
                             }
                             SchedulableField? schedulableField1 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "Width", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "Width", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField1 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "Width");
@@ -142,7 +142,7 @@ namespace GLoveMacros
                             schedule.Name = "Schedule B";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "Length", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "Length", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "Length");
@@ -210,7 +210,7 @@ namespace GLoveMacros
                             schedule.Name = "Envelope Schedule";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "UValue", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "UValue", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "UValue");
@@ -278,7 +278,7 @@ namespace GLoveMacros
                             schedule.Name = "Casework Schedule";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "Depth", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "Depth", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "Depth");
@@ -346,7 +346,7 @@ namespace GLoveMacros
                             schedule.Name = "Guardrail Schedule";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "RValue", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "RValue", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "RValue");
@@ -414,7 +414,7 @@ namespace GLoveMacros
                             schedule.Name = "Structural Schedule";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "GrossArea", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "GrossArea", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "GrossArea");
@@ -482,7 +482,7 @@ namespace GLoveMacros
                             schedule.Name = "Joinery Schedule";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "FinishCode", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "FinishCode", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "FinishCode");
@@ -550,7 +550,7 @@ namespace GLoveMacros
                             schedule.Name = "Mechanical Schedule";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "PowerLoad", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "PowerLoad", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "PowerLoad");
@@ -618,7 +618,7 @@ namespace GLoveMacros
                             schedule.Name = "Facade Review";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "FacadeRatio", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "FacadeRatio", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "FacadeRatio");
@@ -686,7 +686,7 @@ namespace GLoveMacros
                             schedule.Name = "Opening Schedule";
                             ScheduleDefinition definition = schedule.Definition;
                             SchedulableField? schedulableField0 = definition.GetSchedulableFields()
-                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(), "HeadHeight", StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(candidate => string.Equals(candidate.GetName(doc), "HeadHeight", StringComparison.OrdinalIgnoreCase));
                             if (schedulableField0 == null)
                             {
                                 throw new InvalidOperationException("Schedulable parameter not found: " + "HeadHeight");
