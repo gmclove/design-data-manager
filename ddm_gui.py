@@ -128,6 +128,7 @@ class OverrideTable(tk.Canvas):
         self.label_font = tkfont.Font(root=self, font=("Segoe UI", 9, "bold"))
         self.body_font = tkfont.Font(root=self, font=("Segoe UI", 9))
         self.header_top = 0
+        self._cell_editor = None
         self.bind("<Button-1>", self._on_mouse_down)
         self.bind("<B1-Motion>", self._on_mouse_drag)
         self.bind("<Double-Button-1>", self._on_double_click)
@@ -230,7 +231,69 @@ class OverrideTable(tk.Canvas):
             return None
         return row_index, column_index
 
+    def cell_bbox(self, row_index: int, column_index: int):
+        """``(left, top, width, height)`` of a body cell in canvas coordinates."""
+        return (
+            self.column_offsets[column_index],
+            self.body_top + row_index * self.row_height,
+            self.column_widths[column_index],
+            self.row_height,
+        )
+
+    def start_cell_edit(self, row_index: int, column_index: int, value: str, on_commit,
+                        placeholder: str = "", choices=None, on_tab=None):
+        """Edit one body cell in place, with a box laid over the cell.
+
+        Enter, Tab or clicking elsewhere commits and calls ``on_commit(text)``;
+        Escape cancels. Tab then calls ``on_tab()`` to move on. With ``choices`` the
+        box is a drop-down whose blank first entry clears the value.
+        """
+        self.finish_cell_edit(commit=True)
+        left, top, width, height = self.cell_bbox(row_index, column_index)
+        if choices is not None:
+            editor = ttk.Combobox(self, values=["", *choices], state="readonly")
+            editor.set(value)
+            editor.bind("<<ComboboxSelected>>", lambda _event: finish(True), add="+")
+        else:
+            editor = PlaceholderEntry(self, placeholder=placeholder)
+            if value:
+                editor.insert(0, value)
+                editor.selection_range(0, tk.END)
+            # A drop-down list takes focus while open, so only a text box commits on focus loss.
+            editor.bind("<FocusOut>", lambda _event: finish(True), add="+")
+        window = self.create_window(left, top, window=editor, anchor="nw", width=width, height=height)
+        done = False
+
+        def finish(commit, then=None):
+            nonlocal done
+            if done:
+                return "break"
+            done = True
+            text = editor.get()
+            self._cell_editor = None
+            self.delete(window)
+            editor.destroy()
+            if commit:
+                on_commit(text)
+            if then is not None:
+                then()
+            return "break"
+
+        editor.bind("<Return>", lambda _event: finish(True), add="+")
+        editor.bind("<KP_Enter>", lambda _event: finish(True), add="+")
+        editor.bind("<Escape>", lambda _event: finish(False), add="+")
+        editor.bind("<Tab>", lambda _event: finish(True, on_tab), add="+")
+        editor.focus_set()
+        self._cell_editor = (editor, finish)
+        return editor
+
+    def finish_cell_edit(self, commit: bool = True):
+        """Commit (or cancel) the cell being edited, if any."""
+        if self._cell_editor is not None:
+            self._cell_editor[1](commit)
+
     def _on_mouse_down(self, event):
+        self.finish_cell_edit(commit=True)
         index = self._parameter_index_at(event)
         if index is None:
             return
@@ -1153,50 +1216,6 @@ class DDMGUI:
         dialog.wait_window()
         return result["answer"]
 
-    def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save,
-                           placeholder: str = "", field_label: str = "", choices=None):
-        """A small dialog for one value. ``on_save(value)`` returns ``False`` to keep it open.
-
-        ``field_label`` (such as ``"Width ="``) sits on the same line as the box.
-        With ``choices`` the box is a drop-down whose blank first entry clears the value.
-        """
-        editor = tk.Toplevel(parent)
-        editor.title(title)
-        editor.transient(parent)
-        editor.grab_set()
-        editor.geometry("420x130")
-        ttk.Label(editor, text=prompt, style="Section.TLabel", wraplength=400).pack(anchor="w", padx=10, pady=(10, 4))
-        field_row = ttk.Frame(editor)
-        field_row.pack(fill="x", padx=10, pady=4)
-        if field_label:
-            ttk.Label(field_row, text=field_label, style="Section.TLabel").pack(side="left", padx=(0, 6))
-        if choices is not None:
-            entry = ttk.Combobox(field_row, values=["", *choices], state="readonly")
-            entry.set(current_value)
-        else:
-            entry = PlaceholderEntry(field_row, placeholder=placeholder)
-            if current_value:
-                entry.insert(0, current_value)
-                entry.selection_range(0, tk.END)
-        entry.pack(side="left", fill="x", expand=True)
-        entry.focus_set()
-
-        def save():
-            try:
-                saved = on_save(entry.get())
-            except ValueError as exc:
-                messagebox.showerror("Invalid value", str(exc), parent=editor)
-                return
-            if saved is not False:
-                editor.destroy()
-
-        buttons = ttk.Frame(editor)
-        buttons.pack(fill="x", padx=10, pady=(4, 8))
-        ttk.Button(buttons, text="Save", command=save).pack(side="right")
-        ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
-        entry.bind("<Return>", lambda _event: save())
-        return editor
-
     # --- default value tables -----------------------------------------------------
 
     @staticmethod
@@ -1267,37 +1286,52 @@ class DDMGUI:
         parameter_names = [param.name for param in fam.custom_params]
         return self._parameter_table_rows(parameter_names, [fam]) + self._family_table_rows(fam, parameter_names)
 
-    def _edit_table_cell(self, parent, table: "OverrideTable", rows_builder, schedule_name, row_index: int, column_index: int):
-        """Open the edit dialog for one table cell, then the override prompt on save."""
+    def _edit_table_cell(self, table: "OverrideTable", rows_builder, schedule_name, row_index: int, column_index: int):
+        """Edit one table cell in place; on commit, run the override prompt and refresh.
+
+        Tab moves on to the next editable cell in the row.
+        """
         row = table.rows[row_index]
         if not row["cells"][column_index].get("editable"):
             return None
         param_name = table.parameter_names[column_index]
         attribute = row["attribute"]
         family_name = row["family"]
-        term = self._attribute_term(attribute)
         if schedule_name is None:
             own = self.catalog.get_family(family_name).overrides.get(param_name, {})
-            level, fallback, context = "Family", "Parameter", family_name
+            fallback = "Parameter"
         else:
             own = self._get_schedule(schedule_name).family_overrides.get(family_name, {}).get(param_name, {})
-            level, fallback, context = "Schedule", "Family", f"{schedule_name}: {family_name}"
+            fallback = "Family"
         current = own.get(attribute)
+        current = "" if current is None else str(current)
 
-        def save(value):
-            saved = self._override_value((family_name, schedule_name), param_name, value, attribute)
+        def commit(text):
+            if cell_text(text) == current:
+                return
+            try:
+                self._override_value((family_name, schedule_name), param_name, text, attribute)
+            except ValueError as exc:
+                messagebox.showerror("Invalid value", str(exc), parent=table.winfo_toplevel())
             table.set_rows(rows_builder())
-            return saved
 
-        return self._edit_value_dialog(
-            parent,
-            f"Override {level} {term}",
-            context,
-            "" if current is None else str(current),
-            save,
-            placeholder=f"Blank Uses {fallback} {term}",
-            field_label=f"{param_name} Group Under =" if attribute == "group_under" else f"{param_name} =",
+        def edit_next():
+            cells = table.rows[row_index]["cells"]
+            next_column = next(
+                (index for index in range(column_index + 1, len(cells)) if cells[index].get("editable")),
+                None,
+            )
+            if next_column is not None:
+                self._edit_table_cell(table, rows_builder, schedule_name, row_index, next_column)
+
+        return table.start_cell_edit(
+            row_index,
+            column_index,
+            current,
+            commit,
+            placeholder=f"Blank Uses {fallback} {self._attribute_term(attribute)}",
             choices=self._revit_dropdown_values("group_under") if attribute == "group_under" else None,
+            on_tab=edit_next,
         )
 
     def _build_override_table(self, parent, parameter_names, rows, **kwargs) -> "OverrideTable":
@@ -1438,7 +1472,7 @@ class DDMGUI:
 
         ttk.Button(form, text="Save", command=save_changes, style="Action.TButton").pack(pady=(8, 4))
 
-        values_box = ttk.LabelFrame(form, text="Family Default Values (double-click to override)", padding=8)
+        values_box = ttk.LabelFrame(form, text="Family Default Values (double-click a value to edit it)", padding=8)
         values_box.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         rows_builder = lambda: self._family_window_rows(fam)  # noqa: E731 - rebuilt after each edit
         table = self._build_override_table(
@@ -1447,7 +1481,7 @@ class DDMGUI:
             rows_builder(),
             show_header=False,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
-                form, table, rows_builder, None, row_index, column_index
+                table, rows_builder, None, row_index, column_index
             ),
         )
 
@@ -1468,7 +1502,7 @@ class DDMGUI:
 
         table_box = ttk.LabelFrame(
             form,
-            text="Schedule Default Values (double-click a header for column settings, a value to override)",
+            text="Schedule Default Values (double-click a value to edit it, a header for column settings)",
             padding=8,
         )
         table_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
@@ -1540,7 +1574,7 @@ class DDMGUI:
             groups=schedule.header_groups,
             on_header_double_click=edit_schedule_header,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
-                form, table, rows_builder, selected_name, row_index, column_index
+                table, rows_builder, selected_name, row_index, column_index
             ),
             grid_column_widths=[
                 self._get_schedule_grid_column_width(schedule, name) for name in parameter_names

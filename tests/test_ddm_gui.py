@@ -1144,24 +1144,53 @@ def test_placeholder_entry_shows_gray_hint_until_typing_and_never_returns_it():
         root.destroy()
 
 
-def test_value_dialog_puts_the_parameter_label_on_the_box_line():
+def test_table_cells_edit_in_place_with_cancel_and_tab():
     root = tk.Tk()
     root.withdraw()
     try:
-        gui = three_family_gui()
-        gui.root = root
-        saved = []
-        editor = gui._edit_value_dialog(
-            root, "Override Schedule Default Value", "S1: F1", "", saved.append,
-            placeholder="Blank Uses Family Default Value", field_label="Width =",
+        gui = gui_from_tables(
+            params=pd.DataFrame([
+                {"name": name, "dtype": "Length", "instance_param": True, "default_value": "1"}
+                for name in ("Width", "Height")
+            ]),
+            families=pd.DataFrame([{"name": "F1", "category": "Doors"}]),
+            links=pd.DataFrame([{"family_name": "F1", "parameter_name": name} for name in ("Width", "Height")]),
         )
-        entry = next(widget for widget in descendants(editor) if isinstance(widget, gui_module.PlaceholderEntry))
-        row_labels = [widget.cget("text") for widget in entry.master.winfo_children() if isinstance(widget, ttk.Label)]
-        assert row_labels == ["Width ="]
+        gui.root = root
+        fam = gui.catalog.get_family("F1")
+        gui._ask_override_scope = answering({})
+        rows_builder = lambda: gui._family_window_rows(fam)  # noqa: E731
+        table = OverrideTable(root, ["Width", "Height"], rows=rows_builder(), show_header=False)
+        value_row = next(index for index, row in enumerate(table.rows) if row.get("attribute") == "value")
 
-        entry.insert(0, "7")
-        find_button(editor, "Save").invoke()
-        assert saved == ["7"]
+        # The box sits exactly over the cell and shows the placeholder while empty.
+        entry = gui._edit_table_cell(table, rows_builder, None, value_row, 0)
+        window = table.find_withtag("all")[-1]
+        assert tuple(table.coords(window)) == table.cell_bbox(value_row, 0)[:2]
+        assert entry.placeholder == "Blank Uses Parameter Default Value"
+
+        # Escape cancels.
+        entry.insert(0, "9")
+        table._cell_editor[1](False)
+        assert fam.overrides == {}
+
+        # Tab commits and moves to the next editable cell in the row.
+        entry = gui._edit_table_cell(table, rows_builder, None, value_row, 0)
+        entry.insert(0, "5")
+        table._cell_editor[1](True, lambda: gui._edit_table_cell(table, rows_builder, None, value_row, 1))
+        assert fam.overrides == {"Width": {"value": "5"}}
+        assert table._cell_editor is not None
+        table._cell_editor[0].insert(0, "6")
+        table.finish_cell_edit()
+        assert fam.overrides == {"Width": {"value": "5"}, "Height": {"value": "6"}}
+
+        # Committing an unchanged value doesn't prompt or change anything.
+        gui._ask_override_scope = lambda *args: pytest.fail("should not prompt")
+        gui._edit_table_cell(table, rows_builder, None, value_row, 0)
+        table.finish_cell_edit()
+
+        # Read-only cells (the Parameter block) don't open a box.
+        assert gui._edit_table_cell(table, rows_builder, None, 1, 0) is None
     finally:
         root.destroy()
 
@@ -1306,12 +1335,14 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
             y=table.body_top + row_index * table.row_height + 5,
         ))
         root.update()
-        editor = find_window(schedule_popup, "Override Schedule Default Value")
-        entry = next(widget for widget in descendants(editor) if isinstance(widget, gui_module.PlaceholderEntry))
+        entry, finish = table._cell_editor
+        assert entry.master is table
+        assert entry.get() == "Override Width"
         entry.delete(0, tk.END)
         entry.insert(0, "3.5")
-        find_button(editor, "Save").invoke()
+        finish(True)
 
+        assert table._cell_editor is None
         assert gui.catalog.resolved_value(("Family_A", "Schedule A"), "Width") == "3.5"
         assert cells(table.rows, "Default Value", "Family_A")[1] == ("3.5", "set", True)
     finally:
@@ -1343,11 +1374,9 @@ def test_family_window_lists_values_and_saves_fields(tmp_path, monkeypatch):
             x=table.column_offsets[0] + 10, y=table.body_top + row_index * table.row_height + 5,
         ))
         root.update()
-        editor = find_window(form, "Override Family Default Formula")
-        entry = next(widget for widget in descendants(editor) if isinstance(widget, gui_module.PlaceholderEntry))
-        entry.delete(0, tk.END)
+        entry, finish = table._cell_editor
         entry.insert(0, "Width * 2")
-        find_button(editor, "Save").invoke()
+        finish(True)
         assert fam.overrides[table.parameter_names[0]] == {"formula": "Width * 2"}
 
         description = next(
