@@ -22,10 +22,7 @@ folder works.
 - A new machine needs its own SSH key added at https://github.com/settings/keys.
 
 ## State (2026-11-01)
-- `dev` and `main` are identical; no other branches. `catalog-model` was merged into `dev` and
-  deleted; `foundation-cleanup` was merged and deleted.
-- `ddm_gui.py` is the GUI. Its tables are still its source of truth; each validation builds a fresh
-  `Catalog` from them. Next step is in [plan.md](plan.md).
-- Parameter rename work (stored GUIDs, keep/replace GUID prompt, rename updates every reference)
-  is done and merged. Nothing in progress.
-- Tests: 112 pass, 1 known failure (see [plan.md](plan.md)).
+- `dev` and `main` are identical. Feature branch `gui-on-catalog` (second machine) is finished
+  but not merged yet: the GUI on the `Catalog`, JSON saves, and the override "where else?" prompt.
+  See [changelog.md](changelog.md).
+- On that branch: 124 tests pass, 1 known failure (see [plan.md](plan.md)).

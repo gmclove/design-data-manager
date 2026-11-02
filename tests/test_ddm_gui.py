@@ -1,11 +1,10 @@
-import importlib.util
 import pickle
-from pathlib import Path
 from types import SimpleNamespace
 import tkinter as tk
 from tkinter import ttk
 
 import pandas as pd
+import pytest
 
 import ddm_gui as gui_module
 from config.app_paths import (
@@ -16,14 +15,10 @@ from config.app_paths import (
     get_database_output_paths,
 )
 from ddm_gui import DDMGUI, ScheduleHeaderCanvas
-
-
-def load_model_module():
-    module_path = Path(__file__).resolve().parent.parent / "revit_parameter_manager.py"
-    spec = importlib.util.spec_from_file_location("revit_parameter_manager_model", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from ddm_tables import catalog_from_tables
+from revit_parameter_manager import Catalog
+import revit_parameter_manager as model
+from revit_shared_parameter_export import parameter_guid
 
 
 class DummyText:
@@ -34,7 +29,8 @@ class DummyText:
         pass
 
 
-def make_test_gui():
+def make_test_tables():
+    """The GUI test database as tables: params, families, links and schedule entries."""
     database_df = pd.read_csv(TEST_DATABASE_CSV_PATH, dtype=str, keep_default_na=False)
     params_df = database_df.loc[database_df["record_type"] == "parameter"].drop(
         columns="record_type"
@@ -258,17 +254,7 @@ def make_test_gui():
         ]
     )
 
-    gui = DDMGUI.__new__(DDMGUI)
-    gui.params_df = params_df
-    gui.families_df = families_df
-    gui.family_param_links_df = family_param_links_df
-    gui.warning_text = DummyText()
-    gui.checkpoint_path = gui_module.DEFAULT_CHECKPOINT_PATH
-    gui.param_tree = None
-    gui.family_tree = None
-    gui.link_tree = None
-    gui.group_tree = None
-    gui.family_groups_df = pd.DataFrame(
+    entries_df = pd.DataFrame(
         [
             {
                 "family_name": "Family_A",
@@ -400,99 +386,128 @@ def make_test_gui():
             },
         ]
     )
+    return {
+        "params": params_df,
+        "families": families_df,
+        "links": family_param_links_df,
+        "entries": entries_df,
+    }
+
+
+def gui_from_tables(header_groups=None, **tables):
+    """A GUI without a window, holding a catalog built from ``tables``."""
+    gui = DDMGUI.__new__(DDMGUI)
+    gui.warning_text = DummyText()
+    gui.checkpoint_path = gui_module.DEFAULT_CHECKPOINT_PATH
+    gui.param_tree = None
+    gui.family_tree = None
+    gui.group_tree = None
+    gui.catalog, gui.load_issues = catalog_from_tables(header_groups=header_groups, **tables)
+    gui.catalog.validate()
     return gui
 
 
+def make_test_gui(header_groups=None, **changes):
+    tables = make_test_tables()
+    tables.update(changes)
+    return gui_from_tables(header_groups=header_groups, **tables)
+
+
+def row_index(frame, **match):
+    mask = pd.Series(True, index=frame.index)
+    for column, value in match.items():
+        mask &= frame[column] == value
+    return int(mask[mask].index[0])
+
+
+def descendants(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from descendants(child)
+
+
+def find_window(root, title):
+    return next(
+        widget for widget in descendants(root)
+        if isinstance(widget, tk.Toplevel) and widget.title() == title
+    )
+
+
+def find_button(window, text):
+    return next(
+        widget for widget in descendants(window)
+        if isinstance(widget, ttk.Button) and widget.cget("text") == text
+    )
+
+
+# --- model ------------------------------------------------------------------
+
 def test_schedule_name_is_required_and_unique():
-    module = load_model_module()
-    catalog = module.Catalog()
+    catalog = Catalog()
 
     first = catalog.add_schedule("Mechanical Schedule")
     assert first.name == "Mechanical Schedule"
 
-    try:
+    with pytest.raises(ValueError):
         catalog.add_schedule("Mechanical Schedule")
-        raise AssertionError("Duplicate schedule names should fail")
-    except ValueError:
-        pass
-
-    try:
-        module.Schedule(name="   ")
-        raise AssertionError("Blank schedule names should fail")
-    except ValueError:
-        pass
+    with pytest.raises(ValueError):
+        model.Schedule(name="   ")
 
 
 def test_schedule_header_text_override_uses_parameter_default_and_round_trips():
-    module = load_model_module()
-    default_param = module.Param("Width", "Length")
-    custom_param = module.Param("Height", "Length", header_text="Overall Height")
-    family = module.Fam(name="Header Family", category="Doors", params=[default_param, custom_param])
-    schedule = module.Schedule(name="Header Schedule", fams=[family])
+    default_param = model.Param("Width", "Length")
+    custom_param = model.Param("Height", "Length", header_text="Overall Height")
+    family = model.Fam(name="Header Family", category="Doors", params=[default_param, custom_param])
+    schedule = model.Schedule(name="Header Schedule", fams=[family])
 
-    default_header = next(param.header_text for param in schedule.params if param.name == "Width")
-    assert default_header == "Width"
+    assert next(param.header_text for param in schedule.params if param.name == "Width") == "Width"
     assert next(param.header_text for param in schedule.params if param.name == "Height") == "Overall Height"
     assert schedule.override_param("Height", header_text="")
     assert next(param.header_text for param in schedule.params if param.name == "Height") == "Overall Height"
     assert schedule.override_param("Height", header_text="Schedule Height")
     assert next(param.header_text for param in schedule.params if param.name == "Height") == "Schedule Height"
 
-    serialized_schedule = schedule.to_dict()
-    restored = module.Schedule.from_dict(serialized_schedule)
+    restored = model.Schedule.from_dict(schedule.to_dict())
     assert next(param.header_text for param in restored.params if param.name == "Height") == "Schedule Height"
 
 
 def test_parameter_grid_column_width_can_be_overridden_per_schedule():
-    module = load_model_module()
-    width_param = module.Param("Width", "Length", grid_column_width=1.25)
-    family = module.Fam(name="Width Family", category="Doors", params=[width_param])
-    schedule = module.Schedule(name="Width Schedule", fams=[family])
+    width_param = model.Param("Width", "Length", grid_column_width=1.25)
+    family = model.Fam(name="Width Family", category="Doors", params=[width_param])
+    schedule = model.Schedule(name="Width Schedule", fams=[family])
 
     assert next(param.grid_column_width for param in schedule.params if param.name == "Width") == 1.25
     schedule.override_param("Width", grid_column_width=2.5)
     assert next(param.grid_column_width for param in schedule.params if param.name == "Width") == 2.5
 
-    serialized_schedule = schedule.to_dict()
-    restored = module.Schedule.from_dict(serialized_schedule)
+    restored = model.Schedule.from_dict(schedule.to_dict())
     assert restored.grid_column_width_overrides == {"Width": 2.5}
     restored.override_param("Width", grid_column_width=None)
     assert next(param.grid_column_width for param in restored.params if param.name == "Width") == 1.25
 
 
 def test_parameter_name_is_required_and_supplied_guid_is_preserved():
-    module = load_model_module()
-    parameter = module.Param("Width", "Length", guid="existing-guid")
+    parameter = model.Param("Width", "Length", guid="existing-guid")
     assert parameter.guid == "existing-guid"
 
     for name in (None, "", "   "):
-        try:
-            module.Param(name, "Text")
-            raise AssertionError("Blank parameter names should fail")
-        except ValueError as exc:
-            assert "name is required" in str(exc).lower()
+        with pytest.raises(ValueError, match="(?i)name is required"):
+            model.Param(name, "Text")
 
-    try:
+    with pytest.raises(ValueError, match="(?i)name is required"):
         parameter.name = "   "
-        raise AssertionError("Renaming to a blank name should fail")
-    except ValueError as exc:
-        assert "name is required" in str(exc).lower()
     assert parameter.name == "Width"
 
-    family = module.Fam(name="   ", params=[module.Param("Custom", "Text")])
+    family = model.Fam(name="   ", params=[model.Param("Custom", "Text")])
     assert family.status == "Error"
     assert "name is required" in family.validation_message
 
 
 def test_family_validation_rejects_duplicate_parameters():
-    module = load_model_module()
-    width_a = module.Param("Width", "Length")
-    width_b = module.Param("Width", "Length")
-
-    family = module.Fam(
+    family = model.Fam(
         name="Duplicate Parameter Family",
         category="Doors",
-        params=[width_a, width_b],
+        params=[model.Param("Width", "Length"), model.Param("Width", "Length")],
     )
 
     assert family.status == "Error"
@@ -501,165 +516,105 @@ def test_family_validation_rejects_duplicate_parameters():
 
 
 def test_schedule_contains_a_shared_parameter_only_once():
-    module = load_model_module()
-    family_a = module.Fam(
-        name="Schedule Family A",
-        category="Doors",
-        params=[module.Param("Width", "Length")],
-    )
-    family_b = module.Fam(
+    family_a = model.Fam(name="Schedule Family A", category="Doors", params=[model.Param("Width", "Length")])
+    family_b = model.Fam(
         name="Schedule Family B",
         category="Windows",
-        params=[
-            module.Param("Width", "Length"),
-            module.Param("Height", "Length"),
-        ],
+        params=[model.Param("Width", "Length"), model.Param("Height", "Length")],
     )
 
-    schedule = module.Schedule(
-        name="Unique Schedule Parameters",
-        fams=[family_a, family_b],
-    )
+    schedule = model.Schedule(name="Unique Schedule Parameters", fams=[family_a, family_b])
 
     parameter_names = [param.name for param in schedule.params]
     assert parameter_names.count("Width") == 1
     assert parameter_names.count("Height") == 1
 
 
-def test_gui_rejects_invalid_width_and_defaults_blank_width():
-    gui = make_test_gui()
-    gui.params_df["grid_column_width"] = pd.Series(
-        gui._default_grid_column_width_in,
-        index=gui.params_df.index,
-        dtype=object,
-    )
-    original_width = gui.params_df.at[0, "grid_column_width"]
-
-    for invalid_width in ("wide", "-1", "0", "inf"):
-        try:
-            gui._apply_cell_value("params", 0, "grid_column_width", invalid_width)
-            raise AssertionError("Invalid widths should fail")
-        except ValueError:
-            pass
-        assert gui.params_df.at[0, "grid_column_width"] == original_width
-
-    gui._apply_cell_value("params", 0, "grid_column_width", "")
-    assert gui.params_df.at[0, "grid_column_width"] == 1.0
-    assert gui.params_df.at[0, "grid_column_width"] == gui._default_grid_column_width_in
-    assert gui._default_grid_column_width_in == 1.0
-    assert DDMGUI._display_labels["grid_column_width"] == "Grid Column Width (in)"
-
-
-def test_validation_reports_invalid_persisted_values_without_crashing():
-    gui = make_test_gui()
-    gui.params_df["grid_column_width"] = pd.Series(
-        gui._default_grid_column_width_in,
-        index=gui.params_df.index,
-        dtype=object,
-    )
-    gui.params_df["instance_param"] = gui.params_df["instance_param"].astype(object)
-    gui.params_df.at[0, "instance_param"] = "sometimes"
-    gui.params_df.at[1, "grid_column_width"] = "wide"
-    gui.params_df.at[2, "name"] = ""
-    gui.families_df.at[0, "category"] = "Not a Revit category"
-    gui.families_df.at[1, "name"] = ""
-
-    gui.validate_all()
-
-    assert gui.params_df.at[0, "status"] == "Error"
-    assert "true or false" in gui.params_df.at[0, "validation_message"]
-    assert gui.params_df.at[1, "status"] == "Error"
-    assert "number in inches" in gui.params_df.at[1, "validation_message"]
-    assert gui.params_df.at[2, "status"] == "Error"
-    assert gui.families_df.at[0, "status"] == "Error"
-    assert gui.families_df.at[1, "status"] == "Error"
-
-
-def test_gui_rejects_invalid_boolean_and_validation_owned_fields():
-    gui = make_test_gui()
-
-    try:
-        gui._apply_cell_value("params", 0, "instance_param", "sometimes")
-        raise AssertionError("Unrecognized boolean values should fail")
-    except ValueError as exc:
-        assert "true or false" in str(exc).lower()
-
-    for column_name in ("status", "validation_message"):
-        try:
-            gui._apply_cell_value("params", 0, column_name, "Ready")
-            raise AssertionError("Validation-owned fields should not be editable")
-        except ValueError as exc:
-            assert "generated by validation" in str(exc).lower()
-
-
-def test_sync_is_blocked_when_validation_errors_exist(monkeypatch):
-    gui = make_test_gui()
-    gui.params_df.at[0, "name"] = ""
-    warning_calls = []
-
-    def fail_if_sync_starts(*args, **kwargs):
-        raise AssertionError("Quickbase client should not be created for invalid data")
-
-    monkeypatch.setattr(gui_module.os, "getenv", lambda key, default=None: {
-        "QB_APP_ID": "test-app",
-        "QB_USER_TOKEN": "test-token",
-    }.get(key, default))
-    monkeypatch.setattr(gui_module.messagebox, "showwarning", lambda *args, **kwargs: warning_calls.append(args))
-    monkeypatch.setattr(gui_module, "QuickbaseClient", fail_if_sync_starts)
-    monkeypatch.setattr(gui_module, "QuickbaseSyncService", fail_if_sync_starts)
-
-    gui.sync_to_quickbase()
-
-    assert warning_calls
-    assert warning_calls[0][0] == "Validation failed"
-
-
 def test_schedule_header_groups_round_trip_with_parameter_references():
-    module = load_model_module()
-    family = module.Fam(
+    family = model.Fam(
         name="Grouped Header Family",
         category="Doors",
-        params=[
-            module.Param("Width", "Length"),
-            module.Param("Height", "Length"),
-            module.Param("Depth", "Length"),
-        ],
+        params=[model.Param("Width", "Length"), model.Param("Height", "Length"), model.Param("Depth", "Length")],
     )
-    schedule = module.Schedule(name="Grouped Header Schedule", fams=[family])
+    schedule = model.Schedule(name="Grouped Header Schedule", fams=[family])
 
     schedule.add_header_group("Size", ["Width", "Height"], top_row=0, bottom_row=0)
-    serialized_schedule = schedule.to_dict()
-    restored = module.Schedule.from_dict(serialized_schedule)
+    restored = model.Schedule.from_dict(schedule.to_dict())
 
     assert restored.header_groups == [
-        {
-            "caption": "Size",
-            "parameter_names": ["Width", "Height"],
-            "top_row": 0,
-            "bottom_row": 0,
-        }
+        {"caption": "Size", "parameter_names": ["Width", "Height"], "top_row": 0, "bottom_row": 0}
     ]
 
 
 def test_schedule_header_groups_reject_noncontiguous_parameters():
-    module = load_model_module()
-    family = module.Fam(
+    family = model.Fam(
         name="Noncontiguous Header Family",
         category="Doors",
-        params=[
-            module.Param("Width", "Length"),
-            module.Param("Height", "Length"),
-            module.Param("Depth", "Length"),
-        ],
+        params=[model.Param("Width", "Length"), model.Param("Height", "Length"), model.Param("Depth", "Length")],
     )
-    schedule = module.Schedule(name="Noncontiguous Header Schedule", fams=[family])
+    schedule = model.Schedule(name="Noncontiguous Header Schedule", fams=[family])
 
-    try:
+    with pytest.raises(ValueError, match="(?i)contiguous"):
         schedule.add_header_group("Outer", ["Width", "Depth"])
-        raise AssertionError("Header groups must reference contiguous schedule fields")
-    except ValueError as exc:
-        assert "contiguous" in str(exc).lower()
 
+
+# --- loading tables into the catalog ------------------------------------------
+
+def test_loading_fixes_and_reports_invalid_records():
+    tables = make_test_tables()
+    params = tables["params"].copy()
+    params["instance_param"] = params["instance_param"].astype(object)
+    params["grid_column_width"] = params["grid_column_width"].astype(object)
+    first, second, third = params["name"].iloc[:3]
+    params.at[0, "instance_param"] = "sometimes"
+    params.at[1, "grid_column_width"] = "wide"
+    params.at[2, "name"] = ""
+    families = tables["families"].copy()
+    first_family, second_family = families["name"].iloc[:2]
+    families.at[0, "category"] = "Not a Revit category"
+    families.at[1, "name"] = ""
+
+    gui = make_test_gui(params=params, families=families)
+
+    issues = "\n".join(gui.load_issues)
+    assert f"Parameter '{first}': Instance Param must be true or false" in issues
+    assert gui.catalog.get_param(first).instance_param is True
+    assert f"Parameter '{second}': Grid column width must be a number in inches." in issues
+    assert gui.catalog.get_param(second).grid_column_width == 1.0
+    assert "Parameter row 3 has no name; skipped." in issues
+    assert gui.catalog.get_param(third) is None
+    assert f"Family '{first_family}' has unknown category 'Not a Revit category'" in issues
+    assert gui.catalog.get_family(first_family).category is None
+    assert "Family row 2 has no name; skipped." in issues
+    assert gui.catalog.get_family(second_family) is None
+
+
+def test_loading_reports_links_to_unknown_parameters_and_duplicates():
+    tables = make_test_tables()
+    links = pd.concat(
+        [tables["links"], pd.DataFrame([
+            {"family_name": "Family_A", "parameter_name": "Length"},
+            {"family_name": "Family_A", "parameter_name": "Ghost"},
+        ])],
+        ignore_index=True,
+    )
+
+    gui = make_test_gui(links=links)
+
+    assert "Duplicate link 'Family_A' -> 'Length'; kept one." in gui.load_issues
+    assert "Family 'Family_A' links unknown parameter 'Ghost'; skipped." in gui.load_issues
+    family_a_links = gui.family_param_links_df.query("family_name == 'Family_A'")["parameter_name"].tolist()
+    assert family_a_links.count("Length") == 1
+
+
+def test_loaded_guid_defaults_to_name_based_export_guid():
+    gui = make_test_gui()
+
+    for _, row in gui.params_df.iterrows():
+        assert row["guid"] == parameter_guid(row["name"])
+
+
+# --- validation -------------------------------------------------------------
 
 def test_validation_flags_missing_references():
     gui = make_test_gui()
@@ -680,76 +635,86 @@ def test_family_validation_accepts_associated_params():
 
 
 def test_family_validation_detects_missing_link():
-    gui = make_test_gui()
-    gui.family_param_links_df = gui.family_param_links_df[gui.family_param_links_df["family_name"] != "Family_A"]
+    tables = make_test_tables()
+    gui = make_test_gui(links=tables["links"][tables["links"]["family_name"] != "Family_A"])
     gui.validate_all()
 
     family_a = gui.families_df[gui.families_df["name"] == "Family_A"].iloc[0]
     assert str(family_a["status"]).lower() == "error"
 
 
-def test_duplicate_family_parameter_link_is_validation_error():
+def test_sync_is_blocked_when_validation_errors_exist(monkeypatch):
     gui = make_test_gui()
-    duplicate_link = gui.family_param_links_df[
-        (gui.family_param_links_df["family_name"] == "Family_A")
-        & (gui.family_param_links_df["parameter_name"] == "Length")
-    ].iloc[0]
-    gui.family_param_links_df = pd.concat(
-        [gui.family_param_links_df, duplicate_link.to_frame().T],
-        ignore_index=True,
-    )
+    warning_calls = []
 
-    gui.validate_all()
+    def fail_if_sync_starts(*args, **kwargs):
+        raise AssertionError("Quickbase client should not be created for invalid data")
 
-    family_a = gui.families_df[gui.families_df["name"] == "Family_A"].iloc[0]
-    assert str(family_a["status"]).lower() == "error"
-    assert "Duplicate parameter link(s): Length." in family_a["validation_message"]
+    monkeypatch.setattr(gui_module.os, "getenv", lambda key, default=None: {
+        "QB_APP_ID": "test-app",
+        "QB_USER_TOKEN": "test-token",
+    }.get(key, default))
+    monkeypatch.setattr(gui_module.messagebox, "showwarning", lambda *args, **kwargs: warning_calls.append(args))
+    monkeypatch.setattr(gui_module, "QuickbaseClient", fail_if_sync_starts)
+    monkeypatch.setattr(gui_module, "QuickbaseSyncService", fail_if_sync_starts)
+
+    gui.sync_to_quickbase()
+
+    assert warning_calls
+    assert warning_calls[0][0] == "Validation failed"
 
 
-def test_duplicate_schedule_entry_is_validation_error():
+# --- editing ----------------------------------------------------------------
+
+def test_gui_cell_edit_updates_the_model():
     gui = make_test_gui()
-    duplicate_entry = gui.family_groups_df[
-        (gui.family_groups_df["family_name"] == "Family_A")
-        & (gui.family_groups_df["group_name"] == "Schedule A")
-        & (gui.family_groups_df["parameter_name"] == "Length")
-    ].iloc[0]
-    gui.family_groups_df = pd.concat(
-        [gui.family_groups_df, duplicate_entry.to_frame().T],
-        ignore_index=True,
-    )
-
-    gui.validate_all()
-
-    duplicate_rows = gui.family_groups_df[
-        (gui.family_groups_df["family_name"] == "Family_A")
-        & (gui.family_groups_df["group_name"] == "Schedule A")
-        & (gui.family_groups_df["parameter_name"] == "Length")
-    ]
-    assert duplicate_rows["status"].str.lower().eq("error").all()
-    schedule = gui._build_schedule_summary_df()
-    schedule_a = schedule[schedule["name"] == "Schedule A"].iloc[0]
-    assert str(schedule_a["status"]).lower() == "error"
-
-
-def test_gui_cell_edit_updates_dataframe():
-    gui = make_test_gui()
+    name = gui.catalog.params[0].name
     gui._apply_cell_value("params", 0, "formula", "Width + Height")
 
+    assert gui.catalog.get_param(name).formula == "Width + Height"
     assert gui.params_df.at[0, "formula"] == "Width + Height"
-    assert gui.params_df.at[0, "status"] == "Ready"
 
 
-def test_parameter_guid_defaults_to_name_based_export_guid():
+def test_gui_rejects_invalid_width_and_defaults_blank_width():
     gui = make_test_gui()
-    gui.validate_all()
+    original_width = gui.params_df.at[0, "grid_column_width"]
 
-    for _, row in gui.params_df.iterrows():
-        assert row["guid"] == gui_module.parameter_guid(row["name"])
+    for invalid_width in ("wide", "-1", "0", "inf"):
+        with pytest.raises(ValueError):
+            gui._apply_cell_value("params", 0, "grid_column_width", invalid_width)
+        assert gui.params_df.at[0, "grid_column_width"] == original_width
+
+    gui._apply_cell_value("params", 0, "grid_column_width", "2.5")
+    assert gui.params_df.at[0, "grid_column_width"] == 2.5
+    gui._apply_cell_value("params", 0, "grid_column_width", "")
+    assert gui.params_df.at[0, "grid_column_width"] == gui._default_grid_column_width_in == 1.0
+    assert DDMGUI._display_labels["grid_column_width"] == "Grid Column Width (in)"
+
+
+def test_gui_rejects_invalid_boolean_and_validation_owned_fields():
+    gui = make_test_gui()
+
+    with pytest.raises(ValueError, match="(?i)true or false"):
+        gui._apply_cell_value("params", 0, "instance_param", "sometimes")
+
+    for column_name in ("status", "validation_message"):
+        with pytest.raises(ValueError, match="(?i)generated by validation"):
+            gui._apply_cell_value("params", 0, column_name, "Ready")
+
+
+def test_gui_rejects_unknown_data_type_category_and_blank_family_name():
+    gui = make_test_gui()
+
+    with pytest.raises(ValueError, match="Unknown dtype"):
+        gui._apply_cell_value("params", 0, "dtype", "Not a type")
+    with pytest.raises(ValueError, match="Unknown family category"):
+        gui._apply_cell_value("families", 0, "category", "Not a category")
+    with pytest.raises(ValueError, match="Family name is required"):
+        gui._apply_cell_value("families", 0, "name", "  ")
 
 
 def test_gui_rename_prompts_and_assigns_new_guid_or_keeps_current(monkeypatch):
     gui = make_test_gui()
-    gui.validate_all()
     original_name = gui.params_df.at[0, "name"]
     original_guid = gui.params_df.at[0, "guid"]
     prompts = []
@@ -772,142 +737,241 @@ def test_gui_rename_prompts_and_assigns_new_guid_or_keeps_current(monkeypatch):
 
     gui._apply_cell_value("params", 0, "name", "NewGuid")
     assert gui.params_df.at[0, "name"] == "NewGuid"
-    assert gui.params_df.at[0, "guid"] not in {original_guid, gui_module.parameter_guid("NewGuid")}
+    assert gui.params_df.at[0, "guid"] not in {original_guid, parameter_guid("NewGuid")}
 
-    try:
+    with pytest.raises(ValueError, match="assigned automatically"):
         gui._apply_cell_value("params", 0, "guid", "hand-typed")
-        raise AssertionError("GUID should not be editable")
-    except ValueError as exc:
-        assert "assigned automatically" in str(exc)
 
 
 def test_gui_rename_updates_every_reference_to_the_parameter(monkeypatch):
-    gui = make_test_gui()
-    gui.params_df = pd.DataFrame(
-        [
+    gui = gui_from_tables(
+        params=pd.DataFrame([
             {"name": "Width", "header_text": "Width", "dtype": "Length", "formula": "", "instance_param": True},
             {"name": "Height", "header_text": "Clear Height", "dtype": "Length", "formula": "", "instance_param": True},
             {"name": "GlassWidth", "header_text": "GlassWidth", "dtype": "Length", "formula": "", "instance_param": True},
             {"name": "Area", "header_text": "Area", "dtype": "Area", "formula": "Width * Height + GlassWidth", "instance_param": True},
-        ]
+        ]),
+        families=pd.DataFrame([{"name": "Family_A", "category": "Doors"}]),
+        links=pd.DataFrame([
+            {"family_name": "Family_A", "parameter_name": name}
+            for name in ("Width", "Height", "GlassWidth", "Area")
+        ]),
+        entries=pd.DataFrame([
+            {"family_name": "Family_A", "group_name": "Schedule A", "parameter_name": "Width",
+             "header_text_override": "W", "override_entry": "3"},
+            {"family_name": "Family_A", "group_name": "Schedule A", "parameter_name": "Height"},
+        ]),
+        header_groups={
+            "Schedule A": [{"caption": "Size", "parameter_names": ["Height", "Width"], "top_row": 0, "bottom_row": 0}]
+        },
     )
-    gui.family_param_links_df = pd.DataFrame(
-        [
-            {"family_name": "Family_A", "parameter_name": "Width"},
-            {"family_name": "Family_A", "parameter_name": "GlassWidth"},
-        ]
-    )
-    gui.family_groups_df = pd.DataFrame(
-        [{"family_name": "Family_A", "group_name": "Schedule A", "parameter_name": "Width", "header_text_override": "W"}]
-    )
-    gui.schedule_header_groups = {
-        "Schedule A": [{"caption": "Size", "parameter_names": ["Width", "Height"], "top_row": 0, "bottom_row": 0}]
-    }
     monkeypatch.setattr(gui_module.messagebox, "askyesnocancel", lambda *args, **kwargs: False)
 
     gui._apply_cell_value("params", 0, "name", "Rough Width")
 
-    assert gui.params_df.at[0, "header_text"] == "Rough Width"
-    assert gui.params_df.at[3, "formula"] == "Rough Width * Height + GlassWidth"
-    assert gui.family_param_links_df["parameter_name"].tolist() == ["Rough Width", "GlassWidth"]
-    assert gui.family_groups_df.at[0, "parameter_name"] == "Rough Width"
-    assert gui.family_groups_df.at[0, "header_text_override"] == "W"
-    assert gui.schedule_header_groups["Schedule A"][0]["parameter_names"] == ["Rough Width", "Height"]
+    params = gui.params_df.set_index("name")
+    assert params.at["Rough Width", "header_text"] == "Rough Width"
+    assert params.at["Area", "formula"] == "Rough Width * Height + GlassWidth"
+    assert "Rough Width" in gui.family_param_links_df["parameter_name"].tolist()
+    entry = gui.family_groups_df.set_index("parameter_name").loc["Rough Width"]
+    assert entry["header_text_override"] == "W"
+    assert entry["override_entry"] == "3"
+    assert gui.schedule_header_groups["Schedule A"][0]["parameter_names"] == ["Height", "Rough Width"]
 
     gui._apply_cell_value("params", 1, "name", "Tall")
-    assert gui.params_df.at[1, "header_text"] == "Clear Height"
+    assert gui.params_df.set_index("name").at["Tall", "header_text"] == "Clear Height"
 
-    try:
+    with pytest.raises(ValueError, match="already in use"):
         gui._apply_cell_value("params", 1, "name", "GlassWidth")
-        raise AssertionError("Renaming onto another parameter's name should fail")
-    except ValueError as exc:
-        assert "already in use" in str(exc)
+    with pytest.raises(ValueError, match="already in use"):
+        gui._apply_cell_value("params", 1, "name", "IPS_GROUP_Schedule_Name")
     assert gui.params_df.at[1, "name"] == "Tall"
-    assert gui.family_param_links_df["parameter_name"].tolist() == ["Rough Width", "GlassWidth"]
 
 
-def test_group_override_entry_updates_schedule_table():
-    gui = make_test_gui()
-    gui.family_groups_df = pd.DataFrame(
-        [
-            {
-                "family_name": "Family_A",
-                "group_name": "Schedule A",
-                "parameter_name": "Length",
-                "override_entry": "",
-                "status": "Ready",
-                "validation_message": "",
-            }
-        ]
+# --- value overrides ----------------------------------------------------------
+
+def override_gui():
+    return gui_from_tables(
+        params=pd.DataFrame([
+            {"name": "Width", "dtype": "Length", "instance_param": True, "default_value": "1"},
+            {"name": "Height", "dtype": "Length", "instance_param": True},
+        ]),
+        families=pd.DataFrame([{"name": "F1", "category": "Doors"}, {"name": "F2", "category": "Doors"}]),
+        links=pd.DataFrame([
+            {"family_name": "F1", "parameter_name": "Width"},
+            {"family_name": "F1", "parameter_name": "Height"},
+            {"family_name": "F2", "parameter_name": "Width"},
+        ]),
+        entries=pd.DataFrame([
+            {"family_name": "F1", "group_name": "S1", "parameter_name": "Width"},
+            {"family_name": "F2", "group_name": "S1", "parameter_name": "Width"},
+            {"family_name": "F1", "group_name": "S2", "parameter_name": "Width"},
+        ]),
     )
 
-    gui._apply_cell_value("groups", 0, "override_entry", "Override Length")
 
-    assert gui.family_groups_df.at[0, "override_entry"] == "Override Length"
-    assert str(gui.family_groups_df.at[0, "status"]).lower() == "ready"
+def test_override_asks_where_else_and_applies_to_chosen_locations(monkeypatch):
+    gui = override_gui()
+    asked = []
+
+    def choose(param_name, value, origin, others):
+        asked.append((param_name, value, origin, others))
+        return [("F2", "S1")]
+
+    monkeypatch.setattr(gui, "_ask_override_locations", choose)
+
+    assert gui._override_value(("F1", "S1"), "Width", "7") is True
+
+    assert asked == [("Width", "7", ("F1", "S1"), [("F1", None), ("F2", None), ("F2", "S1"), ("F1", "S2")])]
+    catalog = gui.catalog
+    assert catalog.resolved_value(("F1", "S1"), "Width") == "7"
+    assert catalog.resolved_value(("F2", "S1"), "Width") == "7"
+    assert catalog.resolved_value(("F1", "S2"), "Width") == "1"
+    assert catalog.resolved_value(("F1", None), "Width") == "1"
+    entries = gui.family_groups_df.set_index(["group_name", "family_name"])
+    assert entries.at[("S1", "F1"), "override_entry"] == "7"
+    assert entries.at[("S2", "F1"), "override_entry"] == ""
 
 
-def test_schedule_header_override_updates_all_family_rows():
+def test_family_override_can_spread_to_other_families_and_be_cleared(monkeypatch):
+    gui = override_gui()
+    monkeypatch.setattr(gui, "_ask_override_locations", lambda *args: [("F2", None)])
+
+    gui._override_value(("F1", None), "Width", "5")
+    assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "5"
+    assert gui.catalog.resolved_value(("F2", "S1"), "Width") == "5"
+    assert [row["override"] for row in gui._family_value_rows(gui.catalog.get_family("F1"))] == ["5", ""]
+
+    gui._override_value(("F1", None), "Width", "")
+    assert gui.catalog.resolved_value(("F1", None), "Width") == "1"
+    assert gui.catalog.resolved_value(("F2", None), "Width") == "1"
+
+
+def test_cancelling_the_where_else_prompt_changes_nothing(monkeypatch):
+    gui = override_gui()
+    monkeypatch.setattr(gui, "_ask_override_locations", lambda *args: None)
+
+    assert gui._override_value(("F1", "S1"), "Width", "7") is False
+    assert gui.catalog.resolved_value(("F1", "S1"), "Width") == "1"
+
+
+def test_override_with_nowhere_else_does_not_prompt(monkeypatch):
+    gui = override_gui()
+    monkeypatch.setattr(gui, "_ask_override_locations", lambda *args: pytest.fail("should not prompt"))
+
+    gui._override_value(("F1", None), "Height", "4")
+
+    assert gui.catalog.resolved_value(("F1", None), "Height") == "4"
+
+
+def test_schedule_value_rows_show_overrides_and_effective_values(monkeypatch):
+    gui = override_gui()
+    monkeypatch.setattr(gui, "_ask_override_locations", lambda *args: [])
+    gui._override_value(("F1", None), "Width", "5")
+    gui._override_value(("F2", "S1"), "Width", "9")
+
+    rows = gui._schedule_value_rows(gui.catalog.get_schedule("S1"))
+
+    assert rows == [
+        {"family_name": "F1", "parameter_name": "Width", "override": "", "value": "5"},
+        {"family_name": "F2", "parameter_name": "Width", "override": "9", "value": "9"},
+    ]
+
+
+def run_in_dialog(root, action):
+    """Run ``action`` once a modal dialog is open; close every dialog if it fails, so the test can't hang."""
+    failures = []
+
+    def run():
+        try:
+            action()
+        except Exception as exc:
+            failures.append(exc)
+            for widget in descendants(root):
+                if isinstance(widget, tk.Toplevel):
+                    widget.destroy()
+
+    root.after(50, run)
+    return failures
+
+
+def test_where_else_dialog_returns_the_selected_locations():
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = override_gui()
+        gui.root = root
+        others = [("F1", None), ("F2", "S1")]
+        listed = []
+
+        def choose_second():
+            dialog = find_window(root, "Apply Override Elsewhere?")
+            listbox = next(widget for widget in descendants(dialog) if isinstance(widget, tk.Listbox))
+            listed.extend(listbox.get(0, tk.END))
+            listbox.selection_set(1)
+            find_button(dialog, "Apply").invoke()
+
+        failures = run_in_dialog(root, choose_second)
+        chosen = gui._ask_override_locations("Width", "7", ("F1", "S1"), others)
+        assert not failures
+        assert listed == ["F1 (everywhere)", "F2 in schedule S1"]
+        assert chosen == [("F2", "S1")]
+
+        failures = run_in_dialog(
+            root, lambda: find_button(find_window(root, "Apply Override Elsewhere?"), "Cancel").invoke()
+        )
+        assert gui._ask_override_locations("Width", "7", ("F1", "S1"), others) is None
+        assert not failures
+    finally:
+        root.destroy()
+
+
+# --- schedules ----------------------------------------------------------------
+
+def test_schedule_header_override_applies_to_the_schedule_column():
     gui = make_test_gui()
-    gui.family_groups_df = pd.DataFrame(
-        [
-            {"family_name": "Family_A", "group_name": "Schedule A", "parameter_name": "Length", "override_entry": ""},
-            {"family_name": "Family_C", "group_name": "Schedule A", "parameter_name": "Length", "override_entry": ""},
-        ]
-    )
 
-    gui._apply_cell_value("groups", 0, "header_text_override", "Linear Dimension")
+    gui._set_schedule_column("Safety and Clearance", "FireRating", "Fire Rating (min)", "")
 
-    assert gui.family_groups_df["header_text_override"].tolist() == ["Linear Dimension", "Linear Dimension"]
+    rows = gui.family_groups_df.query("group_name == 'Safety and Clearance' and parameter_name == 'FireRating'")
+    assert rows["header_text_override"].tolist() == ["Fire Rating (min)", "Fire Rating (min)"]
 
 
-def test_parameter_default_header_text_flows_into_model_snapshot():
+def test_schedule_header_display_prefers_override_to_parameter_default():
     gui = make_test_gui()
-    gui.params_df["header_text"] = gui.params_df["name"]
-    gui.params_df["grid_column_width"] = 1.0
-    gui.params_df.loc[gui.params_df["name"] == "Length", "header_text"] = "Linear Dimension"
-    gui.params_df.loc[gui.params_df["name"] == "Length", "grid_column_width"] = 2.25
+    length_index = row_index(gui.params_df, name="Length")
+    gui._apply_cell_value("params", length_index, "header_text", "Linear Dimension")
+    schedule = gui.catalog.get_schedule("Schedule A")
 
-    param_models, _, _, _ = gui._build_model_validation_snapshot()
-
-    assert next(param.header_text for param in param_models if param.name == "Length") == "Linear Dimension"
-    assert next(param.grid_column_width for param in param_models if param.name == "Length") == 2.25
+    assert gui._get_schedule_header_text(schedule, "Length") == "Linear Dimension"
+    gui._set_schedule_column("Schedule A", "Length", "Schedule Length", "")
+    assert gui._get_schedule_header_text(schedule, "Length") == "Schedule Length"
 
 
-def test_wide_variety_examples_cover_multiple_families_and_schedules():
+def test_gui_schedule_width_override_uses_and_resets_to_parameter_default():
     gui = make_test_gui()
-    gui.validate_all()
+    schedule = gui.catalog.get_schedule("Schedule A")
 
-    assert len(gui.params_df) >= 18
-    assert len(gui.families_df) >= 12
-    assert len(gui.family_groups_df) >= 10
-    assert set(gui.families_df["name"]) >= {"Family_A", "Family_B", "Family_C", "Family_D", "Family_E", "Family_F", "Family_G", "Family_H", "Family_I", "Family_J", "Family_K", "Family_L"}
-    assert set(gui.family_groups_df["group_name"]) >= {"Schedule A", "Envelope Schedule", "Mechanical Schedule", "Facade Review", "Opening Schedule", "Safety and Clearance"}
-    assert gui.family_groups_df["status"].str.lower().isin(["ready"]).all()
+    gui._set_schedule_column("Schedule A", "Width", "", "2.25")
+    assert schedule.grid_column_width_overrides == {"Width": 2.25}
+    assert gui._get_schedule_grid_column_width(schedule, "Width") == 2.25
+
+    with pytest.raises(ValueError, match="positive number"):
+        gui._set_schedule_column("Schedule A", "Width", "", "-3")
+
+    gui._set_schedule_column("Schedule A", "Width", "", "")
+    assert gui._get_schedule_grid_column_width(schedule, "Width") == 1.0
 
 
-def test_expanded_case_includes_more_family_and_schedule_variants():
+def test_gui_registers_header_group_on_schedule():
     gui = make_test_gui()
-    assert "Family_H" in gui.families_df["name"].tolist()
-    assert "Family_I" in gui.families_df["name"].tolist()
-    assert "Family_J" in gui.families_df["name"].tolist()
-    assert "Family_K" in gui.families_df["name"].tolist()
-    assert "Family_L" in gui.families_df["name"].tolist()
-    assert "Mechanical Schedule" in gui.family_groups_df["group_name"].tolist()
-    assert "Facade Review" in gui.family_groups_df["group_name"].tolist()
-    assert "Opening Schedule" in gui.family_groups_df["group_name"].tolist()
-    safety_rows = gui.family_groups_df[gui.family_groups_df["group_name"] == "Safety and Clearance"]
-    assert set(safety_rows["family_name"]) == {"Family_K", "Family_L"}
-    assert set(safety_rows["parameter_name"]) == {"ClearanceHeight", "FireRating", "ServiceClearance"}
 
+    group = gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
 
-def test_gui_has_more_interface_playground_examples_for_manual_review():
-    gui = make_test_gui()
-    assert "HeadHeight" in gui.params_df["name"].tolist()
-    assert "FacadeRatio" in gui.params_df["name"].tolist()
-    assert "Family_F" in gui.families_df["name"].tolist()
-    assert "Family_G" in gui.families_df["name"].tolist()
-    assert gui.family_groups_df["family_name"].str.contains("Family_F|Family_G").any()
+    assert group["caption"] == "Dimensions"
+    assert group["parameter_names"] == ["Length", "Width"]
+    assert gui.schedule_header_groups["Schedule A"] == [group]
+    assert gui.catalog.get_schedule("Schedule A").header_groups == [group]
 
 
 def test_schedule_summary_uses_single_value_columns_only():
@@ -915,24 +979,33 @@ def test_schedule_summary_uses_single_value_columns_only():
     summary = gui._build_schedule_summary_df()
 
     assert list(summary.columns) == ["name", "family_count", "parameter_count", "status", "validation_message"]
-    assert "family_name" not in summary.columns
-    assert "parameter_name" not in summary.columns
     assert "Schedule A" in summary["name"].tolist()
 
 
-def test_schedule_parameter_names_are_sorted_for_headers():
-    schedule_rows = pd.DataFrame(
-        [
-            {"parameter_name": "Width"},
-            {"parameter_name": "Length"},
-            {"parameter_name": "Width"},
-        ]
-    )
+def test_schedule_columns_are_sorted_when_loaded_from_entries():
+    gui = make_test_gui()
 
-    parameter_names = DDMGUI._get_schedule_parameter_names(schedule_rows)
+    schedule = gui.catalog.get_schedule("Safety and Clearance")
 
-    assert parameter_names == ["Length", "Width"]
+    assert gui._get_schedule_parameter_names(schedule) == ["ClearanceHeight", "FireRating", "ServiceClearance"]
 
+
+def test_wide_variety_examples_cover_multiple_families_and_schedules():
+    gui = make_test_gui()
+
+    assert len(gui.params_df) >= 18
+    assert len(gui.families_df) >= 12
+    assert len(gui.family_groups_df) >= 10
+    assert set(gui.families_df["name"]) >= {f"Family_{letter}" for letter in "ABCDEFGHIJKL"}
+    assert set(gui.family_groups_df["group_name"]) >= {
+        "Schedule A", "Envelope Schedule", "Mechanical Schedule", "Facade Review", "Opening Schedule", "Safety and Clearance",
+    }
+    safety_rows = gui.family_groups_df[gui.family_groups_df["group_name"] == "Safety and Clearance"]
+    assert set(safety_rows["family_name"]) == {"Family_K", "Family_L"}
+    assert set(safety_rows["parameter_name"]) == {"ClearanceHeight", "FireRating", "ServiceClearance"}
+
+
+# --- header canvas and tables ------------------------------------------------
 
 def test_schedule_header_text_wraps_at_underscores_and_camel_case():
     canvas = object.__new__(ScheduleHeaderCanvas)
@@ -1012,50 +1085,10 @@ def test_main_tab_table_headings_wrap_after_column_resize():
         root.destroy()
 
 
-def test_gui_registers_header_group_on_schedule_instance():
-    gui = make_test_gui()
+# --- windows and files ------------------------------------------------------
 
-    group = gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
-
-    assert group["caption"] == "Dimensions"
-    assert group["parameter_names"] == ["Length", "Width"]
-    assert gui.schedule_header_groups["Schedule A"] == [group]
-    assert gui.schedule_models["Schedule A"].header_groups == [group]
-
-
-def test_gui_schedule_width_override_uses_and_resets_to_parameter_default():
-    gui = make_test_gui()
-    gui.params_df["grid_column_width"] = 1.0
-    gui.family_groups_df["grid_column_width_override"] = ""
-    width_row = gui.family_groups_df[
-        (gui.family_groups_df["group_name"] == "Schedule A")
-        & (gui.family_groups_df["parameter_name"] == "Width")
-    ].index[0]
-    gui.family_groups_df.at[width_row, "grid_column_width_override"] = "2.25"
-
-    gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
-    schedule_model = gui.schedule_models["Schedule A"]
-
-    assert schedule_model.grid_column_width_overrides == {"Width": 2.25}
-    assert next(param.grid_column_width for param in schedule_model.params if param.name == "Width") == 2.25
-    assert gui._get_schedule_grid_column_width(
-        gui.family_groups_df[gui.family_groups_df["group_name"] == "Schedule A"],
-        "Width",
-    ) == 2.25
-
-    gui._apply_cell_value("groups", width_row, "grid_column_width_override", "")
-    assert gui._get_schedule_grid_column_width(
-        gui.family_groups_df[gui.family_groups_df["group_name"] == "Schedule A"],
-        "Width",
-    ) == 1.0
-
-
-def test_schedule_popup_groups_selected_headers(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        gui_module,
-        "DEFAULT_CHECKPOINT_PATH",
-        tmp_path / "missing" / "test_data.ddm.pkl",
-    )
+def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
     root = tk.Tk()
     root.withdraw()
     try:
@@ -1068,126 +1101,105 @@ def test_schedule_popup_groups_selected_headers(tmp_path, monkeypatch):
             for widget in sorted(gui.file_actions.winfo_children(), key=lambda item: item.grid_info()["column"])
         ] == ["Load", "Save", "Save As..."]
         assert "demo_data.ddm.csv" in gui.warning_text.get("1.0", tk.END)
-        assert "Family_K" in gui.families_df["name"].tolist()
-        assert "Family_L" in gui.families_df["name"].tolist()
-        assert "ClearanceHeight" in gui.params_df["name"].tolist()
-        assert "FireRating" in gui.params_df["name"].tolist()
         assert "Safety and Clearance" in gui._build_schedule_summary_df()["name"].tolist()
 
         gui._open_detail_window("schedule", "Schedule A")
         root.update()
-
-        def descendants(widget):
-            for child in widget.winfo_children():
-                yield child
-                yield from descendants(child)
-
-        widgets = list(descendants(root))
-        schedule_popup = next(
-            widget for widget in widgets
-            if isinstance(widget, tk.Toplevel) and widget.title() == "Schedule Details: Schedule A"
-        )
-        popup_widgets = list(descendants(schedule_popup))
+        schedule_popup = find_window(root, "Schedule Details: Schedule A")
         header_grid = next(
-            widget for widget in popup_widgets
-            if isinstance(widget, ScheduleHeaderCanvas)
+            widget for widget in descendants(schedule_popup) if isinstance(widget, ScheduleHeaderCanvas)
         )
+        assert header_grid.parameter_names == ["Length", "Width"]
+
         header_grid._on_double_click(
             SimpleNamespace(x=header_grid.column_widths[0] + 10, y=header_grid.header_top + 10)
         )
         root.update()
-        width_dialog = next(
-            widget for widget in descendants(schedule_popup)
-            if isinstance(widget, tk.Toplevel) and widget.title() == "Schedule Column Settings"
-        )
-        width_dialog_widgets = list(descendants(width_dialog))
-        width_entries = [widget for widget in width_dialog_widgets if isinstance(widget, ttk.Entry)]
+        width_dialog = find_window(schedule_popup, "Schedule Column Settings")
+        width_entries = [widget for widget in descendants(width_dialog) if isinstance(widget, ttk.Entry)]
         width_entries[1].insert(0, "2.25")
-        width_save = next(
-            widget for widget in width_dialog_widgets
-            if isinstance(widget, ttk.Button) and widget.cget("text") == "Save"
-        )
-        width_save.invoke()
+        find_button(width_dialog, "Save").invoke()
 
-        assert gui.family_groups_df.loc[
-            (gui.family_groups_df["group_name"] == "Schedule A")
-            & (gui.family_groups_df["parameter_name"] == "Width"),
-            "grid_column_width_override",
-        ].tolist() == ["2.25"]
+        schedule = gui.catalog.get_schedule("Schedule A")
+        assert schedule.grid_column_width_overrides == {"Width": 2.25}
         assert header_grid.column_widths[1] == 108
 
         header_y = header_grid.header_top + 10
         header_grid._on_mouse_down(SimpleNamespace(x=10, y=header_y, state=0))
-        header_grid._on_mouse_drag(
-            SimpleNamespace(x=header_grid.column_width + 10, y=header_y)
-        )
+        header_grid._on_mouse_drag(SimpleNamespace(x=header_grid.column_width + 10, y=header_y))
         assert header_grid.get_selected_parameter_names() == ["Length", "Width"]
-        group_button = next(
-            widget for widget in popup_widgets
-            if isinstance(widget, ttk.Button) and widget.cget("text") == "Group Selected"
-        )
-        group_button.invoke()
+        find_button(schedule_popup, "Group Selected").invoke()
         root.update()
+        dialog = find_window(schedule_popup, "Name Header Group")
+        next(widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)).insert(0, "Dimensions")
+        find_button(dialog, "Group").invoke()
 
-        dialog = next(
-            widget for widget in descendants(schedule_popup)
-            if isinstance(widget, tk.Toplevel) and widget.title() == "Name Header Group"
-        )
-        dialog_widgets = list(descendants(dialog))
-        entry = next(widget for widget in dialog_widgets if isinstance(widget, ttk.Entry))
-        entry.insert(0, "Dimensions")
-        save_button = next(
-            widget for widget in dialog_widgets
-            if isinstance(widget, ttk.Button) and widget.cget("text") == "Group"
-        )
-        save_button.invoke()
-
-        assert gui.schedule_header_groups["Schedule A"][0]["caption"] == "Dimensions"
-        assert gui.schedule_header_groups["Schedule A"][0]["parameter_names"] == ["Length", "Width"]
+        assert schedule.header_groups[0]["caption"] == "Dimensions"
+        assert schedule.header_groups[0]["parameter_names"] == ["Length", "Width"]
         assert len(header_grid.group_layout) == 1
-        assert gui.schedule_models["Schedule A"].grid_column_width_overrides == {"Width": 2.25}
 
+        value_tree = next(
+            widget for widget in descendants(schedule_popup)
+            if isinstance(widget, ttk.Treeview) and "override" in widget.cget("columns")
+        )
+        rows = [value_tree.item(item, "values") for item in value_tree.get_children()]
+        assert ("Family_A", "Width", "Override Width", "Override Width") in rows
     finally:
         root.destroy()
 
 
-def test_schedule_header_groups_persist_in_database_checkpoint(tmp_path, monkeypatch):
+def test_family_window_lists_values_and_saves_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        gui._open_detail_window("family", 0)
+        root.update()
+        form = find_window(root, "Family Details")
+
+        value_tree = next(
+            widget for widget in descendants(form)
+            if isinstance(widget, ttk.Treeview) and "override" in widget.cget("columns")
+        )
+        listed = [value_tree.item(item, "values")[0] for item in value_tree.get_children()]
+        assert listed == [param.name for param in gui.catalog.families[0].custom_params]
+
+        description = next(
+            widget for widget in descendants(form)
+            if isinstance(widget, ttk.Entry) and widget.get() == "Main family"
+        )
+        description.delete(0, tk.END)
+        description.insert(0, "Updated family")
+        find_button(form, "Save").invoke()
+        assert gui.catalog.families[0].description == "Updated family"
+    finally:
+        root.destroy()
+
+
+def test_database_saves_as_json_with_csv_and_exports_and_loads_back(tmp_path):
     gui = make_test_gui()
     gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
-    monkeypatch.chdir(tmp_path)
-    gui.checkpoint_path = tmp_path / "test_data.ddm.pkl"
+    gui.checkpoint_path = tmp_path / "test_data.ddm.json"
     output_paths = get_database_output_paths(gui.checkpoint_path)
 
     gui.save_checkpoint()
-    with open("test_data.ddm.pkl", "rb") as checkpoint_file:
-        payload = pickle.load(checkpoint_file)
-    gui.schedule_header_groups = {}
-    gui.schedule_models = {}
-    gui.load_checkpoint(str(tmp_path / "test_data.ddm.pkl"))
+    loaded = make_test_gui()
+    loaded.load_checkpoint(str(output_paths["checkpoint"]))
 
-    assert payload["schedule_header_groups"]["Schedule A"][0]["caption"] == "Dimensions"
-    assert gui.schedule_header_groups["Schedule A"][0]["parameter_names"] == ["Length", "Width"]
+    assert loaded.schedule_header_groups["Schedule A"][0]["caption"] == "Dimensions"
+    assert loaded.catalog.to_dict() == gui.catalog.to_dict()
     assert output_paths["csv"].exists()
-    assert output_paths["macro"].exists()
     assert "CreateSchedulesFromDatabase" in output_paths["macro"].read_text(encoding="utf-8")
-    assert output_paths["rfps"].exists()
     assert "TemplateName" in output_paths["rfps"].read_text(encoding="utf-8").splitlines()[0]
-    assert output_paths["shared_parameters"].exists()
     assert "*PARAM\tGUID\tNAME\tDATATYPE" in output_paths["shared_parameters"].read_text(encoding="utf-16")
 
 
-def test_saved_schedule_header_groups_load_on_next_gui_start(tmp_path, monkeypatch):
-    checkpoint_path = tmp_path / "test_data.ddm.pkl"
+def test_saved_database_loads_on_next_gui_start(tmp_path, monkeypatch):
+    checkpoint_path = tmp_path / "database.ddm.json"
     monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", checkpoint_path)
     fixture_gui = make_test_gui()
-    fixture_gui.schedule_header_groups = {
-        "Schedule A": [{
-            "caption": "Dimensions",
-            "parameter_names": ["Length", "Width"],
-            "top_row": 0,
-            "bottom_row": 0,
-        }]
-    }
+    fixture_gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
     fixture_gui._write_checkpoint(checkpoint_path)
 
     root = tk.Tk()
@@ -1195,122 +1207,81 @@ def test_saved_schedule_header_groups_load_on_next_gui_start(tmp_path, monkeypat
     try:
         gui = DDMGUI(root)
         assert gui.schedule_header_groups["Schedule A"][0]["caption"] == "Dimensions"
-        assert checkpoint_path.exists()
+        assert gui.checkpoint_path == checkpoint_path
     finally:
         root.destroy()
 
 
 def test_checkpoint_file_dialogs_save_as_and_load_selected_file(tmp_path, monkeypatch):
     gui = make_test_gui()
-    gui.schedule_header_groups = {
-        "Schedule A": [{"caption": "Dimensions", "parameter_names": ["Length", "Width"]}]
-    }
-    checkpoint_path = tmp_path / "custom_database.ddm.pkl"
+    gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
+    checkpoint_path = tmp_path / "custom_database.ddm.json"
     output_paths = get_database_output_paths(checkpoint_path)
-    monkeypatch.setattr(
-        gui_module.filedialog,
-        "asksaveasfilename",
-        lambda **kwargs: str(checkpoint_path),
-    )
-    monkeypatch.setattr(
-        gui_module.filedialog,
-        "askopenfilename",
-        lambda **kwargs: str(checkpoint_path),
-    )
-
-    gui.save_checkpoint_as()
-    assert checkpoint_path.exists()
-    assert output_paths["csv"].exists()
-    assert output_paths["macro"].exists()
-    assert output_paths["rfps"].exists()
-    assert output_paths["shared_parameters"].exists()
-    gui.schedule_header_groups = {}
-    gui.load_checkpoint()
-
-    assert gui.schedule_header_groups["Schedule A"][0]["caption"] == "Dimensions"
-
-
-def test_csv_database_round_trip_preserves_all_tables_and_header_groups(tmp_path, monkeypatch):
-    gui = make_test_gui()
-    gui.schedule_header_groups = {
-        "Schedule A": [{
-            "caption": "Dimensions",
-            "parameter_names": ["Length", "Width"],
-            "top_row": 0,
-            "bottom_row": 0,
-        }]
-    }
-    csv_path = tmp_path / "database.ddm.csv"
     save_dialog_options = {}
     monkeypatch.setattr(
         gui_module.filedialog,
         "asksaveasfilename",
-        lambda **kwargs: save_dialog_options.update(kwargs) or str(csv_path),
+        lambda **kwargs: save_dialog_options.update(kwargs) or str(checkpoint_path),
     )
+    monkeypatch.setattr(gui_module.filedialog, "askopenfilename", lambda **kwargs: str(checkpoint_path))
+
     gui.save_checkpoint_as()
+    assert save_dialog_options["defaultextension"] == ".ddm.json"
+    for path in output_paths.values():
+        assert path.exists()
 
-    assert csv_path.exists()
-    assert save_dialog_options["defaultextension"] == ".ddm.pkl"
-    assert save_dialog_options["filetypes"][0][0] == "Pickle databases"
-
-    loaded_gui = make_test_gui()
-    monkeypatch.setattr(gui_module.filedialog, "askopenfilename", lambda **kwargs: str(csv_path))
-    loaded_gui.load_checkpoint()
-
-    assert len(loaded_gui.params_df) == len(gui.params_df)
-    assert len(loaded_gui.families_df) == len(gui.families_df)
-    assert len(loaded_gui.family_param_links_df) == len(gui.family_param_links_df)
-    assert len(loaded_gui.family_groups_df) == len(gui.family_groups_df)
-    assert bool(loaded_gui.params_df.at[0, "instance_param"])
-    assert loaded_gui.schedule_header_groups == gui.schedule_header_groups
+    loaded = make_test_gui()
+    loaded.load_checkpoint()
+    assert loaded.schedule_header_groups["Schedule A"][0]["caption"] == "Dimensions"
 
 
-def test_demo_database_loads_from_tagged_csv():
+def test_csv_database_round_trip_preserves_all_tables_and_header_groups(tmp_path):
+    gui = make_test_gui(header_groups={
+        "Schedule A": [{"caption": "Dimensions", "parameter_names": ["Length", "Width"], "top_row": 0, "bottom_row": 0}]
+    })
+    gui.checkpoint_path = tmp_path / "database.ddm.json"
+    gui.save_checkpoint()
+
+    loaded = make_test_gui()
+    loaded.load_checkpoint(str(tmp_path / "database.ddm.csv"))
+
+    assert loaded.load_issues == []
+    for view in ("params_df", "families_df", "family_param_links_df", "family_groups_df"):
+        pd.testing.assert_frame_equal(getattr(loaded, view), getattr(gui, view))
+    assert loaded.schedule_header_groups == gui.schedule_header_groups
+
+
+def test_older_pickle_database_still_loads():
     gui = make_test_gui()
-    gui._read_database_csv(str(DEMO_DATA_PATH))
+    gui.load_checkpoint(str(TEST_CHECKPOINT_PATH))
 
-    assert len(gui.params_df) == 7
+    with TEST_CHECKPOINT_PATH.open("rb") as checkpoint_file:
+        checkpoint = pickle.load(checkpoint_file)
+    assert len(gui.catalog.params) == len(checkpoint["params"])
+    assert gui.checkpoint_path == TEST_CHECKPOINT_PATH
+    assert get_database_output_paths(gui.checkpoint_path)["checkpoint"].suffix == ".json"
+
+
+def test_demo_database_loads_without_problems():
+    gui = make_test_gui()
+    gui.load_checkpoint(str(DEMO_DATA_PATH))
+
+    assert gui.load_issues == []
+    assert len(gui.params_df) == 16
     assert len(gui.families_df) == 12
     assert len(gui.family_param_links_df) == 17
     assert len(gui.family_groups_df) == 15
     assert "Safety and Clearance" in gui.family_groups_df["group_name"].tolist()
 
 
-def test_database_paths_are_configured_under_data_directory():
-    assert DEMO_DATA_PATH.name == "demo_data.ddm.csv"
-    assert TEST_DATABASE_CSV_PATH.name == "test_data.ddm.csv"
-    assert TEST_CHECKPOINT_PATH.parent == DATA_DIR / "test_data"
-    assert gui_module.DEFAULT_CHECKPOINT_PATH == DATA_DIR / "database.ddm.pkl"
-    assert get_database_output_paths(gui_module.DEFAULT_CHECKPOINT_PATH) == {
-        "checkpoint": DATA_DIR / "database.ddm.pkl",
-        "csv": DATA_DIR / "database.ddm.csv",
-        "macro": DATA_DIR / "database.cs",
-        "rfps": DATA_DIR / "database.rfps",
-        "shared_parameters": DATA_DIR / "database.txt",
-    }
-
-
-def test_database_output_paths_share_stem_for_pickle_and_csv_inputs(tmp_path):
-    pickle_paths = get_database_output_paths(tmp_path / "equipment.ddm.pkl")
-    csv_paths = get_database_output_paths(tmp_path / "equipment.ddm.csv")
-
-    assert pickle_paths == csv_paths
-    assert pickle_paths["checkpoint"].name == "equipment.ddm.pkl"
-    assert pickle_paths["csv"].name == "equipment.ddm.csv"
-    assert pickle_paths["macro"].name == "equipment.cs"
-    assert pickle_paths["rfps"].name == "equipment.rfps"
-    assert pickle_paths["shared_parameters"].name == "equipment.txt"
-
-
 def test_legacy_parameter_csv_loads_as_parameter_only_database(tmp_path):
     gui = make_test_gui()
     legacy_csv_path = tmp_path / "legacy_parameters.csv"
-    pd.DataFrame(
-        [{"name": "Volume", "dtype": "Volume", "group_under": "Dimensions"}]
-    ).to_csv(legacy_csv_path, index=False)
+    pd.DataFrame([{"name": "Volume", "dtype": "Volume", "group_under": "Dimensions"}]).to_csv(legacy_csv_path, index=False)
+
     gui.load_checkpoint(str(legacy_csv_path))
 
-    assert "Volume" in gui.params_df["name"].tolist()
+    assert gui.params_df["name"].tolist() == ["Volume"]
     assert gui.families_df.empty
     assert gui.family_param_links_df.empty
     assert gui.family_groups_df.empty
@@ -1318,9 +1289,7 @@ def test_legacy_parameter_csv_loads_as_parameter_only_database(tmp_path):
 
 def test_unified_test_database_contains_seed_parameters_and_defaults():
     gui = make_test_gui()
-    all_air_parameters = gui.params_df.loc[
-        gui.params_df["name"].str.startswith("DDM_EQUIP_Air_")
-    ]
+    all_air_parameters = gui.params_df.loc[gui.params_df["name"].str.startswith("DDM_EQUIP_Air_")]
 
     assert len(all_air_parameters) == 7
     assert set(all_air_parameters["dtype"]) == {"Number"}
@@ -1329,30 +1298,30 @@ def test_unified_test_database_contains_seed_parameters_and_defaults():
     assert all_air_parameters["instance_param"].all()
     assert set(all_air_parameters["default_value"]) == {"-999"}
 
-    with TEST_CHECKPOINT_PATH.open("rb") as checkpoint_file:
-        checkpoint = pickle.load(checkpoint_file)
-    checkpoint_air_parameters = checkpoint["params"].loc[
-        checkpoint["params"]["name"].str.startswith("DDM_EQUIP_Air_")
+
+def test_database_paths_are_configured_under_data_directory():
+    assert DEMO_DATA_PATH.name == "demo_data.ddm.csv"
+    assert TEST_DATABASE_CSV_PATH.name == "test_data.ddm.csv"
+    assert TEST_CHECKPOINT_PATH.parent == DATA_DIR / "test_data"
+    assert gui_module.DEFAULT_CHECKPOINT_PATH == DATA_DIR / "database.ddm.json"
+    assert get_database_output_paths(gui_module.DEFAULT_CHECKPOINT_PATH) == {
+        "checkpoint": DATA_DIR / "database.ddm.json",
+        "csv": DATA_DIR / "database.ddm.csv",
+        "macro": DATA_DIR / "database.cs",
+        "rfps": DATA_DIR / "database.rfps",
+        "shared_parameters": DATA_DIR / "database.txt",
+    }
+
+
+def test_database_output_paths_share_stem_for_json_pickle_and_csv_inputs(tmp_path):
+    paths = [
+        get_database_output_paths(tmp_path / f"equipment.ddm.{suffix}")
+        for suffix in ("json", "pkl", "csv")
     ]
-    assert len(checkpoint_air_parameters) == 7
-    assert set(checkpoint_air_parameters["default_value"]) == {"-999"}
 
-
-def test_schedule_header_display_prefers_override_to_parameter_default():
-    gui = make_test_gui()
-    gui.params_df["header_text"] = gui.params_df["name"]
-    gui.params_df.loc[gui.params_df["name"] == "Length", "header_text"] = "Linear Dimension"
-    schedule_rows = pd.DataFrame(
-        [{"parameter_name": "Length", "header_text_override": ""}]
-    )
-
-    assert gui._get_schedule_header_text(schedule_rows, "Length") == "Linear Dimension"
-    schedule_rows.at[0, "header_text_override"] = "Schedule Length"
-    assert gui._get_schedule_header_text(schedule_rows, "Length") == "Schedule Length"
-
-
-if __name__ == "__main__":
-    test_validation_flags_missing_references()
-    test_family_validation_accepts_associated_params()
-    test_family_validation_detects_missing_link()
-    print("GUI smoke tests passed")
+    assert paths[0] == paths[1] == paths[2]
+    assert paths[0]["checkpoint"].name == "equipment.ddm.json"
+    assert paths[0]["csv"].name == "equipment.ddm.csv"
+    assert paths[0]["macro"].name == "equipment.cs"
+    assert paths[0]["rfps"].name == "equipment.rfps"
+    assert paths[0]["shared_parameters"].name == "equipment.txt"

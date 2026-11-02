@@ -109,15 +109,23 @@ parameters in full; schedules in a catalog store family names. A standalone sche
 
 ## GUI
 
-[ddm_gui.py](ddm_gui.py) keeps its data in DataFrames (the tables are its source of truth) and
-saves them in its own CSV/checkpoint files. On every validation it builds a fresh `Catalog` from
-the tables and copies each object's status and message back into the rows.
+[ddm_gui.py](ddm_gui.py) holds a `Catalog`, which is its source of truth. The Parameters, Families
+and Schedules tables are views rebuilt from it after every change, and edits go through model
+methods, so an invalid edit is rejected with an error rather than stored.
 
-The GUI stores each parameter's GUID in a `guid` column. A blank GUID defaults to the name-based
-GUID from `parameter_guid()` in [revit_shared_parameter_export.py](revit_shared_parameter_export.py),
-and both Revit exporters use the stored GUID. Renaming a parameter in the GUI asks whether to
-assign a new GUID, then rewrites the old name in family links, schedule entries, header groups
-and formulas, mirroring `Catalog.rename_param`.
+[ddm_tables.py](ddm_tables.py) converts between the catalog and flat tables (parameters, families,
+links, schedule entries, header groups). The readable CSV, the older pickle checkpoints and the
+Revit exporters all use those tables. Loading tables fixes or skips anything the catalog can't
+hold (unknown links, invalid widths, duplicate names, ...) and lists each problem in Messages.
 
-Making the model the GUI's source of truth (and switching its saves to `Catalog.save`) is still
-open; see the development plan.
+Saves write `Catalog.save` JSON (`*.ddm.json`), plus a readable CSV and the Revit exports
+alongside. CSV and older `.ddm.pkl` files still load.
+
+Renaming a parameter asks whether to assign a new GUID, then `Catalog.rename_param` updates
+every reference. A blank GUID in loaded data defaults to the name-based GUID from
+`parameter_guid()` in [revit_shared_parameter_export.py](revit_shared_parameter_export.py), and
+both Revit exporters use the stored GUID.
+
+Overriding a value, from a family's detail window (family everywhere) or a schedule's detail
+window (that family in that schedule), lists the other places the parameter can be overridden
+(`Catalog.override_locations`) and applies the change to the ones the user picks.

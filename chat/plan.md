@@ -9,18 +9,23 @@ first machine: copy its open items into this file, then treat this file as the p
 
 ## Next steps
 - [ ] Copy the open items from the claude.ai plan doc into this file.
-- [ ] Make the model the GUI's source of truth in `ddm_gui.py` (tables become views on the
-      `Catalog`; edits go through model methods). Check with the user before starting, since
-      `ddm_gui.py` is edited on both machines.
-- [ ] Switch `ddm_gui.py` saves to `Catalog.save` / `Catalog.load` (versioned JSON).
-- [ ] Revisit linking families and schedules to parameters by GUID instead of by name (see
-      [decisions.md](decisions.md)); best done together with the source-of-truth change.
+- [x] Make the model the GUI's source of truth in `ddm_gui.py` (branch `gui-on-catalog`).
+- [x] Switch `ddm_gui.py` saves to `Catalog.save` / `Catalog.load` (versioned JSON).
+- [x] Linking by GUID instead of by name: no longer needed. In the catalog, families and
+      schedules hold the parameter objects themselves, and names are only written out at save
+      time, so a rename can't leave a stale reference.
+- [ ] Add and remove parameters, families and schedules from the GUI (today the GUI only edits
+      what a loaded file contains), and pick a schedule's families and columns.
+- [ ] Override other attributes than the value (the model supports any overridable attribute;
+      the GUI only offers the value).
 
 ## Open questions
-- On the Schedules tab, is an override value per family within a schedule, or for the family
-  everywhere?
+- Changing a parameter's data type silently assigns a new GUID (model behaviour, since Revit
+  ties a shared parameter's GUID to its type). Should the GUI warn first, like it does for a
+  rename?
 
 ## Known issues
-- `ddm_gui_test.py::test_main_tab_table_headings_wrap_after_column_resize` fails (heading padding
-  assertion). Pre-existing on `dev`; also flaky on the second machine because Tk sometimes fails
-  to start there.
+- `tests/test_ddm_gui.py::test_main_tab_table_headings_wrap_after_column_resize` fails (heading
+  padding assertion). Pre-existing on `dev`.
+- On the second machine, Tk sometimes fails to start inside tests ("Can't find a usable
+  tk.tcl"), so a different GUI test can fail on any given run. Rerunning passes.

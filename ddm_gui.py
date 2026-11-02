@@ -1,13 +1,9 @@
-import importlib.util
 import json
-import math
 import os
 import pickle
-import re
 import tkinter.font as tkfont
-import uuid
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 import pandas as pd
 import tkinter as tk
@@ -28,11 +24,29 @@ except ImportError:  # pragma: no cover
     QuickbaseClient = None
     QuickbaseSyncService = None
 
+from ddm_tables import (
+    DEFAULT_GRID_COLUMN_WIDTH_IN,
+    FAMILY_COLUMNS,
+    PARAM_COLUMNS,
+    catalog_from_tables,
+    entries_table,
+    families_table,
+    header_groups_by_schedule,
+    links_table,
+    params_table,
+    parse_bool,
+    parse_width,
+    read_database_csv,
+    tables_from_legacy_pickle,
+    text as cell_text,
+    write_database_csv,
+)
+from revit_parameter_manager import COMMON_PARAM_NAMES, Catalog, Param, guid_change_warning
 from revit_schedule_macro_generator import generate_schedule_macro_source
 from revit_parameter_scheduler_export import generate_rfps_content
-from revit_shared_parameter_export import generate_shared_parameter_content, parameter_guid
-from revit_parameter_manager import guid_change_warning
-from formula import rename_reference
+from revit_shared_parameter_export import generate_shared_parameter_content
+
+
 
 
 def _wrap_text_segment(text, max_width, font):
@@ -295,23 +309,20 @@ class ScheduleHeaderCanvas(tk.Canvas):
             )
 
 
-class DDMGUI:
-    """Simple dataframe-first GUI for reviewing validation state and syncing to Quickbase."""
 
-    _default_grid_column_width_in = 1.0
-    _database_csv_columns = [
-        "record_type", "name", "guid", "header_text", "grid_column_width", "dtype", "group_under",
-        "formula", "instance_param", "default_value", "status", "validation_message", "client", "country",
-        "category", "description", "family_name", "parameter_name", "group_name",
-        "header_text_override", "grid_column_width_override", "override_entry", "caption",
-        "parameter_names", "top_row", "bottom_row",
-    ]
+class DDMGUI:
+    """Tkinter review/edit GUI over a parameter ``Catalog``.
+
+    The catalog is the source of truth. The tables are views rebuilt from it after
+    every change, and edits go through model methods, so an invalid edit is
+    rejected with an error instead of being stored.
+    """
+
+    _default_grid_column_width_in = DEFAULT_GRID_COLUMN_WIDTH_IN
 
     _table_columns = {
-        "params": ["name", "header_text", "grid_column_width", "dtype", "group_under", "formula", "instance_param", "default_value", "status", "validation_message", "guid"],
-        "families": ["name", "client", "country", "category", "description", "status", "validation_message"],
-        "links": ["family_name", "parameter_name"],
-        "groups": ["family_name", "group_name", "parameter_name", "header_text_override", "grid_column_width_override", "override_entry", "status", "validation_message"],
+        "params": list(PARAM_COLUMNS),
+        "families": list(FAMILY_COLUMNS),
     }
 
     _display_labels = {
@@ -341,6 +352,8 @@ class DDMGUI:
     }
 
     _schedule_summary_columns = ["name", "family_count", "parameter_count", "status", "validation_message"]
+    _value_columns = ["parameter_name", "default_value", "override", "value"]
+    _schedule_value_columns = ["family_name", "parameter_name", "override", "value"]
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -354,100 +367,13 @@ class DDMGUI:
         style.configure("Action.TButton", font=("Segoe UI", 10, "bold"))
         style.configure("Status.TLabel", font=("Segoe UI", 10, "bold"))
 
-        self.params_df = pd.DataFrame(
-            [{"name": "Length", "dtype": "Length", "group_under": "Dimensions", "formula": "Width * Height", "instance_param": True, "status": "Draft", "validation_message": ""},
-             {"name": "Width", "dtype": "Length", "group_under": "Dimensions", "formula": "", "instance_param": True, "status": "Approved", "validation_message": ""},
-             {"name": "Height", "dtype": "Length", "group_under": "Dimensions", "formula": "", "instance_param": True, "status": "Approved", "validation_message": ""},
-             {"name": "Area", "dtype": "Area", "group_under": "Dimensions", "formula": "Length * Width", "instance_param": False, "status": "Error", "validation_message": "Missing family association"},
-             {"name": "Depth", "dtype": "Length", "group_under": "Dimensions", "formula": "", "instance_param": True, "status": "Draft", "validation_message": ""},
-             {"name": "UValue", "dtype": "Number", "group_under": "Envelope", "formula": "", "instance_param": False, "status": "Draft", "validation_message": ""},
-             {"name": "ScreenRatio", "dtype": "Number", "group_under": "Envelope", "formula": "", "instance_param": False, "status": "Draft", "validation_message": ""},
-             {"name": "GlassArea", "dtype": "Area", "group_under": "Envelope", "formula": "", "instance_param": False, "status": "Draft", "validation_message": ""},
-             {"name": "PowerLoad", "dtype": "Number", "group_under": "Electrical", "formula": "", "instance_param": False, "status": "Draft", "validation_message": ""},
-             {"name": "FacadeRatio", "dtype": "Number", "group_under": "Envelope", "formula": "", "instance_param": False, "status": "Draft", "validation_message": ""},
-             {"name": "HeadHeight", "dtype": "Length", "group_under": "Dimensions", "formula": "", "instance_param": True, "status": "Draft", "validation_message": ""},
-             {"name": "Openings", "dtype": "Number", "group_under": "Openings", "formula": "", "instance_param": False, "status": "Draft", "validation_message": ""},
-            ]
-        )
-        self.params_df["header_text"] = self.params_df["name"]
-        self.params_df["grid_column_width"] = self._default_grid_column_width_in
-        self.params_df["default_value"] = ""
-        self.params_df["validation_message"] = self.params_df["validation_message"].fillna("").astype(str)
-
-        self.families_df = pd.DataFrame(
-            [
-                {"name": "Family_A", "client": "Client A", "country": "USA", "category": "Doors", "description": "Main family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_B", "client": "Client B", "country": "Canada", "category": "Windows", "description": "Secondary family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_C", "client": "Client C", "country": "United Kingdom", "category": "Curtain Wall", "description": "Glazed facade family", "status": "Ready", "validation_message": ""},
-                {"name": "Family_D", "client": "Client D", "country": "Germany", "category": "Casework", "description": "Custom cabinet family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_E", "client": "Client E", "country": "France", "category": "Railings", "description": "Stair guard family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_F", "client": "Client F", "country": "Spain", "category": "Structural Framing", "description": "Steel beam family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_G", "client": "Client G", "country": "Japan", "category": "Furniture", "description": "Modular joinery family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_H", "client": "Client H", "country": "Australia", "category": "Mechanical Equipment", "description": "Air handling unit family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_I", "client": "Client I", "country": "Sweden", "category": "Generic Models", "description": "Envelope panel family", "status": "Draft", "validation_message": ""},
-                {"name": "Family_J", "client": "Client J", "country": "Norway", "category": "Openings", "description": "Vertical daylight opening family", "status": "Draft", "validation_message": ""},
-            ]
-        )
-        self.families_df["validation_message"] = self.families_df["validation_message"].fillna("").astype(str)
-
-        self.family_param_links_df = pd.DataFrame(
-            [
-                {"family_name": "Family_A", "parameter_name": "Length"},
-                {"family_name": "Family_A", "parameter_name": "Width"},
-                {"family_name": "Family_A", "parameter_name": "Area"},
-                {"family_name": "Family_B", "parameter_name": "Length"},
-                {"family_name": "Family_C", "parameter_name": "Length"},
-                {"family_name": "Family_C", "parameter_name": "UValue"},
-                {"family_name": "Family_C", "parameter_name": "GlassArea"},
-                {"family_name": "Family_D", "parameter_name": "Depth"},
-                {"family_name": "Family_D", "parameter_name": "Width"},
-                {"family_name": "Family_E", "parameter_name": "Height"},
-                {"family_name": "Family_E", "parameter_name": "RValue"},
-                {"family_name": "Family_F", "parameter_name": "Length"},
-                {"family_name": "Family_F", "parameter_name": "Width"},
-                {"family_name": "Family_G", "parameter_name": "Depth"},
-                {"family_name": "Family_G", "parameter_name": "FinishCode"},
-                {"family_name": "Family_H", "parameter_name": "PowerLoad"},
-                {"family_name": "Family_I", "parameter_name": "FacadeRatio"},
-                {"family_name": "Family_I", "parameter_name": "GlassArea"},
-                {"family_name": "Family_J", "parameter_name": "HeadHeight"},
-                {"family_name": "Family_J", "parameter_name": "Openings"},
-            ]
-        )
-        self.family_groups_df = pd.DataFrame(
-            [
-                {"family_name": "Family_A", "group_name": "Schedule A", "parameter_name": "Length", "override_entry": "", "status": "Ready", "validation_message": ""},
-                {"family_name": "Family_A", "group_name": "Schedule A", "parameter_name": "Width", "override_entry": "Override Width", "status": "Ready", "validation_message": "Override entry recorded"},
-                {"family_name": "Family_B", "group_name": "Schedule B", "parameter_name": "Length", "override_entry": "", "status": "Ready", "validation_message": ""},
-                {"family_name": "Family_C", "group_name": "Envelope Schedule", "parameter_name": "UValue", "override_entry": "0.21", "status": "Ready", "validation_message": "Override entry recorded"},
-                {"family_name": "Family_C", "group_name": "Envelope Schedule", "parameter_name": "GlassArea", "override_entry": "14.8", "status": "Ready", "validation_message": "Override entry recorded"},
-                {"family_name": "Family_D", "group_name": "Casework Schedule", "parameter_name": "Depth", "override_entry": "", "status": "Ready", "validation_message": ""},
-                {"family_name": "Family_E", "group_name": "Guardrail Schedule", "parameter_name": "RValue", "override_entry": "", "status": "Ready", "validation_message": ""},
-                {"family_name": "Family_F", "group_name": "Structural Schedule", "parameter_name": "GrossArea", "override_entry": "35.5", "status": "Ready", "validation_message": "Override entry recorded"},
-                {"family_name": "Family_G", "group_name": "Joinery Schedule", "parameter_name": "FinishCode", "override_entry": "J-04", "status": "Ready", "validation_message": "Override entry recorded"},
-                {"family_name": "Family_H", "group_name": "Mechanical Schedule", "parameter_name": "PowerLoad", "override_entry": "12.4", "status": "Ready", "validation_message": "Override entry recorded"},
-                {"family_name": "Family_I", "group_name": "Facade Review", "parameter_name": "FacadeRatio", "override_entry": "0.62", "status": "Ready", "validation_message": "Override entry recorded"},
-                {"family_name": "Family_J", "group_name": "Opening Schedule", "parameter_name": "HeadHeight", "override_entry": "2.4", "status": "Ready", "validation_message": "Override entry recorded"},
-            ]
-        )
-        self.family_groups_df["header_text_override"] = ""
-        self.family_groups_df["grid_column_width_override"] = ""
-        self._append_extended_schedule_examples()
-
+        self.catalog = Catalog()
+        self.load_issues: List[str] = []
         self.warning_text = None
         self.param_tree = None
         self.family_tree = None
-        self.link_tree = None
         self.group_tree = None
-        self.schedule_header_groups = {}
-        self.schedule_models = {}
-
-        self._table_columns = {
-            "params": ["name", "header_text", "grid_column_width", "dtype", "group_under", "formula", "instance_param", "status", "validation_message", "guid"],
-            "families": ["name", "client", "country", "category", "description", "status", "validation_message"],
-            "links": ["family_name", "parameter_name"],
-            "groups": ["family_name", "group_name", "parameter_name", "header_text_override", "grid_column_width_override", "override_entry", "status", "validation_message"],
-        }
+        self.checkpoint_path = DEFAULT_CHECKPOINT_PATH
 
         self.build_ui()
         self.render_tables()
@@ -458,6 +384,30 @@ class DDMGUI:
         )
         self.load_checkpoint(str(startup_path))
         self.checkpoint_path = DEFAULT_CHECKPOINT_PATH
+
+    # --- views on the catalog -------------------------------------------------
+
+    @property
+    def params_df(self) -> pd.DataFrame:
+        return params_table(self.catalog)
+
+    @property
+    def families_df(self) -> pd.DataFrame:
+        return families_table(self.catalog)
+
+    @property
+    def family_param_links_df(self) -> pd.DataFrame:
+        return links_table(self.catalog)
+
+    @property
+    def family_groups_df(self) -> pd.DataFrame:
+        return entries_table(self.catalog)
+
+    @property
+    def schedule_header_groups(self) -> dict:
+        return header_groups_by_schedule(self.catalog)
+
+    # --- layout -----------------------------------------------------------------
 
     def build_ui(self):
         self.root.columnconfigure(0, weight=1)
@@ -510,6 +460,19 @@ class DDMGUI:
         ttk.Button(self.file_actions, text="Save As...", command=self.save_checkpoint_as, style="Action.TButton").grid(
             row=0, column=3
         )
+
+    def _show_messages(self, lines: Sequence[str]):
+        if self.warning_text is None:
+            return
+        self.warning_text.delete("1.0", tk.END)
+        self.warning_text.insert("1.0", "\n".join(lines))
+
+    def _append_message(self, line: str):
+        if self.warning_text is not None:
+            self.warning_text.insert(tk.END, f"\n{line}")
+
+    # --- exports ----------------------------------------------------------------
+
     def _generate_revit_schedule_macro_file(self):
         try:
             output_path = get_database_output_paths(self.checkpoint_path)["macro"]
@@ -527,10 +490,7 @@ class DDMGUI:
                 parent=getattr(self, "root", None),
             )
             return
-        self.warning_text.insert(
-            tk.END,
-            f"\nGenerated Revit schedule macro: {output_path}",
-        )
+        self._append_message(f"Generated Revit schedule macro: {output_path}")
 
     def _generate_rfps_file(self):
         try:
@@ -553,13 +513,10 @@ class DDMGUI:
                 "RF Tools Export Failed",
                 f"The database was saved, but the RF Tools parameter scheduler file "
                 f"could not be generated:\n{exc}",
-                parent=self.root,
+                parent=getattr(self, "root", None),
             )
             return
-        self.warning_text.insert(
-            tk.END,
-            f"\nGenerated RF Tools parameter scheduler file: {output_path}",
-        )
+        self._append_message(f"Generated RF Tools parameter scheduler file: {output_path}")
 
     def _generate_shared_parameter_file(self):
         try:
@@ -575,10 +532,9 @@ class DDMGUI:
                 parent=getattr(self, "root", None),
             )
             return
-        self.warning_text.insert(
-            tk.END,
-            f"\nGenerated Revit shared parameter file: {output_path}",
-        )
+        self._append_message(f"Generated Revit shared parameter file: {output_path}")
+
+    # --- tables -----------------------------------------------------------------
 
     @staticmethod
     def _humanize_column_name(column_name: str) -> str:
@@ -587,166 +543,22 @@ class DDMGUI:
         return column_name.replace("_", " ").title()
 
     def _get_table_columns(self, table_name: str):
-        if hasattr(self, "_table_columns") and table_name in self._table_columns:
-            return self._table_columns[table_name]
         return DDMGUI._table_columns[table_name]
 
     def _build_schedule_summary_df(self) -> pd.DataFrame:
-        if not hasattr(self, "family_groups_df") or self.family_groups_df is None or self.family_groups_df.empty:
-            return pd.DataFrame(columns=self._schedule_summary_columns)
-
-        summary_rows = []
-        for schedule_name, rows in self.family_groups_df.groupby("group_name", dropna=False):
-            family_names = sorted({str(value).strip() for value in rows["family_name"].dropna().astype(str).tolist() if str(value).strip()})
-            parameter_names = sorted({str(value).strip() for value in rows["parameter_name"].dropna().astype(str).tolist() if str(value).strip()})
-            status_values = [str(value).strip().lower() for value in rows["status"].fillna("").astype(str).tolist() if str(value).strip()]
-            status = "Error" if any(status == "error" for status in status_values) else ("Ready" if status_values else "Ready")
-            validation_message = "; ".join({
-                str(value).strip()
-                for value in rows["validation_message"].fillna("").astype(str).tolist()
-                if str(value).strip()
-            })
-
-            summary_rows.append({
-                "name": str(schedule_name),
-                "family_count": len(family_names),
-                "parameter_count": len(parameter_names),
-                "status": status,
-                "validation_message": validation_message,
-            })
-
-        summary_df = pd.DataFrame(summary_rows, columns=self._schedule_summary_columns)
-        return summary_df if not summary_df.empty else pd.DataFrame(columns=self._schedule_summary_columns)
-
-    @staticmethod
-    def _get_schedule_parameter_names(schedule_rows: pd.DataFrame) -> List[str]:
-        return sorted({
-            str(value).strip()
-            for value in schedule_rows.get("parameter_name", pd.Series(dtype=str)).dropna().astype(str)
-            if str(value).strip()
-        })
-
-    def _get_schedule_header_text(self, schedule_rows: pd.DataFrame, parameter_name: str) -> str:
-        if "header_text_override" in schedule_rows.columns:
-            overrides = schedule_rows.loc[
-                schedule_rows["parameter_name"].astype(str).str.strip() == parameter_name,
-                "header_text_override",
-            ].dropna().astype(str).str.strip()
-            overrides = overrides[overrides != ""]
-            if not overrides.empty:
-                return overrides.iloc[0]
-
-        matching_params = self.params_df[
-            self.params_df["name"].astype(str).str.strip() == parameter_name
-        ]
-        if matching_params.empty:
-            return parameter_name
-        default_header = str(matching_params.iloc[0].get("header_text") or "").strip()
-        return default_header or parameter_name
-
-    def _get_schedule_grid_column_width(self, schedule_rows: pd.DataFrame, parameter_name: str) -> float:
-        if "grid_column_width_override" in schedule_rows.columns:
-            overrides = schedule_rows.loc[
-                schedule_rows["parameter_name"].astype(str).str.strip() == parameter_name,
-                "grid_column_width_override",
-            ].dropna().astype(str).str.strip()
-            overrides = overrides[overrides != ""]
-            if not overrides.empty:
-                return float(overrides.iloc[0])
-
-        matching_params = self.params_df[
-            self.params_df["name"].astype(str).str.strip() == parameter_name
-        ]
-        if matching_params.empty:
-            return self._default_grid_column_width_in
-        width = matching_params.iloc[0].get("grid_column_width", self._default_grid_column_width_in)
-        if width is None or pd.isna(width) or not str(width).strip():
-            return self._default_grid_column_width_in
-        return float(width)
-
-    def _add_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
-        if not hasattr(self, "schedule_header_groups"):
-            self.schedule_header_groups = {}
-        if not hasattr(self, "schedule_models"):
-            self.schedule_models = {}
-
-        schedule_rows = self.family_groups_df[
-            self.family_groups_df["group_name"] == schedule_name
-        ].copy()
-        if schedule_rows.empty:
-            raise ValueError("Schedule not found: {}".format(schedule_name))
-
-        schedule_model = self.schedule_models.get(schedule_name)
-        if schedule_model is None:
-            _, family_models, _, all_families_schedule = self._build_model_validation_snapshot()
-            family_names = sorted({
-                str(value).strip()
-                for value in schedule_rows["family_name"].dropna().astype(str)
-                if str(value).strip()
-            })
-            missing_families = [name for name in family_names if name not in family_models]
-            if missing_families:
-                raise ValueError("Family not found: {}".format(", ".join(missing_families)))
-
-            schedule_overrides = {}
-            schedule_width_overrides = {}
-            if "header_text_override" in schedule_rows.columns:
-                for parameter_name in self._get_schedule_parameter_names(schedule_rows):
-                    overrides = schedule_rows.loc[
-                        schedule_rows["parameter_name"].astype(str).str.strip() == parameter_name,
-                        "header_text_override",
-                    ].dropna().astype(str).str.strip()
-                    overrides = overrides[overrides != ""]
-                    if not overrides.empty:
-                        schedule_overrides[parameter_name] = overrides.iloc[0]
-            if "grid_column_width_override" in schedule_rows.columns:
-                for parameter_name in self._get_schedule_parameter_names(schedule_rows):
-                    overrides = schedule_rows.loc[
-                        schedule_rows["parameter_name"].astype(str).str.strip() == parameter_name,
-                        "grid_column_width_override",
-                    ].dropna().astype(str).str.strip()
-                    overrides = overrides[overrides != ""]
-                    if not overrides.empty:
-                        schedule_width_overrides[parameter_name] = float(overrides.iloc[0])
-
-            schedule_model = type(all_families_schedule)(
-                name=schedule_name,
-                fams=[family_models[name] for name in family_names],
-                header_text_overrides=schedule_overrides,
-                grid_column_width_overrides=schedule_width_overrides,
-            )
-            params_by_name = {}
-            for parameter in schedule_model.params:
-                params_by_name.setdefault(parameter.name, parameter)
-            parameter_order = self._get_schedule_parameter_names(schedule_rows)
-            missing_parameters = [name for name in parameter_order if name not in params_by_name]
-            if missing_parameters:
-                raise ValueError(
-                    "Parameters are not associated with the schedule families: {}".format(
-                        ", ".join(missing_parameters)
-                    )
-                )
-            schedule_model.params = [params_by_name[name] for name in parameter_order]
-            for group in self.schedule_header_groups.get(schedule_name, []):
-                schedule_model.add_header_group(
-                    group["caption"],
-                    group["parameter_names"],
-                    top_row=group.get("top_row", 0),
-                    bottom_row=group.get("bottom_row", 0),
-                )
-            self.schedule_models[schedule_name] = schedule_model
-
-        group = schedule_model.add_header_group(caption, parameter_names)
-        self.schedule_header_groups[schedule_name] = [
-            {
-                "caption": item["caption"],
-                "parameter_names": list(item["parameter_names"]),
-                "top_row": item["top_row"],
-                "bottom_row": item["bottom_row"],
-            }
-            for item in schedule_model.header_groups
-        ]
-        return group
+        return pd.DataFrame(
+            [
+                {
+                    "name": schedule.name,
+                    "family_count": len(schedule.fams),
+                    "parameter_count": len(schedule.params),
+                    "status": schedule.status,
+                    "validation_message": schedule.validation_message,
+                }
+                for schedule in self.catalog.schedules
+            ],
+            columns=self._schedule_summary_columns,
+        )
 
     def _build_data_table(self, parent: ttk.Frame, table_name: str):
         frame = ttk.Frame(parent)
@@ -766,13 +578,6 @@ class DDMGUI:
                 tree.heading(col, text=self._humanize_column_name(col))
                 tree.column(col, width=170, anchor="w")
             self.family_tree = tree
-        elif table_name == "links":
-            columns = self._get_table_columns("links")
-            tree = ttk.Treeview(frame, columns=columns, show="headings")
-            for col in columns:
-                tree.heading(col, text=self._humanize_column_name(col))
-                tree.column(col, width=240, anchor="w")
-            self.link_tree = tree
         else:
             columns = self._schedule_summary_columns
             tree = ttk.Treeview(frame, columns=columns, show="headings")
@@ -875,15 +680,7 @@ class DDMGUI:
         return None
 
     def _on_tree_double_click(self, event, table_name: str):
-        if table_name == "params":
-            tree = self.param_tree
-        elif table_name == "families":
-            tree = self.family_tree
-        elif table_name == "links":
-            tree = self.link_tree
-        else:
-            tree = self.group_tree
-
+        tree = self.param_tree if table_name == "params" else self.family_tree
         if tree is None:
             return
 
@@ -962,73 +759,7 @@ class DDMGUI:
         entry.bind("<Return>", lambda _event: commit_edit())
         entry.bind("<FocusOut>", lambda _event: commit_edit())
 
-    def _append_extended_schedule_examples(self):
-        self.params_df = pd.concat(
-            [
-                self.params_df,
-                pd.DataFrame(
-                    [
-                        {"name": "ClearanceHeight", "header_text": "Clearance Height", "dtype": "Length", "group_under": "Dimensions", "formula": "", "instance_param": True, "status": "Draft", "validation_message": ""},
-                        {"name": "ServiceClearance", "header_text": "Service Clearance", "dtype": "Length", "group_under": "Dimensions", "formula": "", "instance_param": True, "status": "Draft", "validation_message": ""},
-                        {"name": "FireRating", "header_text": "Fire Rating", "dtype": "Text", "group_under": "Compliance", "formula": "", "instance_param": False, "status": "Draft", "validation_message": ""},
-                    ]
-                ),
-            ],
-            ignore_index=True,
-        )
-        self.params_df["grid_column_width"] = self.params_df["grid_column_width"].fillna(
-            self._default_grid_column_width_in
-        )
-        self.families_df = pd.concat(
-            [
-                self.families_df,
-                pd.DataFrame(
-                    [
-                        {"name": "Family_K", "client": "Client K", "country": "Ireland", "category": "Doors", "description": "Rated service door", "status": "Draft", "validation_message": ""},
-                        {"name": "Family_L", "client": "Client L", "country": "Netherlands", "category": "Mechanical Equipment", "description": "Plant room equipment", "status": "Draft", "validation_message": ""},
-                    ]
-                ),
-            ],
-            ignore_index=True,
-        )
-        self.family_param_links_df = pd.concat(
-            [
-                self.family_param_links_df,
-                pd.DataFrame(
-                    [
-                        {"family_name": "Family_K", "parameter_name": "ClearanceHeight"},
-                        {"family_name": "Family_K", "parameter_name": "FireRating"},
-                        {"family_name": "Family_L", "parameter_name": "ServiceClearance"},
-                        {"family_name": "Family_L", "parameter_name": "FireRating"},
-                    ]
-                ),
-            ],
-            ignore_index=True,
-        )
-        self.family_groups_df = pd.concat(
-            [
-                self.family_groups_df,
-                pd.DataFrame(
-                    [
-                        {"family_name": "Family_K", "group_name": "Safety and Clearance", "parameter_name": "ClearanceHeight", "header_text_override": "", "override_entry": "2.1 m", "status": "Ready", "validation_message": "Override entry recorded"},
-                        {"family_name": "Family_K", "group_name": "Safety and Clearance", "parameter_name": "FireRating", "header_text_override": "", "override_entry": "90 min", "status": "Ready", "validation_message": "Override entry recorded"},
-                        {"family_name": "Family_L", "group_name": "Safety and Clearance", "parameter_name": "ServiceClearance", "header_text_override": "", "override_entry": "600 mm", "status": "Ready", "validation_message": "Override entry recorded"},
-                        {"family_name": "Family_L", "group_name": "Safety and Clearance", "parameter_name": "FireRating", "header_text_override": "", "override_entry": "120 min", "status": "Ready", "validation_message": "Override entry recorded"},
-                    ]
-                ),
-            ],
-            ignore_index=True,
-        )
-        self.family_groups_df["grid_column_width_override"] = self.family_groups_df[
-            "grid_column_width_override"
-        ].fillna("")
-
     def render_tables(self):
-        if not hasattr(self, "family_groups_df") or self.family_groups_df is None:
-            self.family_groups_df = pd.DataFrame(columns=self._get_table_columns("groups"))
-        if not hasattr(self, "group_tree"):
-            self.group_tree = None
-
         self._render_tree(self.param_tree, self.params_df, self._get_table_columns("params"))
         self._render_tree(self.family_tree, self.families_df, self._get_table_columns("families"))
         self._render_tree(self.group_tree, self._build_schedule_summary_df(), self._schedule_summary_columns)
@@ -1048,320 +779,80 @@ class DDMGUI:
             values = [row.get(col, "") for col in columns]
             tree.insert("", "end", values=["" if value is None else value for value in values])
 
-    def _load_revit_parameter_manager(self):
-        module_path = Path(__file__).with_name("revit_parameter_manager.py")
-        if not module_path.exists():
-            return None
-
-        spec = importlib.util.spec_from_file_location("revit_parameter_manager_model", module_path)
-        if spec is None or spec.loader is None:
-            return None
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
-    def _build_model_validation_snapshot(self):
-        model_module = self._load_revit_parameter_manager()
-        if model_module is None:
-            return {}, {}, {}, []
-
-        Param = model_module.Param
-        Fam = model_module.Fam
-        Schedule = model_module.Schedule
-        # Each validation pass builds a fresh catalog from the tables, so names
-        # from earlier passes (or deleted rows) never leak into this one.
-        catalog = model_module.Catalog()
-
-        param_models = []
-        for _, row in self.params_df.iterrows():
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-
-            dtype = str(row.get("dtype") or "")
-            instance_value = row.get("instance_param", True)
-            instance_param = False
-            header_text = name
-            grid_column_width = self._default_grid_column_width_in
-            param = None
-            try:
-                normalized_instance = str(instance_value).strip().lower()
-                if normalized_instance not in {"true", "1", "yes", "y", "false", "0", "no", "n"}:
-                    raise ValueError("Instance Param must be true or false.")
-                instance_param = normalized_instance in {"true", "1", "yes", "y"}
-                header_text = row.get("header_text")
-                if header_text is None or pd.isna(header_text) or not str(header_text).strip():
-                    header_text = name
-                else:
-                    header_text = str(header_text).strip()
-                grid_column_width = row.get(
-                    "grid_column_width",
-                    self._default_grid_column_width_in,
-                )
-                if grid_column_width is None or pd.isna(grid_column_width) or not str(grid_column_width).strip():
-                    grid_column_width = self._default_grid_column_width_in
-                else:
-                    try:
-                        grid_column_width = float(grid_column_width)
-                    except (TypeError, ValueError):
-                        raise ValueError("Grid column width must be a number in inches.") from None
-                param = catalog.get_param(name)
-                if param is None:
-                    param = Param(
-                        name=name, dtype=dtype, guid=parameter_guid(name, row.get("guid")),
-                        group_under=row.get("group_under") or None, value=row.get("value"),
-                        formula=None, instance_param=instance_param,
-                        header_text=header_text,
-                        grid_column_width=grid_column_width,
-                        catalog=catalog,
-                    )
-                else:
-                    param.dtype = dtype
-                    param.group_under = row.get("group_under") or None
-                    param.value = row.get("value")
-                    param.instance_param = instance_param
-                    param.header_text = header_text
-                    param.grid_column_width = grid_column_width
-                param_models.append(param)
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                if param is None:
-                    fallback_values = {
-                        "name": name,
-                        "group_under": row.get("group_under") or None,
-                        "value": row.get("value"),
-                        "formula": None,
-                        "instance_param": instance_param,
-                        "header_text": header_text,
-                        "grid_column_width": self._default_grid_column_width_in,
-                    }
-                    try:
-                        param = Param(dtype=dtype, **fallback_values)
-                    except Exception:
-                        param = Param(dtype="Text", **fallback_values)
-                param.status = "Error"
-                param.validation_message = str(exc)
-                param_models.append(param)
-
-        for _, row in self.params_df.iterrows():
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-
-            formula = str(row.get("formula") or "").strip() or None
-            param = next((item for item in param_models if item.name == name), None)
-            if param is None:
-                continue
-            if param.status == "Error":
-                continue
-
-            try:
-                if formula is not None:
-                    param.formula = formula
-                param.validate()
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                param.status = "Error"
-                param.validation_message = str(exc)
-
-        family_models = {}
-        family_param_map = self._build_family_param_map()
-        for _, row in self.families_df.iterrows():
-            family_name = str(row.get("name") or "").strip()
-            if not family_name:
-                continue
-
-            family_params = [
-                param for param in param_models if param.name in family_param_map.get(family_name, set())
-            ]
-            try:
-                family = Fam(
-                    name=family_name,
-                    client=row.get("client"),
-                    country=row.get("country"),
-                    description=row.get("description"),
-                    category=row.get("category"),
-                    params=family_params,
-                    catalog=catalog,
-                )
-                family.validate()
-                family_models[family_name] = family
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                family = Fam(
-                    name=family_name,
-                    client=row.get("client"),
-                    country=row.get("country"),
-                    description=row.get("description"),
-                    category=None,
-                    params=family_params,
-                )
-                family.status = "Error"
-                family.validation_message = str(exc)
-                family_models[family_name] = family
-
-        schedule = Schedule(fams=list(family_models.values()), catalog=catalog)
-        schedule.validate()
-
-        return param_models, family_models, family_param_map, schedule
+    # --- validation -------------------------------------------------------------
 
     def validate_all(self):
-        if not hasattr(self, "family_groups_df") or self.family_groups_df is None:
-            self.family_groups_df = pd.DataFrame(columns=self._get_table_columns("groups"))
-        if not hasattr(self, "group_tree"):
-            self.group_tree = None
-        if "grid_column_width" not in self.params_df.columns:
-            self.params_df["grid_column_width"] = self._default_grid_column_width_in
-        if "grid_column_width_override" not in self.family_groups_df.columns:
-            self.family_groups_df["grid_column_width_override"] = ""
-        self._ensure_param_guids()
-
-        warnings: List[str] = []
-        param_models, family_models, family_param_map, schedule = self._build_model_validation_snapshot()
-
-        normalized_links = self.family_param_links_df.assign(
-            _family_name=self.family_param_links_df["family_name"].fillna("").astype(str).str.strip(),
-            _parameter_name=self.family_param_links_df["parameter_name"].fillna("").astype(str).str.strip(),
-        )
-        duplicate_family_links = normalized_links[
-            normalized_links["_family_name"].ne("")
-            & normalized_links["_parameter_name"].ne("")
-            & normalized_links.duplicated(
-                subset=["_family_name", "_parameter_name"],
-                keep=False,
-            )
-        ]
-        duplicate_parameters_by_family = {
-            family_name: sorted(group["_parameter_name"].unique().tolist())
-            for family_name, group in duplicate_family_links.groupby("_family_name")
-        }
-
-        for idx, row in self.params_df.iterrows():
-            param_name = str(row.get("name") or "").strip()
-            if not param_name:
-                self.params_df.at[idx, "status"] = "Error"
-                self.params_df.at[idx, "validation_message"] = "Parameter name is required."
-                warnings.append("Parameter name is required.")
-                continue
-            matching = next((param for param in param_models if param.name == param_name), None)
-            if matching is None:
-                self.params_df.at[idx, "status"] = "Ready"
-                self.params_df.at[idx, "validation_message"] = ""
-                continue
-            self.params_df.at[idx, "status"] = matching.status
-            self.params_df.at[idx, "validation_message"] = matching.validation_message or ""
-            if matching.status == "Error":
-                warnings.append(f"{param_name}: {matching.validation_message}")
-
-        for idx, row in self.families_df.iterrows():
-            family_name = str(row.get("name") or "").strip()
-            if not family_name:
-                self.families_df.at[idx, "status"] = "Error"
-                self.families_df.at[idx, "validation_message"] = "Family name is required."
-                warnings.append("Family name is required.")
-                continue
-            matching = family_models.get(family_name)
-            duplicate_parameters = duplicate_parameters_by_family.get(family_name, [])
-            if matching is None:
-                self.families_df.at[idx, "status"] = "Ready"
-                self.families_df.at[idx, "validation_message"] = ""
-            else:
-                self.families_df.at[idx, "status"] = matching.status
-                self.families_df.at[idx, "validation_message"] = matching.validation_message or ""
-
-            if duplicate_parameters:
-                duplicate_message = (
-                    "Duplicate parameter link(s): "
-                    + ", ".join(duplicate_parameters)
-                    + "."
-                )
-                existing_message = str(
-                    self.families_df.at[idx, "validation_message"] or ""
-                ).strip()
-                self.families_df.at[idx, "status"] = "Error"
-                self.families_df.at[idx, "validation_message"] = (
-                    f"{existing_message}; {duplicate_message}"
-                    if existing_message
-                    else duplicate_message
-                )
-            if str(self.families_df.at[idx, "status"]).lower() == "error":
-                warnings.append(
-                    f"{family_name}: {self.families_df.at[idx, 'validation_message']}"
-                )
-
-        normalized_groups = self.family_groups_df.assign(
-            _family_name=self.family_groups_df["family_name"].fillna("").astype(str).str.strip(),
-            _group_name=self.family_groups_df["group_name"].fillna("").astype(str).str.strip(),
-            _parameter_name=self.family_groups_df["parameter_name"].fillna("").astype(str).str.strip(),
-        )
-        duplicate_schedule_entries = normalized_groups[
-            normalized_groups["_family_name"].ne("")
-            & normalized_groups["_group_name"].ne("")
-            & normalized_groups["_parameter_name"].ne("")
-            & normalized_groups.duplicated(
-                subset=["_family_name", "_group_name", "_parameter_name"],
-                keep=False,
-            )
-        ]
-        duplicate_schedule_entry_keys = {
-            (row["_family_name"], row["_group_name"], row["_parameter_name"])
-            for _, row in duplicate_schedule_entries.iterrows()
-        }
-        for idx, row in normalized_groups.iterrows():
-            override_entry = str(row.get("override_entry") or "")
-            family_name = row["_family_name"]
-            group_name = row["_group_name"]
-            parameter_name = row["_parameter_name"]
-            is_duplicate = (
-                family_name,
-                group_name,
-                parameter_name,
-            ) in duplicate_schedule_entry_keys
-            messages = []
-            if is_duplicate:
-                messages.append(
-                    f"Duplicate parameter '{parameter_name}' in schedule '{group_name}' for family '{family_name}'."
-                )
-            if override_entry.strip():
-                messages.append("Override entry recorded")
-            self.family_groups_df.at[idx, "status"] = "Error" if is_duplicate else "Ready"
-            self.family_groups_df.at[idx, "validation_message"] = "; ".join(messages)
-            if is_duplicate:
-                warnings.append(messages[0])
-
-        if "header_text" not in self.params_df.columns:
-            self.params_df["header_text"] = self.params_df["name"]
-        if "grid_column_width" not in self.params_df.columns:
-            self.params_df["grid_column_width"] = self._default_grid_column_width_in
-        if "default_value" not in self.params_df.columns:
-            self.params_df["default_value"] = ""
-        if "header_text_override" not in self.family_groups_df.columns:
-            self.family_groups_df["header_text_override"] = ""
-        if "grid_column_width_override" not in self.family_groups_df.columns:
-            self.family_groups_df["grid_column_width_override"] = ""
-
+        """Validate the catalog, refresh the tables and list any errors."""
+        for schedule in self.catalog.schedules:
+            schedule.refresh_params()
+        issues = self.catalog.validate()
         self.render_tables()
-        self.warning_text.delete("1.0", tk.END)
-        if warnings:
-            self.warning_text.insert("1.0", "\n".join(warnings))
+        self._show_messages(
+            [f"{name}: {message}" for _kind, name, message in issues]
+            or ["Validation passed. No warnings found."]
+        )
+        return issues
+
+    # --- editing ----------------------------------------------------------------
+
+    def _apply_cell_value(self, table_name: str, row_index: int, column_name: str, new_value):
+        """Apply a table edit through the model. Raises ``ValueError`` for an invalid edit."""
+        if column_name in {"status", "validation_message"}:
+            raise ValueError(f"{self._humanize_column_name(column_name)} is generated by validation and cannot be edited.")
+
+        if table_name == "params":
+            items = self.catalog.params
+        elif table_name == "families":
+            items = self.catalog.families
         else:
-            self.warning_text.insert("1.0", "Validation passed. No warnings found.")
+            raise ValueError(f"The {table_name} table can't be edited directly.")
+        if row_index < 0 or row_index >= len(items):
+            return
 
-    def _ensure_param_guids(self):
-        """Store a GUID on every parameter, starting from the name-based GUID earlier exports used."""
-        if "guid" not in self.params_df.columns:
-            self.params_df["guid"] = ""
-        self.params_df["guid"] = self.params_df["guid"].astype(object)
-        for idx, row in self.params_df.iterrows():
-            name = str(row.get("name") or "").strip()
-            if name:
-                self.params_df.at[idx, "guid"] = parameter_guid(name, row.get("guid"))
+        if table_name == "params":
+            self._set_param_field(items[row_index], column_name, new_value)
+        else:
+            self._set_family_field(items[row_index], column_name, new_value)
+        self.validate_all()
 
-    def _confirm_param_rename(self, row_index: int, new_name: str) -> bool:
-        """Ask whether a rename assigns a new GUID. Returns False if the rename is cancelled."""
-        self._ensure_param_guids()
-        old_name = str(self.params_df.at[row_index, "name"] or "").strip()
-        if not old_name or new_name == old_name:
-            return True
+    def _set_param_field(self, param, column_name: str, new_value):
+        value = cell_text(new_value)
+        if column_name == "guid":
+            raise ValueError("GUID is assigned automatically and changes only when a parameter is renamed.")
+        if column_name == "name":
+            self._rename_param(param, value)
+        elif column_name == "header_text":
+            # The name itself means "use the default", so the header keeps following renames.
+            param.header_text = None if value == param.name else value
+        elif column_name == "grid_column_width":
+            param.grid_column_width = parse_width(value)
+        elif column_name == "dtype":
+            param.dtype = value
+        elif column_name == "group_under":
+            param.group_under = value or None
+        elif column_name == "formula":
+            param.formula = value or None
+        elif column_name == "instance_param":
+            param.instance_param = parse_bool(value)
+        elif column_name == "default_value":
+            param.value = value or None
+        else:
+            raise ValueError(f"{self._humanize_column_name(column_name)} can't be edited.")
 
+    def _rename_param(self, param, new_name: str):
+        if not new_name:
+            raise ValueError("Parameter name is required.")
+        if new_name == param.name:
+            return
+        if self.catalog.get_param(new_name) is not None or new_name in COMMON_PARAM_NAMES:
+            raise ValueError(f"Parameter name '{new_name}' is already in use.")
+        keep_guid = self._confirm_param_rename(param.name, new_name)
+        if keep_guid is None:
+            return
+        self.catalog.rename_param(param.name, new_name, keep_guid=keep_guid)
+
+    def _confirm_param_rename(self, old_name: str, new_name: str) -> Optional[bool]:
+        """Ask whether a rename keeps the GUID. Returns ``keep_guid``, or ``None`` to cancel."""
         choice = messagebox.askyesnocancel(
             "Parameter GUID will change",
             guid_change_warning(old_name, new_name)
@@ -1373,123 +864,212 @@ class DDMGUI:
             parent=getattr(self, "root", None),
         )
         if choice is None:
-            return False
-        if choice:
-            self.params_df.at[row_index, "guid"] = str(uuid.uuid4())
+            return None
+        return not choice
+
+    def _set_family_field(self, fam, column_name: str, new_value):
+        value = cell_text(new_value)
+        if column_name == "name":
+            if not value:
+                raise ValueError("Family name is required.")
+            fam.name = value
+        elif column_name == "category":
+            fam.set_category(value or None)
+        elif column_name in {"client", "country", "description"}:
+            setattr(fam, column_name, value or None)
+        else:
+            raise ValueError(f"{self._humanize_column_name(column_name)} can't be edited.")
+
+    # --- value overrides --------------------------------------------------------
+
+    @staticmethod
+    def _describe_location(location) -> str:
+        family_name, schedule_name = location
+        if schedule_name is None:
+            return f"{family_name} (everywhere)"
+        return f"{family_name} in schedule {schedule_name}"
+
+    def _override_value(self, location, param_name: str, new_value) -> bool:
+        """Override (or, with a blank value, clear) a parameter's value at ``location``.
+
+        If the parameter can be overridden anywhere else, ask where else the same
+        change should apply. Returns ``False`` if the user cancels.
+        """
+        value = cell_text(new_value) or None
+        others = [other for other in self.catalog.override_locations(param_name) if other != location]
+        targets = [location]
+        if others:
+            chosen = self._ask_override_locations(param_name, value, location, others)
+            if chosen is None:
+                return False
+            targets.extend(chosen)
+        for target in targets:
+            self.catalog.apply_override(target, param_name, value=value)
+        self.validate_all()
         return True
 
-    def _rename_param_references(self, row_index: int, old_name: str, new_name: str):
-        """Point links, schedule entries, header groups and formulas at a renamed parameter."""
-        for df in (self.family_param_links_df, getattr(self, "family_groups_df", None)):
-            if df is None or "parameter_name" not in df.columns:
-                continue
-            matches = df["parameter_name"].fillna("").astype(str).str.strip() == old_name
-            df.loc[matches, "parameter_name"] = new_name
+    def _ask_override_locations(self, param_name: str, value, origin, others):
+        """Ask which of ``others`` get the same override. Returns a list, or ``None`` to cancel."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Apply Override Elsewhere?")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("460x360")
 
-        for groups in getattr(self, "schedule_header_groups", {}).values():
-            for group in groups:
-                group["parameter_names"] = [
-                    new_name if name == old_name else name
-                    for name in group.get("parameter_names", [])
-                ]
-
-        if "formula" in self.params_df.columns:
-            known_names = {str(name).strip() for name in self.params_df["name"].dropna()}
-            for idx, formula in self.params_df["formula"].items():
-                if isinstance(formula, str) and formula.strip():
-                    self.params_df.at[idx, "formula"] = rename_reference(
-                        formula, old_name, new_name, known_names
-                    )
-
-        # Header text left at its default follows the name; custom header text is kept.
-        if "header_text" in self.params_df.columns:
-            header_text = self.params_df.at[row_index, "header_text"]
-            if isinstance(header_text, str) and header_text.strip() == old_name:
-                self.params_df.at[row_index, "header_text"] = new_name
-
-    def _apply_cell_value(self, table_name: str, row_index: int, column_name: str, new_value):
-        if table_name == "params":
-            df = self.params_df
-        elif table_name == "families":
-            df = self.families_df
-        elif table_name == "links":
-            df = self.family_param_links_df
-        elif table_name == "groups":
-            if not hasattr(self, "family_groups_df") or self.family_groups_df is None:
-                self.family_groups_df = pd.DataFrame(columns=self._get_table_columns("groups"))
-            df = self.family_groups_df
+        if value is None:
+            action = f"Clear the override of '{param_name}'"
         else:
-            return
+            action = f"Override '{param_name}' with '{value}'"
+        ttk.Label(
+            dialog,
+            text=f"{action} for {self._describe_location(origin)}.\n\nAlso apply it to:",
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(10, 4))
 
-        if row_index < 0 or row_index >= len(df):
-            return
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10)
+        listbox = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, exportselection=False)
+        for location in others:
+            listbox.insert(tk.END, self._describe_location(location))
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scroll.set)
+        listbox.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
 
-        if column_name in {"status", "validation_message"}:
-            raise ValueError(f"{self._humanize_column_name(column_name)} is generated by validation and cannot be edited.")
-        if table_name == "params" and column_name == "guid":
-            raise ValueError("GUID is assigned automatically and changes only when a parameter is renamed.")
+        result = {"locations": None}
 
-        if table_name == "params" and column_name == "name":
-            new_value = "" if new_value is None else str(new_value).strip()
-            if not new_value:
-                raise ValueError("Parameter name is required.")
-            old_name = str(df.at[row_index, "name"] or "").strip()
-            other_names = {
-                str(name).strip()
-                for idx, name in df["name"].dropna().items()
-                if idx != row_index
-            }
-            if new_value != old_name and new_value in other_names:
-                raise ValueError(f"Parameter name '{new_value}' is already in use.")
-            if not self._confirm_param_rename(row_index, new_value):
+        def apply():
+            result["locations"] = [others[index] for index in listbox.curselection()]
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=10, pady=8)
+        ttk.Button(buttons, text="Select All", command=lambda: listbox.selection_set(0, tk.END)).pack(side="left")
+        ttk.Button(buttons, text="Apply", command=apply).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 6))
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.wait_window()
+        return result["locations"]
+
+    def _edit_value_dialog(self, parent, title: str, prompt: str, current_value: str, on_save):
+        """A small dialog for one value. ``on_save(value)`` returns ``False`` to keep it open."""
+        editor = tk.Toplevel(parent)
+        editor.title(title)
+        editor.transient(parent)
+        editor.grab_set()
+        editor.geometry("420x130")
+        ttk.Label(editor, text=prompt, style="Section.TLabel", wraplength=400).pack(anchor="w", padx=10, pady=(10, 4))
+        value_var = tk.StringVar(value=current_value)
+        entry = ttk.Entry(editor, textvariable=value_var)
+        entry.pack(fill="x", padx=10, pady=4)
+        entry.focus_set()
+        entry.selection_range(0, tk.END)
+
+        def save():
+            try:
+                saved = on_save(value_var.get())
+            except ValueError as exc:
+                messagebox.showerror("Invalid value", str(exc), parent=editor)
                 return
-            if old_name and new_value != old_name:
-                self._rename_param_references(row_index, old_name, new_value)
-        elif table_name == "params" and column_name == "grid_column_width":
-            raw_width = "" if new_value is None else str(new_value).strip()
-            if not raw_width:
-                new_value = self._default_grid_column_width_in
-            else:
-                try:
-                    new_value = float(raw_width)
-                except (TypeError, ValueError):
-                    raise ValueError("Grid column width must be a number in inches.")
-                if not math.isfinite(new_value) or new_value <= 0:
-                    raise ValueError("Grid column width must be a finite, positive number of inches.")
+            if saved is not False:
+                editor.destroy()
 
-        if column_name == "instance_param":
-            normalized = str(new_value).strip().lower()
-            if normalized not in {"true", "1", "yes", "y", "false", "0", "no", "n"}:
-                raise ValueError("Instance Param must be true or false.")
-            df.at[row_index, column_name] = normalized in {"true", "1", "yes", "y"}
-        elif table_name == "params" and column_name == "grid_column_width":
-            df.at[row_index, column_name] = new_value
-        else:
-            df.at[row_index, column_name] = "" if new_value is None else str(new_value)
+        buttons = ttk.Frame(editor)
+        buttons.pack(fill="x", padx=10, pady=(4, 8))
+        ttk.Button(buttons, text="Save", command=save).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
+        entry.bind("<Return>", lambda _event: save())
+        return editor
 
-        if table_name == "groups" and column_name in {
-            "header_text_override",
-            "grid_column_width_override",
-        }:
-            schedule_name = str(df.at[row_index, "group_name"])
-            parameter_name = str(df.at[row_index, "parameter_name"])
-            matching_rows = (
-                (df["group_name"].astype(str) == schedule_name)
-                & (df["parameter_name"].astype(str) == parameter_name)
-            )
-            df.loc[matching_rows, column_name] = str(new_value or "").strip()
+    def _family_value_rows(self, fam) -> List[dict]:
+        overrides = fam.overrides
+        return [
+            {
+                "parameter_name": param.name,
+                "default_value": "" if param.value is None else param.value,
+                "override": overrides.get(param.name, {}).get("value", ""),
+                "value": "" if resolved.value is None else resolved.value,
+            }
+            for param, resolved in zip(fam.params, fam.resolved_params())
+            if param.name not in COMMON_PARAM_NAMES
+        ]
 
-        if table_name in {"params", "families", "links", "groups"}:
-            self.schedule_models = {}
-            self.validate_all()
+    def _schedule_value_rows(self, schedule) -> List[dict]:
+        rows = []
+        for fam in schedule.fams:
+            overrides = schedule.family_overrides.get(fam.name, {})
+            resolved = {param.name: param for param in schedule.resolved_family_params(fam)}
+            for param_name in schedule.family_param_names(fam):
+                if schedule.field_names is None and param_name in COMMON_PARAM_NAMES:
+                    continue
+                value = resolved[param_name].value
+                rows.append({
+                    "family_name": fam.name,
+                    "parameter_name": param_name,
+                    "override": overrides.get(param_name, {}).get("value", ""),
+                    "value": "" if value is None else value,
+                })
+        return rows
 
-    def _build_family_param_map(self) -> dict:
-        result: dict = {}
-        for _, row in self.family_param_links_df.iterrows():
-            family_name = str(row.get("family_name") or "")
-            parameter_name = str(row.get("parameter_name") or "")
-            result.setdefault(family_name, set()).add(parameter_name)
-        return result
+    def _build_value_tree(self, parent, columns: Sequence[str], height: int = 8) -> ttk.Treeview:
+        frame = ttk.Frame(parent)
+        frame.pack(fill="both", expand=True)
+        tree = ttk.Treeview(frame, columns=list(columns), show="headings", height=height)
+        labels = {"override": "Override", "value": "Value"}
+        for column in columns:
+            tree.heading(column, text=labels.get(column, self._humanize_column_name(column)))
+            tree.column(column, width=150, anchor="w")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        return tree
+
+    # --- schedules --------------------------------------------------------------
+
+    def _get_schedule(self, schedule_name: str):
+        schedule = self.catalog.get_schedule(schedule_name)
+        if schedule is None:
+            raise ValueError("Schedule not found: {}".format(schedule_name))
+        return schedule
+
+    @staticmethod
+    def _get_schedule_parameter_names(schedule) -> List[str]:
+        return [param.name for param in schedule.params]
+
+    @staticmethod
+    def _get_schedule_header_text(schedule, parameter_name: str) -> str:
+        param = next((param for param in schedule.params if param.name == parameter_name), None)
+        return parameter_name if param is None else param.header_text
+
+    def _get_schedule_grid_column_width(self, schedule, parameter_name: str) -> float:
+        param = next((param for param in schedule.params if param.name == parameter_name), None)
+        return self._default_grid_column_width_in if param is None else param.grid_column_width
+
+    def _set_schedule_column(self, schedule_name: str, parameter_name: str, header_text: str, width_text: str):
+        """Set or clear a schedule's header text and column width overrides for one column."""
+        width_text = cell_text(width_text)
+        width = None
+        if width_text:
+            try:
+                width = Param._coerce_grid_column_width(width_text)
+            except ValueError:
+                raise ValueError("Width must be a finite, positive number of inches.") from None
+        schedule = self._get_schedule(schedule_name)
+        schedule.override_param(
+            parameter_name,
+            header_text=cell_text(header_text),
+            grid_column_width=width,
+        )
+        self.validate_all()
+
+    def _add_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
+        group = self._get_schedule(schedule_name).add_header_group(caption, parameter_names)
+        self.validate_all()
+        return group
+
+    # --- detail windows ---------------------------------------------------------
 
     def _open_selected_family_window(self, event):
         if self.family_tree is None:
@@ -1507,96 +1087,122 @@ class DDMGUI:
         if not row_id:
             return
         row_index = self.group_tree.index(row_id)
-        summary_df = self._build_schedule_summary_df()
-        if row_index < 0 or row_index >= len(summary_df):
+        if row_index < 0 or row_index >= len(self.catalog.schedules):
             return
-        schedule_name = str(summary_df.iloc[row_index]["name"])
-        self._open_detail_window("schedule", schedule_name)
+        self._open_detail_window("schedule", self.catalog.schedules[row_index].name)
 
     def _open_detail_window(self, item_type: str, row_index_or_name):
         if item_type == "family":
-            df = self.families_df
-            columns = self._get_table_columns("families")
-            title = "Family Details"
-            row_index = row_index_or_name
-            if row_index < 0 or row_index >= len(df):
+            self._open_family_window(row_index_or_name)
+        else:
+            self._open_schedule_window(str(row_index_or_name))
+
+    def _open_family_window(self, row_index: int):
+        if row_index < 0 or row_index >= len(self.catalog.families):
+            return
+        fam = self.catalog.families[row_index]
+        columns = self._get_table_columns("families")
+        title = "Family Details"
+
+        form = tk.Toplevel(self.root)
+        form.title(title)
+        form.transient(self.root)
+        form.grab_set()
+        form.geometry("760x680")
+        ttk.Label(form, text=title, style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
+
+        row = self.families_df.iloc[row_index]
+        entries = {}
+        for col in columns:
+            if col in {"status", "validation_message"}:
+                ttk.Label(
+                    form,
+                    text=f"{self._humanize_column_name(col)}: {row.get(col)}",
+                    wraplength=720,
+                    justify="left",
+                ).pack(anchor="w", padx=12, pady=(6, 0))
+                continue
+            ttk.Label(form, text=self._humanize_column_name(col), style="Section.TLabel").pack(anchor="w", padx=12, pady=(6, 0))
+            dropdown_values = self._revit_dropdown_values(col)
+            if dropdown_values:
+                combo = ttk.Combobox(form, values=dropdown_values, state="readonly", width=90)
+                combo.set(str(row.get(col)))
+                entries[col] = combo
+                combo.pack(fill="x", padx=12, pady=(0, 4))
+                continue
+            value = tk.StringVar(value=str(row.get(col)))
+            entries[col] = value
+            ttk.Entry(form, textvariable=value, width=90).pack(fill="x", padx=12, pady=(0, 4))
+
+        def save_changes():
+            try:
+                # Name first, so a rejected name leaves the other fields untouched.
+                self._set_family_field(fam, "name", entries["name"].get())
+                for col, widget in entries.items():
+                    if col != "name":
+                        self._set_family_field(fam, col, widget.get())
+            except ValueError as exc:
+                messagebox.showerror("Invalid value", str(exc), parent=form)
                 return
-            row = df.iloc[row_index]
-            entries = {}
-            for col in columns:
-                label = ttk.Label(self.root, text=self._humanize_column_name(col), style="Section.TLabel")
-                label.pack(anchor="w", padx=12, pady=(8, 0))
-            form = tk.Toplevel(self.root)
-            form.title(title)
-            form.transient(self.root)
-            form.grab_set()
-            form.geometry("700x420")
-            ttk.Label(form, text=title, style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
-            for col in columns:
-                if col in {"status", "validation_message"}:
-                    current_value = "" if row.get(col) is None else str(row.get(col))
-                    ttk.Label(
-                        form,
-                        text=f"{self._humanize_column_name(col)}: {current_value}",
-                    ).pack(anchor="w", padx=12, pady=(8, 0))
-                    continue
-                label = ttk.Label(form, text=self._humanize_column_name(col), style="Section.TLabel")
-                label.pack(anchor="w", padx=12, pady=(8, 0))
-                dropdown_values = self._revit_dropdown_values(col)
-                if dropdown_values:
-                    combo = ttk.Combobox(form, values=dropdown_values, state="readonly", width=90)
-                    combo.set("" if row.get(col) is None else str(row.get(col)))
-                    entries[col] = combo
-                    combo.pack(fill="x", padx=12, pady=(0, 6))
-                    continue
-                value = tk.StringVar(value="" if row.get(col) is None else str(row.get(col)))
-                entries[col] = value
-                ttk.Entry(form, textvariable=value, width=90).pack(fill="x", padx=12, pady=(0, 6))
+            self.validate_all()
+            form.destroy()
 
-            def save_changes():
-                family_name = entries["name"].get().strip()
-                if not family_name:
-                    messagebox.showerror("Invalid value", "Family name is required.", parent=form)
-                    return
-                for col, value in entries.items():
-                    current_value = value.get() if hasattr(value, "get") else value.get()
-                    self.families_df.at[row_index, col] = current_value
-                self.validate_all()
-                form.destroy()
+        ttk.Button(form, text="Save", command=save_changes, style="Action.TButton").pack(pady=(8, 4))
 
-            ttk.Button(form, text="Save", command=save_changes, style="Action.TButton").pack(pady=(8, 12))
+        values_box = ttk.LabelFrame(form, text="Parameter Values (double-click to override)", padding=8)
+        values_box.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        value_tree = self._build_value_tree(values_box, self._value_columns)
+
+        def refresh_values():
+            self._render_tree(value_tree, pd.DataFrame(self._family_value_rows(fam)), self._value_columns)
+
+        def edit_value(event):
+            row_id = value_tree.identify_row(event.y)
+            if not row_id:
+                return
+            parameter_name = value_tree.item(row_id, "values")[0]
+            current = fam.overrides.get(parameter_name, {}).get("value", "")
+
+            def save(value):
+                saved = self._override_value((fam.name, None), parameter_name, value)
+                refresh_values()
+                return saved
+
+            self._edit_value_dialog(
+                form,
+                "Override Value",
+                f"Value of '{parameter_name}' for {fam.name} (blank uses the default):",
+                "" if current is None else str(current),
+                save,
+            )
+
+        value_tree.bind("<Double-1>", edit_value)
+        refresh_values()
+
+    def _open_schedule_window(self, selected_name: str):
+        schedule = self.catalog.get_schedule(selected_name)
+        if schedule is None:
             return
 
-        selected_name = str(row_index_or_name)
-        summary_df = self._build_schedule_summary_df()
-        summary_row = summary_df[summary_df["name"] == selected_name]
-        if summary_row.empty:
-            return
-
-        schedule_rows = self.family_groups_df[self.family_groups_df["group_name"] == selected_name].copy()
         form = tk.Toplevel(self.root)
         form.title(f"Schedule Details: {selected_name}")
         form.transient(self.root)
         form.grab_set()
-        form.geometry("760x480")
+        form.geometry("880x700")
 
         ttk.Label(form, text=f"Schedule: {selected_name}", style="Title.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
-        ttk.Label(form, text=f"Status: {summary_row.iloc[0]['status']}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(0, 6))
-        ttk.Label(form, text=f"Validation: {summary_row.iloc[0]['validation_message'] or 'None'}", wraplength=700, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
+        ttk.Label(form, text=f"Status: {schedule.status}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(0, 6))
+        ttk.Label(form, text=f"Validation: {schedule.validation_message or 'None'}", wraplength=840, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
 
         content = ttk.Frame(form)
-        content.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        content.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         content.grid_columnconfigure(0, weight=1, uniform="schedule_detail")
         content.grid_columnconfigure(1, weight=2, uniform="schedule_detail")
         content.grid_rowconfigure(0, weight=1)
 
         family_box = ttk.LabelFrame(content, text="Families", padding=8)
         family_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        family_names = sorted({
-            str(value).strip()
-            for value in schedule_rows["family_name"].dropna().astype(str)
-            if str(value).strip()
-        })
+        family_names = [fam.name for fam in schedule.fams]
         family_list = tk.Text(family_box, height=8, width=32, wrap="word")
         family_list.insert("1.0", "\n".join(family_names) if family_names else "No families assigned")
         family_list.configure(state="disabled")
@@ -1604,32 +1210,18 @@ class DDMGUI:
 
         parameter_box = ttk.LabelFrame(content, text="Parameters", padding=8)
         parameter_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        parameter_names = self._get_schedule_parameter_names(schedule_rows)
+        parameter_names = self._get_schedule_parameter_names(schedule)
         if parameter_names:
             def edit_schedule_header(parameter_name):
-                schedule_parameter_rows = schedule_rows[
-                    schedule_rows["parameter_name"].astype(str).str.strip() == parameter_name
-                ]
-                existing_overrides = schedule_parameter_rows.get(
-                    "header_text_override", pd.Series(dtype=str)
-                ).dropna().astype(str).str.strip()
-                existing_overrides = existing_overrides[existing_overrides != ""]
-                current_override = existing_overrides.iloc[0] if not existing_overrides.empty else ""
-                existing_width_overrides = schedule_parameter_rows.get(
-                    "grid_column_width_override", pd.Series(dtype=str)
-                ).dropna().astype(str).str.strip()
-                existing_width_overrides = existing_width_overrides[existing_width_overrides != ""]
-                current_width_override = (
-                    existing_width_overrides.iloc[0] if not existing_width_overrides.empty else ""
+                current_override = schedule.header_text_overrides.get(parameter_name, "")
+                width_override = schedule.grid_column_width_overrides.get(parameter_name)
+                current_width_override = "" if width_override is None else f"{width_override:g}"
+                default_param = next(
+                    param for fam in schedule.fams for param in fam.resolved_params()
+                    if param.name == parameter_name
                 )
-                default_header = self._get_schedule_header_text(
-                    schedule_parameter_rows.assign(header_text_override=""),
-                    parameter_name,
-                )
-                default_width = self._get_schedule_grid_column_width(
-                    schedule_parameter_rows.assign(grid_column_width_override=""),
-                    parameter_name,
-                )
+                default_header = default_param.header_text
+                default_width = default_param.grid_column_width
 
                 editor = tk.Toplevel(form)
                 editor.title("Schedule Column Settings")
@@ -1655,49 +1247,16 @@ class DDMGUI:
                 header_entry.focus_set()
 
                 def save_header_override():
-                    width_text = width_var.get().strip()
-                    if width_text:
-                        try:
-                            width_value = float(width_text)
-                        except ValueError:
-                            messagebox.showwarning(
-                                "Invalid width",
-                                "Enter a numeric width in inches or leave it blank to use the default.",
-                                parent=editor,
-                            )
-                            return
-                        if not math.isfinite(width_value) or width_value <= 0:
-                            messagebox.showwarning(
-                                "Invalid width",
-                                "Width must be a finite, positive number of inches.",
-                                parent=editor,
-                            )
-                            return
-                        width_text = str(width_value)
-
-                    first_index = schedule_parameter_rows.index[0]
-                    self._apply_cell_value(
-                        "groups",
-                        int(first_index),
-                        "header_text_override",
-                        header_var.get(),
-                    )
-                    self._apply_cell_value(
-                        "groups",
-                        int(first_index),
-                        "grid_column_width_override",
-                        width_text,
-                    )
-                    refreshed_rows = self.family_groups_df[
-                        self.family_groups_df["group_name"] == selected_name
-                    ]
+                    try:
+                        self._set_schedule_column(selected_name, parameter_name, header_var.get(), width_var.get())
+                    except ValueError as exc:
+                        messagebox.showwarning("Invalid width", str(exc), parent=editor)
+                        return
                     header_canvas.set_header_texts({
-                        **header_canvas.header_texts,
-                        parameter_name: self._get_schedule_header_text(refreshed_rows, parameter_name),
+                        name: self._get_schedule_header_text(schedule, name) for name in parameter_names
                     })
                     header_canvas.set_grid_column_widths([
-                        self._get_schedule_grid_column_width(refreshed_rows, name)
-                        for name in parameter_names
+                        self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
                     ])
                     editor.destroy()
 
@@ -1711,15 +1270,11 @@ class DDMGUI:
             header_canvas = ScheduleHeaderCanvas(
                 parameter_box,
                 parameter_names,
-                {
-                    parameter_name: self._get_schedule_header_text(schedule_rows, parameter_name)
-                    for parameter_name in parameter_names
-                },
-                groups=self.schedule_header_groups.get(selected_name, []),
+                {name: self._get_schedule_header_text(schedule, name) for name in parameter_names},
+                groups=schedule.header_groups,
                 on_header_double_click=edit_schedule_header,
                 grid_column_widths=[
-                    self._get_schedule_grid_column_width(schedule_rows, parameter_name)
-                    for parameter_name in parameter_names
+                    self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
                 ],
             )
             canvas_frame = ttk.Frame(parameter_box)
@@ -1767,15 +1322,11 @@ class DDMGUI:
                         )
                         return
                     try:
-                        self._add_schedule_header_group(
-                            selected_name,
-                            selected_parameters,
-                            caption,
-                        )
+                        self._add_schedule_header_group(selected_name, selected_parameters, caption)
                     except ValueError as exc:
                         messagebox.showwarning("Cannot group headers", str(exc), parent=editor)
                         return
-                    header_canvas.set_groups(self.schedule_header_groups.get(selected_name, []))
+                    header_canvas.set_groups(schedule.header_groups)
                     editor.destroy()
 
                 buttons = ttk.Frame(editor)
@@ -1788,191 +1339,88 @@ class DDMGUI:
         else:
             ttk.Label(parameter_box, text="No parameters assigned").pack(anchor="w")
 
-        ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack()
+        values_box = ttk.LabelFrame(form, text="Values in this Schedule (double-click to override)", padding=8)
+        values_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        value_tree = self._build_value_tree(values_box, self._schedule_value_columns, height=6)
+
+        def refresh_values():
+            self._render_tree(value_tree, pd.DataFrame(self._schedule_value_rows(schedule)), self._schedule_value_columns)
+
+        def edit_value(event):
+            row_id = value_tree.identify_row(event.y)
+            if not row_id:
+                return
+            family_name, parameter_name = value_tree.item(row_id, "values")[:2]
+            current = schedule.family_overrides.get(family_name, {}).get(parameter_name, {}).get("value", "")
+
+            def save(value):
+                saved = self._override_value((family_name, selected_name), parameter_name, value)
+                refresh_values()
+                return saved
+
+            self._edit_value_dialog(
+                form,
+                "Override Value",
+                f"Value of '{parameter_name}' for {family_name} in this schedule "
+                "(blank uses the family's value):",
+                "" if current is None else str(current),
+                save,
+            )
+
+        value_tree.bind("<Double-1>", edit_value)
+        refresh_values()
+
+        ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(0, 10))
+
+    # --- files ------------------------------------------------------------------
 
     def save_checkpoint(self):
-        output_paths = get_database_output_paths(self.checkpoint_path)
-        self.checkpoint_path = output_paths["checkpoint"]
-        self._write_checkpoint(output_paths["checkpoint"])
-        self._write_database_csv(output_paths["csv"])
-        self._generate_revit_schedule_macro_file()
-        self._generate_rfps_file()
-        self._generate_shared_parameter_file()
+        self._save_to(self.checkpoint_path)
 
     def save_checkpoint_as(self):
         checkpoint_path = filedialog.asksaveasfilename(
             title="Save DDM Database As",
             initialdir=str(DEFAULT_CHECKPOINT_PATH.parent),
             initialfile=DEFAULT_CHECKPOINT_PATH.name,
-            defaultextension=".ddm.pkl",
+            defaultextension=".ddm.json",
             filetypes=[
-                ("Pickle databases", "*.ddm.pkl"),
+                ("DDM databases", "*.ddm.json"),
                 ("CSV databases", "*.ddm.csv"),
                 ("All files", "*.*"),
             ],
         )
         if not checkpoint_path:
             return
-        output_paths = get_database_output_paths(checkpoint_path)
+        self._save_to(checkpoint_path)
+
+    def _save_to(self, database_path):
+        """Save the catalog as JSON, plus a readable CSV and the Revit exports alongside."""
+        output_paths = get_database_output_paths(database_path)
         self.checkpoint_path = output_paths["checkpoint"]
-        self._write_checkpoint(output_paths["checkpoint"])
-        self._write_database_csv(output_paths["csv"])
+        try:
+            self._write_checkpoint(output_paths["checkpoint"])
+            write_database_csv(self.catalog, output_paths["csv"])
+        except OSError as exc:
+            messagebox.showerror("Save failed", str(exc), parent=getattr(self, "root", None))
+            return
+        self._append_message(f"Saved readable database CSV to {output_paths['csv']}")
         self._generate_revit_schedule_macro_file()
         self._generate_rfps_file()
         self._generate_shared_parameter_file()
 
-    def _write_database_csv(self, csv_path):
-        Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
-        records = []
-        table_types = {
-            "params": "parameter",
-            "families": "family",
-            "links": "link",
-            "groups": "schedule_entry",
-        }
-        tables = {
-            "params": self.params_df,
-            "families": self.families_df,
-            "links": self.family_param_links_df,
-            "groups": self.family_groups_df,
-        }
-        for table_name, table in tables.items():
-            for row in table.to_dict(orient="records"):
-                records.append({"record_type": table_types[table_name], **row})
-
-        for schedule_name, groups in getattr(self, "schedule_header_groups", {}).items():
-            for group in groups:
-                records.append({
-                    "record_type": "header_group",
-                    "group_name": schedule_name,
-                    "caption": group.get("caption", ""),
-                    "parameter_names": json.dumps(group.get("parameter_names", [])),
-                    "top_row": group.get("top_row", 0),
-                    "bottom_row": group.get("bottom_row", group.get("top_row", 0)),
-                })
-
-        csv_frame = pd.DataFrame(records, columns=self._database_csv_columns)
-        csv_frame = csv_frame.where(pd.notna(csv_frame), "")
-        csv_frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
-        self.warning_text.delete("1.0", tk.END)
-        self.warning_text.insert("1.0", f"Saved readable database CSV to {csv_path}")
-
-    @staticmethod
-    def _csv_bool_value(value):
-        normalized = str(value).strip().lower()
-        if normalized in {"true", "1", "yes", "y"}:
-            return True
-        if normalized in {"false", "0", "no", "n"}:
-            return False
-        return value
-
-    def _read_database_csv(self, csv_path):
-        csv_frame = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
-        if "record_type" not in csv_frame.columns:
-            self.params_df = csv_frame
-            self.families_df = pd.DataFrame(columns=self._get_table_columns("families"))
-            self.family_param_links_df = pd.DataFrame(columns=self._get_table_columns("links"))
-            self.family_groups_df = pd.DataFrame(columns=self._get_table_columns("groups"))
-            self.schedule_header_groups = {}
-            return
-
-        record_types = set(csv_frame["record_type"].astype(str)) - {""}
-        supported_types = {"parameter", "family", "link", "schedule_entry", "header_group"}
-        unsupported_types = record_types - supported_types
-        if unsupported_types:
-            raise ValueError(
-                "Unsupported CSV record type(s): {}".format(", ".join(sorted(unsupported_types)))
-            )
-
-        def table_for(record_type, table_name):
-            rows = csv_frame[csv_frame["record_type"] == record_type]
-            columns = self._get_table_columns(table_name)
-            records = [
-                {column: row.get(column, "") for column in columns}
-                for row in rows.to_dict(orient="records")
-            ]
-            return pd.DataFrame(records, columns=columns)
-
-        self.params_df = table_for("parameter", "params")
-        self.families_df = table_for("family", "families")
-        self.family_param_links_df = table_for("link", "links")
-        self.family_groups_df = table_for("schedule_entry", "groups")
-
-        if "header_text" not in self.params_df.columns:
-            self.params_df["header_text"] = self.params_df.get("name", "")
-        if "grid_column_width" not in self.params_df.columns:
-            self.params_df["grid_column_width"] = self._default_grid_column_width_in
-        else:
-            def parse_grid_width(value):
-                if not str(value).strip():
-                    return self._default_grid_column_width_in
-                try:
-                    parsed_width = float(value)
-                except (TypeError, ValueError):
-                    return value
-                return parsed_width if math.isfinite(parsed_width) else value
-
-            self.params_df["grid_column_width"] = self.params_df["grid_column_width"].map(parse_grid_width)
-        if "instance_param" in self.params_df.columns:
-            self.params_df["instance_param"] = self.params_df["instance_param"].map(self._csv_bool_value)
-
-        if "header_text_override" not in self.family_groups_df.columns:
-            self.family_groups_df["header_text_override"] = ""
-        if "grid_column_width_override" not in self.family_groups_df.columns:
-            self.family_groups_df["grid_column_width_override"] = ""
-
-        self.schedule_header_groups = {}
-        header_rows = csv_frame[csv_frame["record_type"] == "header_group"]
-        for row in header_rows.to_dict(orient="records"):
-            try:
-                parameter_names = json.loads(row.get("parameter_names", "[]"))
-            except json.JSONDecodeError as exc:
-                raise ValueError("Invalid parameter list in a CSV header-group record.") from exc
-            if not isinstance(parameter_names, list):
-                raise ValueError("CSV header-group parameter_names must be a JSON list.")
-
-            def parse_row_index(value, default):
-                if not str(value).strip():
-                    return default
-                try:
-                    numeric_value = float(value)
-                except (TypeError, ValueError):
-                    raise ValueError("CSV header-group row indices must be whole numbers.") from None
-                if not numeric_value.is_integer():
-                    raise ValueError("CSV header-group row indices must be whole numbers.")
-                return int(numeric_value)
-
-            top_row = parse_row_index(row.get("top_row", ""), 0)
-            bottom_row = parse_row_index(row.get("bottom_row", ""), top_row)
-            self.schedule_header_groups.setdefault(row.get("group_name", ""), []).append({
-                "caption": row.get("caption", ""),
-                "parameter_names": parameter_names,
-                "top_row": top_row,
-                "bottom_row": bottom_row,
-            })
-
     def _write_checkpoint(self, checkpoint_path):
-        Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "params": self.params_df,
-            "families": self.families_df,
-            "family_param_links": self.family_param_links_df,
-            "family_groups": self.family_groups_df,
-            "schedule_header_groups": self.schedule_header_groups,
-        }
-        with open(checkpoint_path, "wb") as handle:
-            pickle.dump(payload, handle)
-        self.warning_text.delete("1.0", tk.END)
-        self.warning_text.insert("1.0", f"Saved checkpoint to {checkpoint_path}")
+        self.catalog.save(str(checkpoint_path))
+        self._show_messages([f"Saved database to {checkpoint_path}"])
 
     def load_checkpoint(self, checkpoint_path=None):
         if checkpoint_path is None:
             checkpoint_path = filedialog.askopenfilename(
-                title="Load DDM Database Checkpoint",
+                title="Load DDM Database",
                 initialdir=str(DEFAULT_CHECKPOINT_PATH.parent),
                 filetypes=[
-                    ("Pickle databases", "*.ddm.pkl"),
+                    ("DDM databases", "*.ddm.json"),
                     ("CSV databases", "*.ddm.csv"),
+                    ("Older pickle databases", "*.ddm.pkl"),
                     ("All files", "*.*"),
                 ],
             )
@@ -1980,48 +1428,43 @@ class DDMGUI:
             return
 
         if not os.path.exists(checkpoint_path):
-            messagebox.showwarning("Checkpoint missing", f"No checkpoint found at {checkpoint_path}")
+            messagebox.showwarning("Database missing", f"No database found at {checkpoint_path}")
             return
 
-        is_csv = Path(checkpoint_path).suffix.lower() == ".csv"
-        if is_csv:
-            try:
-                self._read_database_csv(checkpoint_path)
-            except (OSError, pd.errors.ParserError, ValueError) as exc:
-                messagebox.showerror("CSV load error", str(exc))
-                return
-        else:
-            try:
-                with open(checkpoint_path, "rb") as handle:
-                    payload = pickle.load(handle)
-            except (OSError, pickle.PickleError, EOFError) as exc:
-                messagebox.showerror("Checkpoint load error", str(exc), parent=self.root)
-                return
+        try:
+            catalog, issues = self._read_database(checkpoint_path)
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
+                pd.errors.ParserError, pickle.UnpicklingError, EOFError) as exc:
+            messagebox.showerror("Load error", str(exc), parent=getattr(self, "root", None))
+            return
 
-            self.params_df = payload.get("params", self.params_df)
-            self.families_df = payload.get("families", self.families_df)
-            self.family_param_links_df = payload.get("family_param_links", self.family_param_links_df)
-            self.family_groups_df = payload.get("family_groups", self.family_groups_df)
-            self.schedule_header_groups = payload.get("schedule_header_groups", {})
-
-        if "header_text" not in self.params_df.columns:
-            self.params_df["header_text"] = self.params_df["name"]
-        if "grid_column_width" not in self.params_df.columns:
-            self.params_df["grid_column_width"] = self._default_grid_column_width_in
-        if "header_text_override" not in self.family_groups_df.columns:
-            self.family_groups_df["header_text_override"] = ""
-        if "grid_column_width_override" not in self.family_groups_df.columns:
-            self.family_groups_df["grid_column_width_override"] = ""
-        self._ensure_param_guids()
-        self.schedule_models = {}
+        self.catalog = catalog
+        self.load_issues = issues
         self.checkpoint_path = Path(checkpoint_path)
-        self.render_tables()
-        if is_csv:
-            self.validate_all()
-            self.warning_text.insert("1.0", f"Loaded database CSV from {checkpoint_path}\n")
+        self.validate_all()
+        lines = [f"Loaded database from {checkpoint_path}"]
+        if issues:
+            lines.append(f"{len(issues)} problem(s) in the file were fixed or skipped while loading:")
+            lines.extend(f"  {issue}" for issue in issues)
+        if self.warning_text is not None:
+            self.warning_text.insert("1.0", "\n".join(lines) + "\n\n")
+
+    @staticmethod
+    def _read_database(path):
+        """Read a JSON, CSV or older pickle database. Returns ``(catalog, issues)``."""
+        suffix = str(path).lower()
+        if suffix.endswith(".json"):
+            catalog, _extra = Catalog.load(path)
+            return catalog, []
+        if suffix.endswith(".csv"):
+            tables, header_groups = read_database_csv(path)
         else:
-            self.warning_text.delete("1.0", tk.END)
-            self.warning_text.insert("1.0", f"Loaded checkpoint from {checkpoint_path}")
+            with open(path, "rb") as handle:
+                payload = pickle.load(handle)
+            tables, header_groups = tables_from_legacy_pickle(payload)
+        return catalog_from_tables(header_groups=header_groups, **tables)
+
+    # --- Quickbase --------------------------------------------------------------
 
     def sync_to_quickbase(self):
         if QuickbaseClient is None or QuickbaseSyncService is None:
@@ -2040,12 +1483,7 @@ class DDMGUI:
             )
             return
 
-        self.validate_all()
-        validation_errors = sum(
-            int((frame["status"].fillna("").astype(str).str.lower() == "error").sum())
-            for frame in (self.params_df, self.families_df)
-            if "status" in frame.columns
-        )
+        validation_errors = len(self.validate_all())
         if validation_errors:
             messagebox.showwarning(
                 "Validation failed",
@@ -2060,8 +1498,7 @@ class DDMGUI:
                 sync.map_param_record(row.to_dict())
             for _, row in self.families_df.iterrows():
                 sync.map_family_record(row.to_dict())
-            self.warning_text.delete("1.0", tk.END)
-            self.warning_text.insert("1.0", "Quickbase mapping prepared. Connect real table IDs before live sync.")
+            self._show_messages(["Quickbase mapping prepared. Connect real table IDs before live sync."])
         except Exception as exc:  # pragma: no cover
             messagebox.showerror("Quickbase sync error", str(exc))
 

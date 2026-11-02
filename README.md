@@ -4,7 +4,8 @@ Catalog, validate and sync Revit parameters, families and schedules.
 
 - `revit_parameter_manager.py`: the model (`Catalog`, `Param`, `Fam`, `FamType`, `Schedule`), validation and JSON save/load
 - `formula.py`: formula tokenizer, syntax checks and reference scanning
-- `ddm_gui.py`: Tkinter review/edit GUI
+- `ddm_gui.py`: Tkinter review/edit GUI, a view on the model
+- `ddm_tables.py`: converts between the model and flat tables (CSV, older saves, exports)
 - `revit_shared_parameter_export.py`: Revit shared-parameter file export
 - `revit_parameter_scheduler_export.py`: RF Tools Parameter Scheduler (`.rfps`) export
 - `revit_schedule_macro_generator.py`: Revit schedule macro (`.cs`) generator
@@ -31,7 +32,8 @@ python ddm_gui.py                 # launch the GUI
 pytest                            # run the tests
 ```
 
-The GUI saves to `data/database.ddm.pkl` by default, with its CSV and export files alongside.
+The GUI saves to `data/database.ddm.json` by default, with a readable CSV and the Revit export files
+alongside. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
 
 Quickbase sync reads `QB_APP_ID`, `QB_USER_TOKEN` and optionally `QB_APP_TOKEN` from the environment.
