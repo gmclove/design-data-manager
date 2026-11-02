@@ -1,0 +1,18 @@
+TemplateName	GUID	Name	DataType	GroupNumber	GroupName	Visible	InstanceOrType	GroupUnder	Source	ParamToReplace	MapToElecConnector	Value	Formula	SortOrder	ToolTip	UserModifiable
+Family_A	a874d2ac-1338-5767-82fc-69f2ccbcbf6e	Length	LENGTH	1	IPS	1	Instance	Dimensions	./test_data.txt		0		Width * Height			1
+Family_A	d814ef41-5cc0-5f5f-92ff-5d7b82157505	Width	LENGTH	1	IPS	1	Instance	Dimensions	./test_data.txt		0					1
+Family_A	4100fa8b-138c-57b2-80f4-48f88db2e32a	Area	AREA	1	IPS	1	Type	Dimensions	./test_data.txt		0		Length * Width			1
+Family_B	a874d2ac-1338-5767-82fc-69f2ccbcbf6e	Length	LENGTH	1	IPS	1	Instance	Dimensions	./test_data.txt		0		Width * Height			1
+Family_C	6dff7ad4-e3c0-5833-b182-5ffada7a9511	UValue	NUMBER	1	IPS	1	Type	Envelope	./test_data.txt		0		1 / RValue			1
+Family_C	cbe9858a-1d6f-5a94-ae1a-fb8639aaf69a	GlassArea	AREA	1	IPS	1	Type	Envelope	./test_data.txt		0					1
+Family_D	8e824de4-3e5f-52c5-b7b6-ecf1daa736c6	Depth	LENGTH	1	IPS	1	Instance	Dimensions	./test_data.txt		0					1
+Family_E	0f9d4170-b1c1-5bd3-962a-e300d9279833	RValue	NUMBER	1	IPS	1	Type	Envelope	./test_data.txt		0					1
+Family_F	3b737b80-740f-5fb2-a918-a1793ba3f9a6	GrossArea	AREA	1	IPS	1	Type	Dimensions	./test_data.txt		0		Length * Width			1
+Family_G	32f20b26-4518-53ab-b8a9-8f6776198b6a	FinishCode	TEXT	1	IPS	1	Instance	Finishes	./test_data.txt		0					1
+Family_H	fe5caf90-030d-5c33-82b1-921e7ecdffc2	PowerLoad	NUMBER	1	IPS	1	Type	Electrical	./test_data.txt		0					1
+Family_I	6e17e489-8082-5bb8-bea0-68015ebf2eba	FacadeRatio	NUMBER	1	IPS	1	Type	Envelope	./test_data.txt		0					1
+Family_J	33fd6d6e-cef3-50fd-a317-f33affb2e0c2	HeadHeight	LENGTH	1	IPS	1	Instance	Dimensions	./test_data.txt		0					1
+Family_K	b37eb242-b90b-5dc6-95e7-ecce2e6f722f	ClearanceHeight	LENGTH	1	IPS	1	Instance	Dimensions	./test_data.txt		0					1
+Family_K	543136ea-25e5-5ca2-a265-ee578217cc82	FireRating	TEXT	1	IPS	1	Type	Compliance	./test_data.txt		0					1
+Family_L	bdc51f53-a9f0-5553-8674-373f00e3d5a4	ServiceClearance	LENGTH	1	IPS	1	Instance	Dimensions	./test_data.txt		0					1
+Family_L	543136ea-25e5-5ca2-a265-ee578217cc82	FireRating	TEXT	1	IPS	1	Type	Compliance	./test_data.txt		0					1

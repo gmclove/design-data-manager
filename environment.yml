@@ -1,4 +1,4 @@
-name: parameter-catalog
+name: design-data-manager
 channels:
   - conda-forge
 dependencies:

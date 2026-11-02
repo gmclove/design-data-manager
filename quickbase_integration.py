@@ -16,7 +16,7 @@ QB_TABLES = {
 
 
 class QuickbaseClient:
-    """Quickbase REST client tailored to the parameter catalog workflow."""
+    """Quickbase REST client tailored to the DDM database workflow."""
 
     def __init__(
         self,
@@ -143,7 +143,7 @@ class QuickbaseClient:
 
 
 class QuickbaseSchema:
-    """Starter field map for the parameter catalog app."""
+    """Starter field map for the DDM database app."""
 
     PARAMETERS = {
         "name": 3,
