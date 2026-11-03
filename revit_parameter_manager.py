@@ -576,7 +576,7 @@ class Schedule(object):
 
 	def __init__(self, name=None, fams=None, header_text_overrides=None,
 				 header_groups=None, grid_column_width_overrides=None, catalog=None,
-				 field_names=None, family_overrides=None):
+				 field_names=None, family_overrides=None, hidden_field_names=None):
 		self._name = None
 		self.catalog = None
 		self.name = name
@@ -594,6 +594,8 @@ class Schedule(object):
 				self._validate_family_overrides(overrides)
 				self.family_overrides.setdefault(family_name, {})[param_name] = dict(overrides)
 		self.header_groups = []
+		# Columns hidden in the finished Revit schedule (the working schedule shows them).
+		self.hidden_field_names = set(hidden_field_names or ())
 		self.status = 'Ready'
 		self.validation_message = ''
 		if catalog is not None:
@@ -649,8 +651,18 @@ class Schedule(object):
 			self.header_groups = [
 				group for group in self.header_groups if set(group['parameter_names']) <= kept
 			]
+			self.hidden_field_names &= kept
 		self.refresh_params()
 		self.validate()
+
+	def set_field_hidden(self, param_name, hidden):
+		"""Hide (or show) a column in the finished Revit schedule."""
+		if param_name not in {param.name for param in self.params}:
+			raise ValueError("'{}' is not a column in schedule '{}'.".format(param_name, self.name))
+		if hidden:
+			self.hidden_field_names.add(param_name)
+		else:
+			self.hidden_field_names.discard(param_name)
 
 	def family_param_names(self, fam):
 		"""The schedule's columns that ``fam`` has, in schedule order."""
@@ -824,6 +836,7 @@ class Schedule(object):
 				}
 				for group in self.header_groups
 			],
+			'hidden_field_names': [param.name for param in self.params if param.name in self.hidden_field_names],
 		})
 		return data
 
@@ -844,6 +857,7 @@ class Schedule(object):
 			catalog=catalog,
 			field_names=data.get('field_names'),
 			family_overrides=data.get('family_overrides', {}),
+			hidden_field_names=data.get('hidden_field_names', []),
 		)
 
 	def override_param(self, param_name, **overrides):
@@ -903,6 +917,9 @@ class Schedule(object):
 		for param_overrides in self.family_overrides.values():
 			if old_name in param_overrides:
 				param_overrides[new_name] = param_overrides.pop(old_name)
+		if old_name in self.hidden_field_names:
+			self.hidden_field_names.discard(old_name)
+			self.hidden_field_names.add(new_name)
 
 	def _param_removed(self, param_name):
 		if self.field_names is not None:
@@ -913,6 +930,7 @@ class Schedule(object):
 				del self.family_overrides[family_name]
 		self.header_text_overrides.pop(param_name, None)
 		self.grid_column_width_overrides.pop(param_name, None)
+		self.hidden_field_names.discard(param_name)
 		self.refresh_params()
 
 	def _family_renamed(self, old_name, new_name):

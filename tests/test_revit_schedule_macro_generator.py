@@ -3,12 +3,19 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from config.app_paths import DEMO_DATA_PATH
-from ddm_tables import catalog_from_tables, entries_table, families_table, params_table, read_database_csv
-from revit_schedule_macro_generator import generate_schedule_macro_source
+from ddm_tables import catalog_from_tables, read_database_csv
+from revit_parameter_manager import Catalog
+from revit_schedule_macro_generator import (
+    GENERATED_HEADER,
+    MACRO_FILE_NAME,
+    generate_schedule_macro_source,
+    install_macro,
+    revit_schedule_names,
+    schedule_specs,
+)
 
 # The macro module's own startup class, minus the event wiring the generated file doesn't need.
 MACRO_ENTRY_POINT = """
@@ -46,85 +53,96 @@ def newest_revit_install():
     return Path(installs[-1]).parent if installs else None
 
 
-def make_database():
-    family_groups = pd.DataFrame(
-        [
-            {
-                "family_name": "AHU",
-                "group_name": "Mechanical Schedule",
-                "parameter_name": "DDM_Airflow",
-                "header_text_override": "Design Airflow",
-                "grid_column_width_override": "24.0",
-            },
-            {
-                "family_name": "AHU",
-                "group_name": "Mechanical Schedule",
-                "parameter_name": "DDM_Capacity",
-                "header_text_override": "",
-                "grid_column_width_override": "",
-            },
-        ]
+def make_catalog():
+    """One schedule, two families, with a header override, a width override and a hidden column."""
+    catalog = Catalog()
+    catalog.add_param("DDM_Airflow", "Text", header_text="Airflow", grid_column_width=18)
+    catalog.add_param("DDM_Capacity", "Text", grid_column_width=15)
+    catalog.add_param("DDM_Notes", "Text")
+    catalog.add_family("AHU", ["DDM_Airflow", "DDM_Capacity", "DDM_Notes"], category="Mechanical Equipment")
+    catalog.add_family("Door", ["DDM_Airflow"], category="Doors")
+    schedule = catalog.add_schedule(
+        "Mechanical Schedule", ["AHU", "Door"], field_names=["DDM_Airflow", "DDM_Capacity", "DDM_Notes"],
     )
-    families = pd.DataFrame([{"name": "AHU", "category": "Mechanical Equipment"}])
-    parameters = pd.DataFrame(
-        [
-            {"name": "DDM_Airflow", "header_text": "Airflow", "grid_column_width": 18},
-            {"name": "DDM_Capacity", "header_text": "", "grid_column_width": 15},
-        ]
-    )
-    return family_groups, families, parameters
+    schedule.override_param("DDM_Airflow", header_text="Design Airflow", grid_column_width=24)
+    schedule.set_field_hidden("DDM_Notes", True)
+    schedule.add_header_group("Performance", ["DDM_Airflow", "DDM_Capacity"])
+    return catalog
 
 
-def test_generated_macro_includes_schedule_category_fields_and_overrides():
-    source = generate_schedule_macro_source(*make_database())
+def test_each_schedule_becomes_three_revit_schedules():
+    assert revit_schedule_names("Mechanical Schedule") == [
+        "3D - Mechanical Schedule", "Mechanical Schedule - Working", "Mechanical Schedule",
+    ]
+    source = generate_schedule_macro_source(make_catalog())
 
     assert "public void CreateSchedulesFromDatabase()" in source
-    assert 'candidate.Name, "Mechanical Equipment"' in source
-    assert 'candidate.GetName(doc), "DDM_Airflow"' in source
-    assert 'scheduleField0.ColumnHeading = "Design Airflow";' in source
-    assert "scheduleField0.GridColumnWidth = 2;" in source
-    assert 'scheduleField1.ColumnHeading = "DDM_Capacity";' in source
-    assert "scheduleField1.GridColumnWidth = 1.25;" in source
-    assert "scheduleField0.HorizontalAlignment = ScheduleHorizontalAlignment.Center;" in source
-    assert "scheduleField1.HorizontalAlignment = ScheduleHorizontalAlignment.Center;" in source
-    assert "definition.AddField(schedulableField0)" in source
-    assert "definition.AddField(schedulableField1)" in source
-    assert "scheduleField1.GridColumnWidth = 1.25;" in source
+    assert 'DdmModelPrefix = "3D - "' in source
+    assert 'DdmWorkingSuffix = " - Working"' in source
+    assert 'DdmFilterParameter = "IPS_GROUP_Schedule_Name"' in source
+    # Multi-category for the model; Detail Items for the working and finished schedules.
+    assert "ElementId.InvalidElementId, spec, true" in source
+    assert "BuiltInCategory.OST_DetailComponents" in source
+    assert "DdmWorkingSuffix, detailItems, spec, false" in source
 
 
-def test_one_inch_default_width_is_converted_to_one_twelfth_foot():
-    family_groups, families, parameters = make_database()
-    family_groups = family_groups.iloc[[0]].copy()
-    family_groups.loc[family_groups.index[0], "grid_column_width_override"] = ""
-    parameters.loc[parameters["name"] == "DDM_Airflow", "grid_column_width"] = 1.0
+def test_columns_carry_headers_widths_in_feet_and_hidden_flags():
+    specs, notes = schedule_specs(make_catalog())
 
-    source = generate_schedule_macro_source(family_groups, families, parameters)
+    assert notes == []
+    assert specs[0]["columns"] == [
+        {"parameter": "DDM_Airflow", "header": "Design Airflow", "width_feet": 2.0, "hidden": False},
+        {"parameter": "DDM_Capacity", "header": "DDM_Capacity", "width_feet": 1.25, "hidden": False},
+        {"parameter": "DDM_Notes", "header": "DDM_Notes", "width_feet": 1 / 12, "hidden": True},
+    ]
+    assert specs[0]["header_groups"] == [{"caption": "Performance", "parameters": ["DDM_Airflow", "DDM_Capacity"]}]
 
-    assert "scheduleField0.GridColumnWidth = 0.0833333333333;" in source
-
-
-def test_generator_reports_schedules_spanning_multiple_categories():
-    family_groups, families, parameters = make_database()
-    families.loc[len(families)] = {"name": "Door", "category": "Doors"}
-    family_groups.loc[len(family_groups)] = {
-        "family_name": "Door",
-        "group_name": "Mechanical Schedule",
-        "parameter_name": "DDM_Airflow",
-    }
-
-    source = generate_schedule_macro_source(family_groups, families, parameters)
-
-    assert '"Mechanical Schedule (families span multiple Revit categories)"' in source
+    source = generate_schedule_macro_source(make_catalog())
+    assert 'new DdmColumn("DDM_Airflow", "Design Airflow", 2, false),' in source
+    assert 'new DdmColumn("DDM_Notes", "DDM_Notes", 0.0833333333333, true),' in source
+    assert 'new DdmHeaderGroup("Performance", new[] { "DDM_Airflow", "DDM_Capacity" }),' in source
 
 
-def test_generator_reports_invalid_column_width():
-    family_groups, families, parameters = make_database()
-    family_groups.loc[0, "grid_column_width_override"] = "wide"
+def test_header_groups_go_innermost_first():
+    catalog = make_catalog()
+    schedule = catalog.schedules[0]
+    schedule.set_field_hidden("DDM_Notes", False)
+    schedule.add_header_group("Everything", ["DDM_Airflow", "DDM_Capacity", "DDM_Notes"])
+    schedule.header_groups.reverse()
 
-    source = generate_schedule_macro_source(family_groups, families, parameters)
+    specs, _notes = schedule_specs(catalog)
+    assert [group["caption"] for group in specs[0]["header_groups"]] == ["Performance", "Everything"]
 
-    assert "column width for" in source
-    assert "is not a number" in source
+
+def test_schedules_revit_cant_name_or_that_clash_are_left_out_with_a_note():
+    catalog = make_catalog()
+    catalog.add_schedule("Bad: Name", ["AHU"], field_names=["DDM_Airflow"])
+    catalog.add_schedule("3D - Mechanical Schedule", ["AHU"], field_names=["DDM_Airflow"])
+    catalog.add_schedule("Empty", ["AHU"], field_names=[])
+
+    specs, notes = schedule_specs(catalog)
+
+    assert [spec["name"] for spec in specs] == ["Mechanical Schedule"]
+    assert notes == [
+        "Bad: Name: Revit view names can't contain :; skipped.",
+        "3D - Mechanical Schedule: its Revit schedule names clash with schedule 'Mechanical Schedule'; skipped.",
+        "Empty: no columns; skipped.",
+    ]
+    assert '"Empty: no columns; skipped.",' in generate_schedule_macro_source(catalog)
+
+
+def test_install_replaces_older_generated_macros_and_leaves_other_files(tmp_path):
+    (tmp_path / "ThisApplication.cs").write_text("using Autodesk.Revit.DB;\n", encoding="utf-8")
+    (tmp_path / "test_data.cs").write_text("// Generated by Revit Parameter Manager. Add this file\n", encoding="utf-8")
+    (tmp_path / "Other.cs").write_text(GENERATED_HEADER + " from old.ddm.json\n", encoding="utf-8")
+
+    path, removed = install_macro("// new macro\n", tmp_path)
+
+    assert path == tmp_path / MACRO_FILE_NAME
+    assert path.read_text(encoding="utf-8") == "// new macro\n"
+    assert sorted(p.name for p in removed) == ["Other.cs", "test_data.cs"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [MACRO_FILE_NAME, "ThisApplication.cs"]
+    assert install_macro("x", tmp_path / "missing") == (None, [])
 
 
 def newest_dotnet_framework():
@@ -145,8 +163,13 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
         pytest.skip("needs Revit 2025+ and the .NET SDK installed")
 
     tables, header_groups = read_database_csv(DEMO_DATA_PATH)
-    catalog, _issues = catalog_from_tables(header_groups=header_groups, **tables)
-    source = generate_schedule_macro_source(entries_table(catalog), families_table(catalog), params_table(catalog))
+    demo, _issues = catalog_from_tables(header_groups=header_groups, **tables)
+    # Cover every kind of data: a hidden column, a header group and a quote in a header.
+    schedule = next(schedule for schedule in demo.schedules if len(schedule.params) >= 2)
+    names = [param.name for param in schedule.params]
+    schedule.set_field_hidden(names[-1], True)
+    schedule.add_header_group('Group "A"', names[:2])
+    source = generate_schedule_macro_source(demo)
     (tmp_path / "Generated.cs").write_text(source, encoding="utf-8")
     (tmp_path / "ThisApplication.cs").write_text(MACRO_ENTRY_POINT, encoding="utf-8")
     (tmp_path / "Macro.csproj").write_text(MACRO_PROJECT.format(framework=framework, revit=revit), encoding="utf-8")

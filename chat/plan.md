@@ -18,16 +18,21 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
       test_revit_schedule_macro_generator.py`, marked `slow`, skipped without Revit 2025+ and the
       .NET SDK). Revit 2025.5's API needs a .NET 10 SDK to build outside Revit; the test uses the
       newest SDK installed.
-- [ ] Run it in Revit 2025 on a real project and note what goes wrong (needs the user).
-- [ ] Get the macro into the module without copying by hand (the module folder holds an old,
-      broken `test_data.cs` from 2026-10-21 that must be replaced or removed).
-- [ ] Restrict each schedule to its own families. Today a schedule lists every element of its
-      category.
-- [ ] Multi-category schedules (today a schedule whose families span categories is skipped).
-- [ ] Header groups (`ViewSchedule.GroupHeaders`); today they're ignored.
-- [ ] Re-running when a schedule already exists: today it's skipped; update it instead?
-- [ ] Find categories by `BuiltInCategory`, not display name, so non-English Revit works.
-- [ ] Generate from the `Catalog` (schedule `field_names` order) instead of the GUI's tables.
+- [x] Design (user, 2026-11-03): each database schedule makes three Revit schedules,
+      `3D - {name}` (multi-category), `{name} - Working` (Detail Items, every column) and `{name}`
+      (Detail Items, hidden columns hidden). All filter on `IPS_GROUP_Schedule_Name` = name.
+      Re-running updates existing schedules.
+- [x] Hidden column flag (`Schedule.hidden_field_names`), with a checkbox in the schedule
+      window's column settings; saved in JSON and CSV.
+- [x] Generator rewritten to read the `Catalog` (keeps column order); C# is a fixed routine plus
+      a data table.
+- [x] Save installs the macro in the `GLoveMacros` module (removing older generated copies; the
+      broken `test_data.cs` is gone).
+- [ ] Run it in Revit 2025 on a real project and note what goes wrong (needs the user). Unverified
+      until then: header group row index (`GroupHeaders(0, ...)`, nested groups), whether
+      `ClearFields` drops old header groups, multi-category schedulable fields for shared
+      parameters, and `IPS_GROUP_Schedule_Name` being schedulable in each category.
+- [ ] CSV saves lose column order (fields are sorted on load); JSON keeps it.
 
 ## Next steps
 - [ ] Copy the open items from the claude.ai plan doc into this file.

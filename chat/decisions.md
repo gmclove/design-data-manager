@@ -99,3 +99,16 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   tracked fixtures that the app never writes to by default.
 - **All tests live in `tests/`, named `test_*.py`;** pytest config lives only in `pyproject.toml`.
 - **Line endings are normalized by `.gitattributes`** (LF in the repo), since the machines differ.
+
+## Revit schedule macro
+- **Three Revit schedules per database schedule** (user, 2026-11-03): `3D - {name}` multi-category
+  for the model; two Detail Items schedules because multi-category schedules can't hold detail
+  items: `{name} - Working` shows every column, `{name}` hides the columns marked hidden. The 3D
+  schedule hides hidden columns too (my default; not specified).
+- **Filter on `IPS_GROUP_Schedule_Name` equal to the database schedule name** (user). The filter
+  field is added hidden when it isn't a column.
+- **Re-running updates existing schedules** (user): fields and filters are cleared and rebuilt, so
+  the view and its sheet placements stay. A same-named schedule of another category is left alone.
+- **Save installs the macro into the GLoveMacros module** (user), as
+  `CreateSchedulesFromDatabase.cs`; other files starting with the generated header are deleted
+  so the method isn't defined twice.

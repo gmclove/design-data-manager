@@ -15,6 +15,7 @@ from config.revit_property_pallet_definitions import REVIT_PROPERTY_PALLET_TABLE
 from config.app_paths import (
     DEFAULT_CHECKPOINT_PATH,
     DEMO_DATA_PATH,
+    REVIT_MACRO_MODULE_DIR,
     get_database_output_paths,
 )
 
@@ -42,7 +43,7 @@ from ddm_tables import (
     write_database_csv,
 )
 from revit_parameter_manager import CODE_KINDS, COMMON_PARAM_NAMES, Catalog, Param, Schedule, guid_change_warning
-from revit_schedule_macro_generator import generate_schedule_macro_source
+from revit_schedule_macro_generator import generate_schedule_macro_source, install_macro
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content
 
@@ -786,13 +787,10 @@ class DDMGUI:
     def _generate_revit_schedule_macro_file(self):
         try:
             output_path = get_database_output_paths(self.checkpoint_path)["macro"]
-            source = generate_schedule_macro_source(
-                self.family_groups_df,
-                self.families_df,
-                self.params_df,
-            )
+            source = generate_schedule_macro_source(self.catalog, Path(self.checkpoint_path).name)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(source, encoding="utf-8")
+            installed_path, removed_paths = install_macro(source, REVIT_MACRO_MODULE_DIR)
         except (OSError, ValueError) as exc:
             messagebox.showerror(
                 "Schedule Macro Generation Failed",
@@ -801,6 +799,17 @@ class DDMGUI:
             )
             return
         self._append_message(f"Generated Revit schedule macro: {output_path}")
+        if installed_path is None:
+            self._append_message(
+                f"Revit macro module not found ({REVIT_MACRO_MODULE_DIR}); copy the macro into it by hand."
+            )
+            return
+        for removed_path in removed_paths:
+            self._append_message(f"Removed older generated macro: {removed_path}")
+        self._append_message(
+            f"Installed the schedule macro in {installed_path}. Build the GLoveMacros module in "
+            "Revit's Macro Manager, then run CreateSchedulesFromDatabase."
+        )
 
     def _generate_rfps_file(self):
         try:
@@ -1683,8 +1692,12 @@ class DDMGUI:
         param = next((param for param in schedule.params if param.name == parameter_name), None)
         return self._default_grid_column_width_in if param is None else param.grid_column_width
 
-    def _set_schedule_column(self, schedule_name: str, parameter_name: str, header_text: str, width_text: str):
-        """Set or clear a schedule's header text and column width overrides for one column."""
+    def _set_schedule_column(self, schedule_name: str, parameter_name: str, header_text: str, width_text: str,
+                             hidden: Optional[bool] = None):
+        """Set or clear a schedule's header text and column width overrides for one column.
+
+        ``hidden`` hides the column in the finished Revit schedule; ``None`` leaves it as is.
+        """
         width_text = cell_text(width_text)
         width = None
         if width_text:
@@ -1698,6 +1711,8 @@ class DDMGUI:
             header_text=cell_text(header_text),
             grid_column_width=width,
         )
+        if hidden is not None:
+            schedule.set_field_hidden(parameter_name, hidden)
         self.validate_all()
 
     def _add_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
@@ -1973,7 +1988,7 @@ class DDMGUI:
             editor.title("Schedule Column Settings")
             editor.transient(form)
             editor.grab_set()
-            editor.geometry("420x210")
+            editor.geometry("420x250")
             ttk.Label(editor, text="Schedule Header Text", style="Section.TLabel").pack(
                 anchor="w", padx=10, pady=(10, 4)
             )
@@ -1988,17 +2003,21 @@ class DDMGUI:
             if current_width_override:
                 width_entry.insert(0, current_width_override)
             width_entry.pack(fill="x", padx=10, pady=4)
+            hidden_var = tk.BooleanVar(value=parameter_name in schedule.hidden_field_names)
+            ttk.Checkbutton(
+                editor, text="Hidden Column (Shown Only in the Working Schedule)", variable=hidden_var,
+            ).pack(anchor="w", padx=10, pady=(6, 0))
             header_entry.focus_set()
 
             def save_header_override():
                 try:
-                    self._set_schedule_column(selected_name, parameter_name, header_entry.get(), width_entry.get())
+                    self._set_schedule_column(
+                        selected_name, parameter_name, header_entry.get(), width_entry.get(), hidden_var.get()
+                    )
                 except ValueError as exc:
                     messagebox.showwarning("Invalid width", str(exc), parent=editor)
                     return
-                table.set_header_texts({
-                    name: self._get_schedule_header_text(schedule, name) for name in parameter_names
-                })
+                table.set_header_texts(header_texts())
                 table.set_grid_column_widths([
                     self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
                 ])
@@ -2011,12 +2030,20 @@ class DDMGUI:
             header_entry.bind("<Return>", lambda _event: save_header_override())
             width_entry.bind("<Return>", lambda _event: save_header_override())
 
+        def header_texts():
+            # Hidden columns are marked, since only the working schedule in Revit shows them.
+            return {
+                name: self._get_schedule_header_text(schedule, name)
+                + (" (Hidden)" if name in schedule.hidden_field_names else "")
+                for name in parameter_names
+            }
+
         rows_builder = lambda: self._schedule_table_rows(schedule)  # noqa: E731 - rebuilt after each edit
         table = self._build_override_table(
             table_box,
             parameter_names,
             rows_builder(),
-            header_texts={name: self._get_schedule_header_text(schedule, name) for name in parameter_names},
+            header_texts=header_texts(),
             groups=schedule.header_groups,
             on_header_double_click=edit_schedule_header,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(

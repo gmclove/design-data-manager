@@ -47,6 +47,43 @@ The GUI saves to `data/database.ddm.json` by default, with a readable CSV and th
 alongside. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
 
+## Revit Schedule Macro
+
+Saving the database also writes a Revit macro, `CreateSchedulesFromDatabase`. It goes next to
+the save as `<database>.cs` and, when the Revit 2025 macro module exists on this machine, into
+`C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\GLoveMacros\Source\GLoveMacros` as
+`CreateSchedulesFromDatabase.cs`. Any older generated macro file in that folder is removed, since
+two copies would stop the module building.
+
+To run it in Revit 2025:
+
+1. Open **Manage > Macro Manager** and select the **GLoveMacros** application module. Rebuild
+   it so it picks up the new file: open it with **Edit** and build it there.
+2. Open the project, select `CreateSchedulesFromDatabase` and click **Run**.
+
+Each schedule in the database becomes three Revit schedules:
+
+| Revit schedule | Category | Columns |
+| --- | --- | --- |
+| `3D - {name}` | Multi-Category (model elements) | hidden columns hidden |
+| `{name} - Working` | Detail Items | every column shown |
+| `{name}` | Detail Items | hidden columns hidden |
+
+- **Filter:** each schedule lists only the elements whose `IPS_GROUP_Schedule_Name` is the
+  database schedule's name. The filter column itself is hidden.
+- **Columns:** every column takes its header text, width and header groups from the database. To
+  hide a column, open the schedule window, double-click the column header and tick **Hidden
+  Column**. The schedule table then marks that column "(Hidden)".
+- **Running it again** updates the schedules it made before: their columns, filter and header
+  groups are rebuilt to match the database, and the views keep their place on sheets.
+- **When it finishes,** a dialog lists what was created and updated, plus any problems. Problems
+  include a parameter that isn't loaded in the project's families, or a same-named schedule of a
+  different category.
+
+`tests/test_revit_schedule_macro_generator.py` builds the generated macro against the installed
+Revit API (it needs Revit 2025+ and the .NET SDK; otherwise it's skipped), so a macro that won't
+compile fails the tests.
+
 ## Clients and Countries
 
 A family's **Client** and **Country** are picked from dropdowns listing every client (or country)

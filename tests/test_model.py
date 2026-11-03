@@ -571,6 +571,29 @@ def test_rename_updates_family_formula_overrides(scheduled):
 	assert scheduled.get_family('F1').overrides['Width']['formula'] == 'Tall * 2'
 
 
+# --- hidden schedule columns -----------------------------------------------
+
+def test_hidden_columns_follow_renames_removals_and_round_trip(scheduled):
+	schedule = scheduled.schedules[0]
+	names = [param.name for param in schedule.params]
+	schedule.set_field_hidden(names[0], True)
+	assert schedule.hidden_field_names == {names[0]}
+	with pytest.raises(ValueError, match='is not a column'):
+		schedule.set_field_hidden('Ghost', True)
+
+	restored = Catalog.from_dict(json.loads(json.dumps(scheduled.to_dict())))
+	assert restored.schedules[0].hidden_field_names == {names[0]}
+
+	scheduled.rename_param(names[0], 'Renamed', keep_guid=True)
+	assert schedule.hidden_field_names == {'Renamed'}
+	schedule.set_field_names([name for name in schedule.field_names if name != 'Renamed'])
+	assert schedule.hidden_field_names == set()
+
+	schedule.set_field_hidden(names[1], True)
+	scheduled.remove_param(names[1])
+	assert schedule.hidden_field_names == set()
+
+
 # --- client and country codes ----------------------------------------------
 
 def test_client_and_country_codes_belong_to_the_catalog(catalog):

@@ -33,13 +33,13 @@ FAMILY_COLUMNS = [
 LINK_COLUMNS = ["family_name", "parameter_name"]
 ENTRY_COLUMNS = [
     "family_name", "group_name", "parameter_name", "header_text_override",
-    "grid_column_width_override", "override_entry", "status", "validation_message",
+    "grid_column_width_override", "hidden", "override_entry", "status", "validation_message",
 ]
 CSV_COLUMNS = [
     "record_type", "name", "guid", "header_text", "grid_column_width", "dtype", "group_under",
     "formula", "instance_param", "default_value", "status", "validation_message", "client", "client_code",
     "country", "country_code", "category", "description", "family_name", "parameter_name", "group_name",
-    "header_text_override", "grid_column_width_override", "override_entry", "caption",
+    "header_text_override", "grid_column_width_override", "hidden", "override_entry", "caption",
     "parameter_names", "top_row", "bottom_row",
 ]
 _CSV_RECORD_TYPES = {
@@ -219,7 +219,7 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
         if not schedule_name:
             continue
         entry = schedules.setdefault(schedule_name, {
-            "families": [], "fields": set(), "headers": {}, "widths": {}, "values": [],
+            "families": [], "fields": set(), "headers": {}, "widths": {}, "values": [], "hidden": set(),
         })
         fam = catalog.get_family(family_name)
         if fam is None:
@@ -243,6 +243,11 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
                 entry["widths"].setdefault(param_name, Param._coerce_grid_column_width(width))
             except ValueError as exc:
                 issues.append(f"Schedule '{schedule_name}', '{param_name}': {exc} Override skipped.")
+        try:
+            if text(row.get("hidden")) and parse_bool(row.get("hidden")):
+                entry["hidden"].add(param_name)
+        except ValueError:
+            issues.append(f"Schedule '{schedule_name}', '{param_name}': Hidden must be true or false; shown.")
         value = text(row.get("override_entry"))
         if value:
             entry["values"].append((family_name, param_name, value))
@@ -254,6 +259,7 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
             field_names=sorted(entry["fields"]),
             header_text_overrides=entry["headers"],
             grid_column_width_overrides=entry["widths"],
+            hidden_field_names=entry["hidden"],
         )
         for family_name, param_name, value in entry["values"]:
             fam = catalog.get_family(family_name)
@@ -357,6 +363,7 @@ def entries_table(catalog):
                     "parameter_name": param_name,
                     "header_text_override": schedule.header_text_overrides.get(param_name, ""),
                     "grid_column_width_override": "" if width is None else width,
+                    "hidden": param_name in schedule.hidden_field_names,
                     "override_entry": _blank(family_overrides.get(param_name, {}).get("value")),
                     "status": schedule.status,
                     "validation_message": schedule.validation_message,
