@@ -2385,6 +2385,7 @@ class DDMGUI:
         self.load_issues = result.issues
         self.validate_all()
         lines = list(result.summary)
+        lines.extend(f"  {correction}" for correction in result.corrections)
         if result.issues:
             lines.append(f"{len(result.issues)} thing(s) in the workbook were fixed or skipped:")
             lines.extend(f"  {issue}" for issue in result.issues)

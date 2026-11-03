@@ -2,6 +2,14 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-03: Workbook mistakes corrected on import
+- 35 corrections in `excel_import.py` (see `chat/workbook-fixes.md`): 16 stray
+  `IPS_SPACE_AirReq_Recirc` columns, 10 columns naming nonexistent parameters, 3 new parameters,
+  the `IPS_ROOM_Transfer` formula, the `IPS-US_CTRL` placeholder family. Export leftover columns
+  (Name/NAME/Column1) are skipped quietly. Parameters defined from schedule rows get stable GUIDs.
+- Formula checker: Revit lengths (`0' 0 1/16"`) are numbers; Revit's built-in `Length` is known.
+- Re-imported and saved: 1245 parameters, 231 families, 5768 columns; no formula errors left.
+
 ## 2026-11-03: 0.1.0 Beta standalone .exe
 - `build_exe.py` (PyInstaller, one file, windowed): bundles the master database as
   `master.ddm.json`, opened on first launch; working data goes to `data/` next to the .exe

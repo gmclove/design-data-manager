@@ -24,6 +24,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from revit_parameter_manager import Catalog
+from revit_shared_parameter_export import parameter_guid
 
 SCHEDULES_AFTER_SHEET = "Backstage"
 # Group Parameter Under values the workbook writes differently from Revit's names.
@@ -33,11 +34,63 @@ _IGNORED_CAPTIONS = ("combine parameters",)
 HIDDEN_CAPTION = "hidden"  # "Hidden Parameters", "HIDDEN", ...
 
 
+# --- corrections for known mistakes in the master workbook ---------------------
+# Reviewed with the user; see chat/workbook-fixes.md. Each applied correction is reported.
+
+# (sheet, parameter as written, heading for a column with no parameter) -> parameter to use
+# instead, or None to leave the column out.
+COLUMN_FIXES = {
+    ("Pump", "IPS_SPACE_AirReq_Recirc", None): "IPS_EQUIP_BOD_Manuf",
+    ("VAV Unit", "IPS_SPACE_AirReq_Recirc", None): "IPS_EQUIP_EquipAssoc_SysOrService",
+    ("Air Term", "IPS_SPACE_AirReq_Recirc", None): "IPS_EQUIP_Area_Served",
+    ("Air Valve Schedule", "IPS_SPACE_AirReq_Recirc", None): "IPS_EQUIP_Airflow_Max_CFM",
+    ("Air Curtain", "IPS_SPACE_AirReq_Recirc", None): "IPS_EQUIP_Max_Length",
+    ("Air Device", "IPS_SPACE_AirReq_Recirc", None): "IPS_EQUIP_Material_TYPE",
+    ("Water Treatment", "IPS_SPACE_AirReq_Recirc", None): "IPS_EQUIP_Water_Design_GPM",
+    ("_CTRL", "IPS_SPACE_AirReq_Recirc", None): "IPS_CTRL_06_Notes",
+    ("_TAG", "IPS_SPACE_AirReq_Recirc", None): "IPS_TAG_TERM_3_Middle",
+    ("Valves", "IPS_SPACE_AirReq_Recirc", None): "IPS_TAG_TERM_3_Middle",
+    ("_Arch - Level", "IPS_SPACE_AirReq_Recirc", None): "IPS_NAME",
+    ("_Array", "IPS_SPACE_AirReq_Recirc", None): "IPS_NAME",
+    ("_Arch - Levels", "IPS_SPACE_AirReq_Recirc", None): "IPS_GROUP_Mech_Waterside",
+    ("_Arch - Rooms", "IPS_SPACE_AirReq_Recirc", None): None,
+    ("_Line - Pipe - Water", "IPS_SPACE_AirReq_Recirc", None): None,
+    ("_Line - Pipe - Steam", "IPS_SPACE_AirReq_Recirc", None): None,
+    ("Chiller (Water-Cooled)", "IPS_EQUIP_Evap_GPM", None): "IPS_EQUIP_Evap_Design_GPM",
+    ("Chiller (Air-Cooled)", "IPS_EQUIP_Evap_GPM", None): "IPS_EQUIP_Evap_Design_GPM",
+    ("Heat Pump (Air-Water)", "IPS_EQUIP_Evap_GPM", None): "IPS_EQUIP_Evap_Design_GPM",
+    ("Hydronic Snow Melt Flr Manifold", "IPS_COIL_Htg_Total_MBH_per_SF", None): "IPS_COIL_Htg_MBH_per_SF",
+    ("Radiator (Fin Tube) (HHW)", "IPS_COIL_Htg_Total_MBH_per_FT", None): "IPS_COIL_Htg_MBH_per_FT",
+    ("Radiant Panel (HHW-CHW)", "IPS_COIL_Htg_Total_MBH_per_FT", None): "IPS_COIL_Htg_MBH_per_FT",
+    ("Steam Trap", "IPS_EQUIP_CapacityDesign_PPH", None): "IPS_EQUIP_Capacity_Design_PPH",
+    ("Steam Pressure Relief Valve", "IPS_EQUIP_Capacity_PPH", None): "IPS_EQUIP_Capacity_Max_PPH",
+    ("_CTRL", "IPS_CTRL_11_PilotLightColor", None): "IPS_CTRL_07_PilotLightColor",
+    ("_CTRL", "IPS_CTRL_Signal_Analog", None): "IPS_CTRL_01_Analog_YN",
+    ("_CTRL", "IPS_CTRL_Signal_Input", None): "IPS_CTRL_01_Input_YN",
+    ("_CTRL", "IPS_CTRL_12_DetailVarient", None): "IPS_CTRL_08_DetailVariant",
+    ("Heat Pump (Water-Water)", "IPS_COIL_LoadSide_Water_GPM", None): "IPS_COIL_Clg_LoadSide_GPM",
+    ("_Line - Duct", "", "DUCT DIA. (IN.)"): "IPS_DUCT_Dia_IN",
+}
+# Columns left over from export layouts: not parameters, left out without a report line.
+LEFTOVER_COLUMNS = {"Name", "NAME", "Column1"}
+# Parameters the workbook's schedules need but never defined: (name, data type, group under).
+NEW_PARAMETERS = (
+    ("IPS_CTRL_08_DetailVariant", "Text", "Identity Data"),
+    ("IPS_COIL_Clg_LoadSide_GPM", "Number", "Mechanical - Flow"),
+    ("IPS_DUCT_Dia_IN", "Text", "Dimensions"),
+)
+# Parameter -> (text in its formula, replacement).
+FORMULA_FIXES = {"IPS_SPACE_AirReq_Transf_Net_CFM": ("IPS_ROOM_Transfer_", "IPS_SPACE_Transfer_")}
+# Family rows that are unfinished placeholders.
+SKIPPED_FAMILIES = {"IPS-US_CTRL"}
+
+
 @dataclass
 class ImportResult:
     catalog: Catalog
     summary: list = field(default_factory=list)
     issues: list = field(default_factory=list)
+    corrections: list = field(default_factory=list)
 
 
 def _text(value):
@@ -97,6 +150,15 @@ def _import_parameters(wb, catalog, result):
             )
         except ValueError as exc:
             result.issues.append(f"Parameters: '{name}' skipped: {exc}")
+    for name, dtype, group_under in NEW_PARAMETERS:
+        if catalog.get_param(name) is None:
+            catalog.add_param(name, dtype, guid=parameter_guid(name), group_under=group_under)
+            result.corrections.append(f"Parameters: added '{name}' ({dtype}, {group_under}), which schedules need.")
+    for name, (old, new) in FORMULA_FIXES.items():
+        param = catalog.get_param(name)
+        if param is not None and param.formula and old in param.formula:
+            param.formula = param.formula.replace(old, new)
+            result.corrections.append(f"Parameters: '{name}' formula now uses {new}... instead of {old}...")
     for name in formula_differs:
         result.issues.append(
             f"Parameters: '{name}' has different Static and Dynamic formulas; imported the Static one."
@@ -112,6 +174,11 @@ def _import_families(wb, catalog, result):
         get = lambda name: _text(row[columns[name] - 1]) if name in columns and columns[name] <= len(row) else ""  # noqa: E731
         name = get("Family Name")
         if not name:
+            continue
+        if name in SKIPPED_FAMILIES:
+            correction = f"Families: left out '{name}', an unfinished placeholder row."
+            if correction not in result.corrections:
+                result.corrections.append(correction)
             continue
         if catalog.get_family(name) is not None:
             result.issues.append(f"Families: '{name}' is listed twice; kept the first.")
@@ -205,10 +272,21 @@ def _read_schedule_sheet(ws):
     if "remove" in labels:
         removed = {c for c in range(3, last_column + 1) if ws.cell(labels["remove"], c).value is True}
     columns = {}
+    corrections = []
     for c in range(3, last_column + 1):
         name = _text(ws.cell(name_row, c).value)
-        if name and c not in removed:
-            columns[c] = name
+        if not name or c in removed or name in LEFTOVER_COLUMNS:
+            continue
+        if (ws.title, name, None) in COLUMN_FIXES:
+            fixed = COLUMN_FIXES[(ws.title, name, None)]
+            corrections.append(
+                f"Schedule '{ws.title}': column '{name}' "
+                + (f"is now '{fixed}'." if fixed else "left out (no heading; a stray parameter).")
+            )
+            if fixed is None:
+                continue
+            name = fixed
+        columns[c] = name
 
     attribute_rows = {
         "dtype": labels.get("data type"),
@@ -239,6 +317,17 @@ def _read_schedule_sheet(ws):
         heading_rows.insert(0, row)
         row -= 1
     first_heading_row = heading_rows[0] if heading_rows else name_row
+
+    # A column with a heading but no parameter, when a correction names its parameter.
+    for c in range(3, last_column + 1):
+        if c in columns or c in removed or _text(ws.cell(name_row, c).value):
+            continue
+        heading = " ".join(row_texts(row).get(c, "") for row in heading_rows).strip()
+        fixed = COLUMN_FIXES.get((ws.title, "", heading))
+        if fixed:
+            columns[c] = fixed
+            corrections.append(f"Schedule '{ws.title}': column '{heading}' had no parameter; now '{fixed}'.")
+    columns = dict(sorted(columns.items()))
 
     headings = {c: [] for c in columns}
     for row in heading_rows:
@@ -279,6 +368,7 @@ def _read_schedule_sheet(ws):
         "hidden": {columns[c] for c in hidden},
         "groups": groups,
         "definitions": definitions,
+        "corrections": corrections,
         "itemize": True if itemize is None else bool(itemize),
         "view_template": _text(label_value("view template")) or None,
     }
@@ -295,6 +385,7 @@ def _import_schedules(wb, catalog, result):
             result.issues.append(f"Schedule '{name}': no 'Parameter Name' row; skipped.")
             continue
         sheets[name] = sheet
+        result.corrections.extend(sheet["corrections"])
 
     # Parameters a schedule uses but the Parameters sheet lacks: define them from the schedule.
     for name, sheet in sheets.items():
@@ -304,7 +395,7 @@ def _import_schedules(wb, catalog, result):
             definition = sheet["definitions"][param_name]
             try:
                 catalog.add_param(
-                    param_name, _text(definition["dtype"]),
+                    param_name, _text(definition["dtype"]), guid=parameter_guid(param_name),
                     group_under=_group_under(definition["group_under"]),
                     instance_param=_text(definition["instance"]).lower() != "type",
                 )
@@ -380,5 +471,7 @@ def import_workbook(path):
         f"countries: {len(catalog.names('country'))}.",
         "Families aren't linked to schedules or parameters (the workbook doesn't record that); "
         "schedule filters default to the schedule names.",
+        f"Applied {len(result.corrections)} correction(s) for known workbook mistakes "
+        "(see chat/workbook-fixes.md).",
     ]
     return result

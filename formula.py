@@ -30,6 +30,9 @@ ERROR = 'ERROR'          # unterminated string or unexpected character
 Token = namedtuple('Token', 'kind text start end')
 
 _NUMBER = re.compile(r'\d+(?:\.\d*)?|\.\d+')
+# Revit length values in feet and inches: 0' 0 1/16", 2' 6", 3/8", 1 1/2".
+_INCHES = r'(?:\d+(?:\.\d+)?(?:\s+\d+/\d+)?|\d+/\d+)"'
+_LENGTH = re.compile(r"\d+(?:\.\d+)?'(?:\s*" + _INCHES + r')?|' + _INCHES)
 _IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 _SINGLE_CHAR_KINDS = {'(': LPAREN, ')': RPAREN, ',': COMMA}
 _OPERAND_KINDS = {NUMBER, STRING, PARAM, NAME}
@@ -63,6 +66,13 @@ def tokenize(formula, known_names=()):
 		if char.isspace():
 			position += 1
 			continue
+
+		if char.isdigit():
+			length_value = _LENGTH.match(formula, position)
+			if length_value:
+				tokens.append(Token(NUMBER, length_value.group(), position, length_value.end()))
+				position = length_value.end()
+				continue
 
 		if char in '"\'':
 			close = formula.find(char, position + 1)

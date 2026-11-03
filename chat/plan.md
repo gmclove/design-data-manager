@@ -44,8 +44,7 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [ ] Hand the .exe to testers; collect feedback.
 - [ ] Link families to schedules and parameters (the workbook didn't record it); RF Tools
       export is empty until families have parameters.
-- [ ] Review the import report (`data/import-report.txt`): 14 formula differences, 10 schedule
-      columns with no parameter definition, 6 export-leftover columns, duplicate family rows.
+- [x] Workbook mistakes corrected on import (`chat/workbook-fixes.md`).
 - [ ] Testers without the GLoveMacros module/.NET SDK: decide how they get the macro.
 
 ## Next steps

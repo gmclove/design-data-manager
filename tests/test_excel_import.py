@@ -151,6 +151,39 @@ def test_gui_import_replaces_the_database_and_survives_a_save(tmp_path):
         assert reloaded.catalog.get_family("IPS-US_Pump").client_code == "IPS"
 
 
+def test_known_workbook_mistakes_are_corrected(tmp_path, monkeypatch):
+    import excel_import
+
+    path = make_workbook(tmp_path / "master.xlsx")
+    wb = openpyxl.load_workbook(path)
+    sheet = wb["Pump"]
+    sheet["G15"] = "IPS_Typo"            # a misnamed parameter
+    sheet["H14"], sheet["H15"] = "NOTE 2", "IPS_Stray"  # a stray column to drop
+    sheet["I14"] = "WIDTH"               # a heading with no parameter
+    sheet["J14"], sheet["J15"] = "x", "Column1"  # an export leftover
+    wb.save(path)
+    monkeypatch.setattr(excel_import, "COLUMN_FIXES", {
+        ("Pump", "IPS_Typo", None): "IPS_Note",
+        ("Pump", "IPS_Stray", None): None,
+        ("Pump", "", "WIDTH"): "IPS_Width",
+    })
+    monkeypatch.setattr(excel_import, "NEW_PARAMETERS", (("IPS_Width", "Text", "Dimensions"),))
+    monkeypatch.setattr(excel_import, "FORMULA_FIXES", {"IPS_Area": ("* 2", "* 3")})
+    monkeypatch.setattr(excel_import, "SKIPPED_FAMILIES", {"IPS-US_Pump"})
+
+    result = import_workbook(path)
+
+    catalog = result.catalog
+    columns = [param.name for param in catalog.get_schedule("Pump").params]
+    assert columns == ["IPS_Tag", "IPS_Flow_CFM", "IPS_Area", "IPS_Note", "IPS_Width"]
+    width = catalog.get_param("IPS_Width")
+    assert (width.dtype, width.group_under) == ("Text", "Dimensions")
+    assert catalog.get_param("IPS_Area").formula == "IPS_Flow_CFM * 3"
+    assert catalog.get_family("IPS-US_Pump") is None
+    assert len(result.corrections) == 6  # new parameter, formula, family, three columns
+    assert not any("Column1" in line for line in result.issues + result.corrections)
+
+
 def test_a_parameter_only_on_a_schedule_is_defined_from_the_schedule(imported):
     new = imported.catalog.get_param("IPS_New")
     assert (new.dtype, new.group_under, new.instance_param) == ("Yes/No", "Data", True)

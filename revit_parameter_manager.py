@@ -172,7 +172,7 @@ class Param(object):
 		"""Parameter names this parameter's formula may reference."""
 		if self.catalog is not None:
 			return self.catalog.known_names()
-		return {self.name} | COMMON_PARAM_NAMES
+		return {self.name} | COMMON_PARAM_NAMES | REVIT_BUILTIN_PARAM_NAMES
 
 	def validate(self):
 		self.status = 'Ready'
@@ -296,6 +296,8 @@ COMMON_PARAMS = (
 	Param('IPS_GROUP_Schedule_Name', 'Text', instance_param=True),
 )
 COMMON_PARAM_NAMES = frozenset(param.name for param in COMMON_PARAMS)
+# Revit's own family parameters that formulas may use (Length: line-based families).
+REVIT_BUILTIN_PARAM_NAMES = frozenset({'Length'})
 # Revit schedules list the elements whose value of this parameter matches the schedule's filter.
 SCHEDULE_FILTER_PARAM = 'IPS_GROUP_Schedule_Name'
 
@@ -365,7 +367,7 @@ class Fam(object):
 	def known_names(self):
 		if self.catalog is not None:
 			return self.catalog.known_names()
-		return {param.name for param in self.params}
+		return {param.name for param in self.params} | REVIT_BUILTIN_PARAM_NAMES
 
 	def validate(self):
 		self.status = 'Ready'
@@ -1029,7 +1031,7 @@ class Catalog(object):
 
 	def known_names(self):
 		"""Every name a formula in this catalog may reference."""
-		names = self.param_names() | COMMON_PARAM_NAMES
+		names = self.param_names() | COMMON_PARAM_NAMES | REVIT_BUILTIN_PARAM_NAMES
 		for fam in self.families:
 			names.update(param.name for param in fam.params)
 		return names

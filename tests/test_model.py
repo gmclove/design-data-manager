@@ -98,6 +98,22 @@ def test_syntax_problems_are_reported(text, expected):
 	assert expected in issues[0]
 
 
+@pytest.mark.parametrize('text', [
+	'Width * 2 + 0\' 0 1/256"',
+	'0\' 0 1/16"',
+	'0\' 0"',
+	'2\' 6" + 3/8" + 1 1/2"',
+])
+def test_feet_and_inch_lengths_are_numbers(text):
+	assert issues_for(text) == []
+
+
+def test_formulas_may_use_revit_builtin_length(catalog):
+	catalog.add_param('Spacing', 'Length')
+	param = catalog.add_param('Count', 'Integer', formula='Length / Spacing - 1').validate()
+	assert param.status == 'Ready', param.validation_message
+
+
 def test_param_validate_reports_syntax_errors(catalog):
 	catalog.add_param('Width', 'Length')
 	param = catalog.add_param('A', 'Length', formula='(Width * 2').validate()
