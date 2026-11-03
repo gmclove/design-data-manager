@@ -45,7 +45,7 @@ from ddm_tables import (
 from revit_parameter_manager import (
     CODE_KINDS, COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, guid_change_warning,
 )
-from revit_schedule_macro_generator import generate_schedule_macro_source, install_macro
+from revit_schedule_macro_generator import build_macro_module, generate_schedule_macro_source, install_macro
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content
 
@@ -836,6 +836,7 @@ class DDMGUI:
     def _append_message(self, line: str):
         if self.warning_text is not None:
             self.warning_text.insert(tk.END, f"\n{line}")
+            self.warning_text.see(tk.END)
 
     # --- exports ----------------------------------------------------------------
 
@@ -861,10 +862,18 @@ class DDMGUI:
             return
         for removed_path in removed_paths:
             self._append_message(f"Removed older generated macro: {removed_path}")
-        self._append_message(
-            f"Installed the schedule macro in {installed_path}. Build the GLoveMacros module in "
-            "Revit's Macro Manager, then run CreateSchedulesFromDatabase."
-        )
+        self._append_message(f"Installed the schedule macro in {installed_path}. Building the module...")
+        root = getattr(self, "root", None)
+        if root is not None:
+            root.configure(cursor="watch")
+            root.update_idletasks()
+        try:
+            _succeeded, build_messages = build_macro_module(REVIT_MACRO_MODULE_DIR)
+        finally:
+            if root is not None:
+                root.configure(cursor="")
+        for line in build_messages:
+            self._append_message(line)
 
     def _generate_rfps_file(self):
         try:

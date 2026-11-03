@@ -10,6 +10,7 @@ from ddm_tables import catalog_from_tables, read_database_csv
 from revit_parameter_manager import Catalog
 from revit_schedule_macro_generator import (
     GENERATED_HEADER,
+    build_macro_module,
     MACRO_FILE_NAME,
     generate_schedule_macro_source,
     install_macro,
@@ -196,9 +197,13 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
     (tmp_path / "ThisApplication.cs").write_text(MACRO_ENTRY_POINT, encoding="utf-8")
     (tmp_path / "Macro.csproj").write_text(MACRO_PROJECT.format(framework=framework, revit=revit), encoding="utf-8")
 
-    result = subprocess.run(
-        ["dotnet", "build", "-nologo", "-v", "q", str(tmp_path / "Macro.csproj")],
-        capture_output=True, text=True, timeout=300,
-    )
-    errors = [line for line in result.stdout.splitlines() if ": error " in line]
-    assert result.returncode == 0, "\n".join(errors) or result.stdout[-3000:]
+    succeeded, messages = build_macro_module(tmp_path)
+    assert succeeded, "\n".join(messages)
+    assert messages == ["Built the GLoveMacros module; its macros are ready in Revit's Macro Manager."]
+
+    # A broken macro fails, and the messages name the file and line without the folder.
+    (tmp_path / "Generated.cs").write_text(source.replace("tx.Commit();", "tx.Commit()"), encoding="utf-8")
+    succeeded, messages = build_macro_module(tmp_path)
+    assert not succeeded
+    assert messages[0].startswith("Generated.cs(") and ": error CS" in messages[0]
+    assert messages[-1].startswith("The macro module failed to build")

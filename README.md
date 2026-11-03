@@ -57,15 +57,17 @@ two copies would stop the module building.
 
 To run it in Revit 2025:
 
-1. Open **Manage > Macro Manager** and select the **GLoveMacros** application module. Click
-   **Edit** to open it in VS Code, then build it with **Ctrl+Shift+B** (the module's "build" task).
-   Macro Manager lists a macro only once it's in the built module; a new `.cs` file alone
-   doesn't show.
+1. Save in the GUI. Save installs the macro, then builds the module with `dotnet build`. The
+   build's errors and warnings and a summary appear in Messages. Macro Manager lists a macro only
+   once it's in the built module; a new `.cs` file alone doesn't show. If Revit was open when you
+   saved and the macro doesn't appear, restart Revit. To build by hand instead, open the module
+   from Macro Manager with **Edit** and press **Ctrl+Shift+B**.
 
    Since Revit 2025.5, the Revit API needs .NET 10. A module that targets `net8.0-windows` fails
    to build with error CS1705 and Revit keeps the old build, so set `<TargetFramework>` in
    `GLoveMacros.csproj` to `net10.0-windows`.
-2. Open the project, select `CreateSchedulesFromDatabase` and click **Run**.
+2. In Revit, open **Manage > Macro Manager**, select `CreateSchedulesFromDatabase` under
+   **GLoveMacros** and click **Run**.
 
 Each schedule in the database becomes three Revit schedules:
 

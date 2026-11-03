@@ -17,6 +17,9 @@ data changes from one database to the next.
 """
 
 import json
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from revit_parameter_manager import COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM
@@ -166,6 +169,45 @@ def install_macro(source, module_dir):
             removed.append(path)
     target.write_text(source, encoding="utf-8")
     return target, removed
+
+
+def build_macro_module(module_dir, timeout=300):
+    """Build a Revit macro module with ``dotnet build`` so Macro Manager lists its macros.
+
+    Returns ``(succeeded, messages)``: the compiler's errors and warnings, each as
+    ``file(line,col): message``, then a one-line summary.
+    """
+    module_dir = Path(module_dir)
+    dotnet = shutil.which("dotnet")
+    if dotnet is None:
+        return False, ["The .NET SDK (dotnet) isn't installed, so the macro module wasn't built."]
+    try:
+        result = subprocess.run(
+            [dotnet, "build", "-nologo", "-v", "q"],
+            cwd=module_dir, capture_output=True, text=True, timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        return False, [f"The macro module build took over {timeout} seconds and was stopped."]
+    except OSError as exc:
+        return False, [f"The macro module couldn't be built: {exc}"]
+
+    messages = []
+    for line in result.stdout.splitlines():
+        if ": error " not in line and ": warning " not in line:
+            continue
+        line = re.sub(r"\s*\[[^\]]*\.csproj\]\s*$", "", line.strip())
+        # Drop the folder; the file name and line number are enough.
+        line = re.sub(r"^[^(]*[\\/]", "", line)
+        if line not in messages:
+            messages.append(line)
+    if result.returncode == 0:
+        messages.append("Built the GLoveMacros module; its macros are ready in Revit's Macro Manager.")
+    else:
+        messages.append(
+            "The macro module failed to build (see above); Macro Manager still has the previous build."
+        )
+    return result.returncode == 0, messages
 
 MACRO_TEMPLATE = GENERATED_HEADER + """ from /*SOURCE*/. Saving the database rewrites this file;
 // don't edit it by hand. Build the GLoveMacros module in the Macro Manager, then run
