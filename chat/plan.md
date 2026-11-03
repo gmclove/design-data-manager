@@ -28,6 +28,11 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
       a data table.
 - [x] Save installs the macro in the `GLoveMacros` module (removing older generated copies; the
       broken `test_data.cs` is gone).
+- [x] Macro didn't show in Macro Manager (2026-11-03): the module hadn't been rebuilt since
+      July, and couldn't be. Revit 2025.5 (Oct 12 update) ships a Revit API built for .NET 10,
+      so the module's `net8.0-windows` target fails with CS1705. Changed `GLoveMacros.csproj` to
+      `net10.0-windows` on this machine (original kept as `.csproj.bak`). The second machine
+      needs the same change once it has 2025.5.
 - [ ] Run it in Revit 2025 on a real project and note what goes wrong (needs the user). Unverified
       until then: header group row index (`GroupHeaders(0, ...)`, nested groups), whether
       `ClearFields` drops old header groups, multi-category schedulable fields for shared
