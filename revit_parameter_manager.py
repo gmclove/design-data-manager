@@ -42,6 +42,13 @@ def _clean_name(name, label='Parameter'):
 	return str(name).strip()
 
 
+def _clean_optional(text):
+	"""Stripped text, or ``None`` when blank."""
+	if text is None or not str(text).strip():
+		return None
+	return str(text).strip()
+
+
 def _merge_overrides(existing, overrides):
 	"""Apply ``overrides`` on top of ``existing``; a ``None`` value clears that override."""
 	merged = dict(existing)
@@ -289,6 +296,8 @@ COMMON_PARAMS = (
 	Param('IPS_GROUP_Schedule_Name', 'Text', instance_param=True),
 )
 COMMON_PARAM_NAMES = frozenset(param.name for param in COMMON_PARAMS)
+# Revit schedules list the elements whose value of this parameter matches the schedule's filter.
+SCHEDULE_FILTER_PARAM = 'IPS_GROUP_Schedule_Name'
 
 
 class Fam(object):
@@ -576,7 +585,8 @@ class Schedule(object):
 
 	def __init__(self, name=None, fams=None, header_text_overrides=None,
 				 header_groups=None, grid_column_width_overrides=None, catalog=None,
-				 field_names=None, family_overrides=None, hidden_field_names=None):
+				 field_names=None, family_overrides=None, hidden_field_names=None,
+				 filter_value=None, itemize=True, view_template=None):
 		self._name = None
 		self.catalog = None
 		self.name = name
@@ -596,6 +606,12 @@ class Schedule(object):
 		self.header_groups = []
 		# Columns hidden in the finished Revit schedule (the working schedule shows them).
 		self.hidden_field_names = set(hidden_field_names or ())
+		# Value of IPS_GROUP_Schedule_Name for every family here; None means the schedule's name.
+		self.filter_value = _clean_optional(filter_value)
+		# Revit's "Itemize every instance".
+		self.itemize = bool(itemize)
+		# Name of a Revit schedule view template to apply, if any.
+		self.view_template = _clean_optional(view_template)
 		self.status = 'Ready'
 		self.validation_message = ''
 		if catalog is not None:
@@ -698,13 +714,24 @@ class Schedule(object):
 					', '.join(sorted(not_allowed)))
 			)
 
+	@property
+	def resolved_filter_value(self):
+		"""The IPS_GROUP_Schedule_Name value this schedule's families get and Revit filters on."""
+		return self.filter_value or self.name
+
 	def resolved_family_params(self, fam):
-		"""``fam``'s parameters with family and then schedule overrides applied."""
+		"""``fam``'s parameters with family and then schedule overrides applied.
+
+		The schedule filter value overrides IPS_GROUP_Schedule_Name for every family.
+		"""
 		schedule_overrides = self.family_overrides.get(fam.name, {})
-		return [
-			param.with_overrides(**schedule_overrides.get(param.name, {}))
-			for param in fam.resolved_params()
-		]
+		resolved = []
+		for param in fam.resolved_params():
+			overrides = dict(schedule_overrides.get(param.name, {}))
+			if param.name == SCHEDULE_FILTER_PARAM:
+				overrides['value'] = self.resolved_filter_value
+			resolved.append(param.with_overrides(**overrides))
+		return resolved
 
 	def resolved_family_param(self, fam, param_name):
 		return next(param for param in self.resolved_family_params(fam) if param.name == param_name)
@@ -837,6 +864,9 @@ class Schedule(object):
 				for group in self.header_groups
 			],
 			'hidden_field_names': [param.name for param in self.params if param.name in self.hidden_field_names],
+			'filter_value': self.filter_value,
+			'itemize': self.itemize,
+			'view_template': self.view_template,
 		})
 		return data
 
@@ -858,6 +888,9 @@ class Schedule(object):
 			field_names=data.get('field_names'),
 			family_overrides=data.get('family_overrides', {}),
 			hidden_field_names=data.get('hidden_field_names', []),
+			filter_value=data.get('filter_value'),
+			itemize=data.get('itemize', True),
+			view_template=data.get('view_template'),
 		)
 
 	def override_param(self, param_name, **overrides):

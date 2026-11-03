@@ -103,6 +103,25 @@ def test_columns_carry_headers_widths_in_feet_and_hidden_flags():
     assert 'new DdmHeaderGroup("Performance", new[] { "DDM_Airflow", "DDM_Capacity" }),' in source
 
 
+def test_schedule_settings_reach_the_macro():
+    catalog = make_catalog()
+    specs, _notes = schedule_specs(catalog)
+    assert (specs[0]["filter_value"], specs[0]["itemize"], specs[0]["view_template"]) == (
+        "Mechanical Schedule", True, "")
+    assert 'new DdmSchedule("Mechanical Schedule", "Mechanical Schedule", true, "",' in (
+        generate_schedule_macro_source(catalog))
+
+    schedule = catalog.schedules[0]
+    schedule.filter_value = "MECH"
+    schedule.itemize = False
+    schedule.view_template = "IPS Schedules"
+    source = generate_schedule_macro_source(catalog)
+    assert 'new DdmSchedule("Mechanical Schedule", "MECH", false, "IPS Schedules",' in source
+    assert "definition.IsItemized = spec.Itemize;" in source
+    assert "ScheduleFilterType.Equal, spec.FilterValue" in source
+    assert "schedule.ViewTemplateId = template.Id;" in source
+
+
 def test_header_groups_go_innermost_first():
     catalog = make_catalog()
     schedule = catalog.schedules[0]
@@ -169,6 +188,9 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
     names = [param.name for param in schedule.params]
     schedule.set_field_hidden(names[-1], True)
     schedule.add_header_group('Group "A"', names[:2])
+    schedule.filter_value = "FILTER"
+    schedule.itemize = False
+    schedule.view_template = "IPS Schedules"
     source = generate_schedule_macro_source(demo)
     (tmp_path / "Generated.cs").write_text(source, encoding="utf-8")
     (tmp_path / "ThisApplication.cs").write_text(MACRO_ENTRY_POINT, encoding="utf-8")

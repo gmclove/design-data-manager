@@ -42,7 +42,9 @@ from ddm_tables import (
     text as cell_text,
     write_database_csv,
 )
-from revit_parameter_manager import CODE_KINDS, COMMON_PARAM_NAMES, Catalog, Param, Schedule, guid_change_warning
+from revit_parameter_manager import (
+    CODE_KINDS, COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, guid_change_warning,
+)
 from revit_schedule_macro_generator import generate_schedule_macro_source, install_macro
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content
@@ -1773,6 +1775,57 @@ class DDMGUI:
         self._get_schedule(schedule_name).set_field_hidden(parameter_name, hidden)
         self.validate_all()
 
+    def _set_schedule_settings(self, schedule_name: str, filter_value: str, itemize: bool, view_template: str):
+        """Set a schedule's filter value (blank means its name), itemizing and view template."""
+        schedule = self._get_schedule(schedule_name)
+        filter_value = cell_text(filter_value)
+        schedule.filter_value = None if not filter_value or filter_value == schedule.name else filter_value
+        schedule.itemize = bool(itemize)
+        schedule.view_template = cell_text(view_template) or None
+        self.validate_all()
+
+    def _build_schedule_settings(self, parent, schedule):
+        """The Schedule Settings box: filter value, Itemize Every Instance and view template.
+
+        Each change is saved as soon as the box loses focus, Enter is pressed or the
+        checkbox is clicked.
+        """
+        box = ttk.LabelFrame(parent, text="Schedule Settings", padding=8)
+        box.columnconfigure(2, weight=1)
+
+        ttk.Label(box, text="Schedule Filter", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(box, text=f"{SCHEDULE_FILTER_PARAM} =").grid(row=0, column=1, sticky="w", padx=(12, 6))
+        filter_entry = PlaceholderEntry(box, placeholder=f"{schedule.name} (Overrides Every Family in the Schedule)")
+        if schedule.filter_value:
+            filter_entry.insert(0, schedule.filter_value)
+        filter_entry.grid(row=0, column=2, sticky="ew", pady=2)
+
+        itemize_var = tk.BooleanVar(value=schedule.itemize)
+        ttk.Checkbutton(box, text="Itemize Every Instance", variable=itemize_var).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=2
+        )
+
+        ttk.Label(box, text="View Template", style="Section.TLabel").grid(row=2, column=0, sticky="w")
+        template_entry = PlaceholderEntry(box, placeholder="None (Name of a Revit Schedule View Template)")
+        if schedule.view_template:
+            template_entry.insert(0, schedule.view_template)
+        template_entry.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=2)
+
+        def save(_event=None):
+            current = (schedule.filter_value or "", schedule.itemize, schedule.view_template or "")
+            wanted = (filter_entry.get().strip(), itemize_var.get(), template_entry.get().strip())
+            if wanted[0] == schedule.name:
+                wanted = ("",) + wanted[1:]
+            if wanted != current:
+                self._set_schedule_settings(schedule.name, *wanted)
+
+        for entry in (filter_entry, template_entry):
+            entry.bind("<Return>", save, add="+")
+            entry.bind("<FocusOut>", save, add="+")
+        itemize_var.trace_add("write", lambda *_args: save())
+        box.save = save  # for tests
+        return box
+
     def _add_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
         group = self._get_schedule(schedule_name).add_header_group(caption, parameter_names)
         self.validate_all()
@@ -2018,6 +2071,7 @@ class DDMGUI:
         self._info_button(title_bar).pack(side="right")
         ttk.Label(form, text=f"Status: {schedule.status}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(0, 6))
         ttk.Label(form, text=f"Validation: {schedule.validation_message or 'None'}", wraplength=1000, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
+        self._build_schedule_settings(form, schedule).pack(fill="x", padx=12, pady=(0, 8))
 
         table_box = ttk.LabelFrame(
             form,

@@ -33,13 +33,15 @@ FAMILY_COLUMNS = [
 LINK_COLUMNS = ["family_name", "parameter_name"]
 ENTRY_COLUMNS = [
     "family_name", "group_name", "parameter_name", "header_text_override",
-    "grid_column_width_override", "hidden", "override_entry", "status", "validation_message",
+    "grid_column_width_override", "hidden", "override_entry", "schedule_filter", "itemize",
+    "view_template", "status", "validation_message",
 ]
 CSV_COLUMNS = [
     "record_type", "name", "guid", "header_text", "grid_column_width", "dtype", "group_under",
     "formula", "instance_param", "default_value", "status", "validation_message", "client", "client_code",
     "country", "country_code", "category", "description", "family_name", "parameter_name", "group_name",
-    "header_text_override", "grid_column_width_override", "hidden", "override_entry", "caption",
+    "header_text_override", "grid_column_width_override", "hidden", "override_entry",
+    "schedule_filter", "itemize", "view_template", "caption",
     "parameter_names", "top_row", "bottom_row",
 ]
 _CSV_RECORD_TYPES = {
@@ -220,7 +222,18 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
             continue
         entry = schedules.setdefault(schedule_name, {
             "families": [], "fields": set(), "headers": {}, "widths": {}, "values": [], "hidden": set(),
+            "filter": "", "itemize": True, "view_template": "",
         })
+        # Schedule-wide settings repeat on every row of the schedule; the first one given wins.
+        if not entry["filter"]:
+            entry["filter"] = text(row.get("schedule_filter"))
+        if not entry["view_template"]:
+            entry["view_template"] = text(row.get("view_template"))
+        if text(row.get("itemize")):
+            try:
+                entry["itemize"] = entry["itemize"] and parse_bool(row.get("itemize"))
+            except ValueError:
+                issues.append(f"Schedule '{schedule_name}': Itemize must be true or false; itemized.")
         fam = catalog.get_family(family_name)
         if fam is None:
             issues.append(f"Schedule '{schedule_name}' uses unknown family '{family_name}'; skipped.")
@@ -260,6 +273,9 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
             header_text_overrides=entry["headers"],
             grid_column_width_overrides=entry["widths"],
             hidden_field_names=entry["hidden"],
+            filter_value=entry["filter"] or None,
+            itemize=entry["itemize"],
+            view_template=entry["view_template"] or None,
         )
         for family_name, param_name, value in entry["values"]:
             fam = catalog.get_family(family_name)
@@ -364,6 +380,9 @@ def entries_table(catalog):
                     "header_text_override": schedule.header_text_overrides.get(param_name, ""),
                     "grid_column_width_override": "" if width is None else width,
                     "hidden": param_name in schedule.hidden_field_names,
+                    "schedule_filter": _blank(schedule.filter_value),
+                    "itemize": schedule.itemize,
+                    "view_template": _blank(schedule.view_template),
                     "override_entry": _blank(family_overrides.get(param_name, {}).get("value")),
                     "status": schedule.status,
                     "validation_message": schedule.validation_message,

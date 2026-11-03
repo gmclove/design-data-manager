@@ -112,3 +112,8 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
 - **Save installs the macro into the GLoveMacros module** (user), as
   `CreateSchedulesFromDatabase.cs`; other files starting with the generated header are deleted
   so the method isn't defined twice.
+- **Schedule filter value overrides `IPS_GROUP_Schedule_Name` for every family in the schedule**
+  (user, 2026-11-03), default the schedule's name. It is forced, not per family: a family's own
+  schedule override of that parameter is ignored inside the schedule.
+- **Itemize Every Instance defaults to on** (user). **View template** is a name typed in the
+  GUI (the database can't see the Revit project); applied to all three Revit schedules last.

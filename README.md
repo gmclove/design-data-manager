@@ -69,8 +69,14 @@ Each schedule in the database becomes three Revit schedules:
 | `{name} - Working` | Detail Items | every column shown |
 | `{name}` | Detail Items | hidden columns hidden |
 
-- **Filter:** each schedule lists only the elements whose `IPS_GROUP_Schedule_Name` is the
-  database schedule's name. The filter column itself is hidden.
+- **Schedule Settings,** at the top of the schedule window:
+  - **Schedule Filter:** the `IPS_GROUP_Schedule_Name` value. It defaults to the schedule's
+    name and overrides that parameter for every family in the schedule. Each Revit schedule
+    lists only the elements with that value; the filter column itself is hidden.
+  - **Itemize Every Instance:** on by default. It sets Revit's option of the same name.
+  - **View Template:** the name of a schedule view template in the Revit project. It's applied
+    to all three schedules after they're built. If the template controls fields or filters, its
+    settings win. A name the project doesn't have is listed as a problem.
 - **Columns:** every column takes its header text, width and header groups from the database. To
   hide a column, tick its box in the **Hidden Column** row under the column headers in the
   schedule window. The same checkbox is also in the column settings that open when you

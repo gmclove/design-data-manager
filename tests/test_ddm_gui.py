@@ -1763,6 +1763,56 @@ def test_family_table_shows_codes_and_editing_a_code_changes_it_for_the_client()
         gui._apply_cell_value("families", 0, "country_code", "US")
 
 
+def test_schedule_settings_box_saves_filter_itemize_and_view_template(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = gui.catalog.schedules[0]
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        form = find_window(root, f"Schedule Details: {schedule.name}")
+        box = next(w for w in descendants(form) if isinstance(w, ttk.LabelFrame) and w.cget("text") == "Schedule Settings")
+        labels = [w.cget("text") for w in descendants(box) if isinstance(w, ttk.Label)]
+        assert labels == ["Schedule Filter", "IPS_GROUP_Schedule_Name =", "View Template"]
+        filter_entry, template_entry = [w for w in descendants(box) if isinstance(w, gui_module.PlaceholderEntry)]
+        itemize = next(w for w in descendants(box) if isinstance(w, ttk.Checkbutton))
+        assert itemize.cget("text") == "Itemize Every Instance"
+        assert filter_entry.get() == "" and filter_entry.placeholder.startswith(schedule.name)
+
+        filter_entry.insert(0, "FILTER A")
+        template_entry.insert(0, "IPS Schedules")
+        box.save()
+        itemize.invoke()  # on by default; one click turns it off and saves
+        assert (schedule.filter_value, schedule.itemize, schedule.view_template) == ("FILTER A", False, "IPS Schedules")
+        fam = schedule.fams[0]
+        assert schedule.resolved_family_param(fam, "IPS_GROUP_Schedule_Name").value == "FILTER A"
+
+        # Typing the schedule's own name is the same as leaving it blank.
+        filter_entry.delete(0, tk.END)
+        filter_entry.insert(0, schedule.name)
+        box.save()
+        assert schedule.filter_value is None
+    finally:
+        root.destroy()
+
+
+def test_schedule_settings_round_trip_through_csv(tmp_path):
+    gui = make_test_gui()
+    schedule = gui.catalog.schedules[0]
+    gui._set_schedule_settings(schedule.name, "FILTER A", False, "IPS Schedules")
+    gui.checkpoint_path = tmp_path / "database.ddm.json"
+    gui.save_checkpoint()
+
+    loaded = make_test_gui()
+    loaded.load_checkpoint(str(tmp_path / "database.ddm.csv"))
+    restored = loaded.catalog.get_schedule(schedule.name)
+    assert (restored.filter_value, restored.itemize, restored.view_template) == ("FILTER A", False, "IPS Schedules")
+    other = loaded.catalog.schedules[1]
+    assert (other.filter_value, other.itemize, other.view_template) == (None, True, None)
+
+
 def test_codes_round_trip_through_csv_and_conflicts_are_reported(tmp_path):
     gui = make_test_gui()
     gui.catalog.set_code("client", "Client A", "CLA")

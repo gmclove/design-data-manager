@@ -594,6 +594,41 @@ def test_hidden_columns_follow_renames_removals_and_round_trip(scheduled):
 	assert schedule.hidden_field_names == set()
 
 
+# --- schedule settings -----------------------------------------------------
+
+def test_schedule_filter_value_overrides_every_family_and_defaults_to_the_name(scheduled):
+	schedule = scheduled.get_schedule('S1')
+	assert (schedule.filter_value, schedule.itemize, schedule.view_template) == (None, True, None)
+	for fam in schedule.fams:
+		assert schedule.resolved_family_param(fam, 'IPS_GROUP_Schedule_Name').value == 'S1'
+
+	schedule.name = 'Renamed'
+	assert scheduled.resolved_value(('F2', 'Renamed'), 'IPS_GROUP_Schedule_Name') == 'Renamed'
+
+	schedule.filter_value = 'DOORS'
+	for fam in schedule.fams:
+		assert schedule.resolved_family_param(fam, 'IPS_GROUP_Schedule_Name').value == 'DOORS'
+	# Outside the schedule the family keeps its own value.
+	assert scheduled.resolved_value(('F2', None), 'IPS_GROUP_Schedule_Name') in (None, '')
+
+
+def test_schedule_settings_round_trip(scheduled):
+	schedule = scheduled.get_schedule('S1')
+	schedule.filter_value = 'DOORS'
+	schedule.itemize = False
+	schedule.view_template = 'IPS Schedule Template'
+
+	restored = Catalog.from_dict(json.loads(json.dumps(scheduled.to_dict()))).get_schedule('S1')
+	assert (restored.filter_value, restored.itemize, restored.view_template) == (
+		'DOORS', False, 'IPS Schedule Template')
+
+	data = scheduled.to_dict()
+	for key in ('filter_value', 'itemize', 'view_template'):
+		del data['schedules'][0][key]
+	older = Catalog.from_dict(data).get_schedule('S1')
+	assert (older.filter_value, older.itemize, older.view_template) == (None, True, None)
+
+
 # --- client and country codes ----------------------------------------------
 
 def test_client_and_country_codes_belong_to_the_catalog(catalog):

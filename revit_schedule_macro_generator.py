@@ -7,9 +7,10 @@ module. Each schedule in the database becomes three Revit schedules:
 - ``{name} - Working``: a Detail Items schedule with every column showing;
 - ``{name}``: a Detail Items schedule with the columns marked hidden hidden.
 
-Each lists only elements whose ``IPS_GROUP_Schedule_Name`` is the database
-schedule's name. Running the macro again updates schedules it made before, so
-the Revit schedules follow the database.
+Each lists only elements whose ``IPS_GROUP_Schedule_Name`` is the schedule's
+filter value (its name unless set), is itemized or not as set, and gets the
+schedule's view template when it has one. Running the macro again updates
+schedules it made before, so the Revit schedules follow the database.
 
 The generated file is a fixed routine plus a table of schedule data; only the
 data changes from one database to the next.
@@ -18,9 +19,9 @@ data changes from one database to the next.
 import json
 from pathlib import Path
 
-from revit_parameter_manager import COMMON_PARAM_NAMES
+from revit_parameter_manager import COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM
 
-FILTER_PARAMETER = "IPS_GROUP_Schedule_Name"
+FILTER_PARAMETER = SCHEDULE_FILTER_PARAM
 MODEL_PREFIX = "3D - "
 WORKING_SUFFIX = " - Working"
 # Characters Revit doesn't allow in view names.
@@ -39,7 +40,8 @@ def _csharp_string(value) -> str:
 def schedule_specs(catalog):
     """What the macro builds: ``(specs, notes)``.
 
-    A spec is ``{"name", "columns": [{"parameter", "header", "width_feet", "hidden"}],
+    A spec is ``{"name", "filter_value", "itemize", "view_template",
+    "columns": [{"parameter", "header", "width_feet", "hidden"}],
     "header_groups": [{"caption", "parameters"}]}``. Notes explain each database schedule
     left out, and are shown in Revit when the macro runs.
     """
@@ -77,6 +79,9 @@ def schedule_specs(catalog):
         header_groups = sorted(schedule.header_groups, key=lambda group: len(group["parameter_names"]))
         specs.append({
             "name": name,
+            "filter_value": schedule.resolved_filter_value,
+            "itemize": schedule.itemize,
+            "view_template": schedule.view_template or "",
             "columns": columns,
             "header_groups": [
                 {"caption": group["caption"], "parameters": list(group["parameter_names"])}
@@ -87,7 +92,10 @@ def schedule_specs(catalog):
 
 
 def _spec_source(spec):
-    lines = [f"            new DdmSchedule({_csharp_string(spec['name'])},"]
+    lines = [
+        f"            new DdmSchedule({_csharp_string(spec['name'])}, {_csharp_string(spec['filter_value'])}, "
+        f"{'true' if spec['itemize'] else 'false'}, {_csharp_string(spec['view_template'])},"
+    ]
     lines.append("                new[]")
     lines.append("                {")
     for column in spec["columns"]:
@@ -174,7 +182,7 @@ namespace GLoveMacros
     {
         private const string DdmTitle = "Schedule Generator";
 
-        // A schedule lists the elements whose value of this parameter is the schedule's name.
+        // A schedule lists the elements whose value of this parameter is the schedule's filter value.
         private const string DdmFilterParameter = /*FILTER_PARAMETER*/;
         private const string DdmModelPrefix = /*MODEL_PREFIX*/;
         private const string DdmWorkingSuffix = /*WORKING_SUFFIX*/;
@@ -249,7 +257,10 @@ namespace GLoveMacros
                         schedule.Name = viewName;
                     }
 
+                    // A template that controls fields or filters would block the rebuild; reapplied below.
+                    schedule.ViewTemplateId = ElementId.InvalidElementId;
                     ScheduleDefinition definition = schedule.Definition;
+                    definition.IsItemized = spec.Itemize;
                     definition.ClearFilters();
                     definition.ClearFields();
                     IList<SchedulableField> schedulable = definition.GetSchedulableFields();
@@ -307,7 +318,7 @@ namespace GLoveMacros
                     }
                     else
                     {
-                        definition.AddFilter(new ScheduleFilter(filterField.FieldId, ScheduleFilterType.Equal, spec.Name));
+                        definition.AddFilter(new ScheduleFilter(filterField.FieldId, ScheduleFilterType.Equal, spec.FilterValue));
                     }
 
                     foreach (DdmHeaderGroup group in spec.HeaderGroups)
@@ -329,6 +340,22 @@ namespace GLoveMacros
                             continue;
                         }
                         schedule.GroupHeaders(0, left, 0, right, group.Caption);
+                    }
+
+                    if (spec.ViewTemplate.Length > 0)
+                    {
+                        ViewSchedule? template = new FilteredElementCollector(doc)
+                            .OfClass(typeof(ViewSchedule))
+                            .Cast<ViewSchedule>()
+                            .FirstOrDefault(view => view.IsTemplate && view.Name == spec.ViewTemplate);
+                        if (template == null)
+                        {
+                            problems.Add($"{viewName}: no schedule view template named '{spec.ViewTemplate}'; none applied.");
+                        }
+                        else
+                        {
+                            schedule.ViewTemplateId = template.Id;
+                        }
                     }
 
                     tx.Commit();
@@ -384,14 +411,22 @@ namespace GLoveMacros
 
         private sealed class DdmSchedule
         {
-            public DdmSchedule(string name, DdmColumn[] columns, DdmHeaderGroup[] headerGroups)
+            public DdmSchedule(
+                string name, string filterValue, bool itemize, string viewTemplate,
+                DdmColumn[] columns, DdmHeaderGroup[] headerGroups)
             {
                 Name = name;
+                FilterValue = filterValue;
+                Itemize = itemize;
+                ViewTemplate = viewTemplate;
                 Columns = columns;
                 HeaderGroups = headerGroups;
             }
 
             public string Name { get; }
+            public string FilterValue { get; }
+            public bool Itemize { get; }
+            public string ViewTemplate { get; }
             public DdmColumn[] Columns { get; }
             public DdmHeaderGroup[] HeaderGroups { get; }
         }

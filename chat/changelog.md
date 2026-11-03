@@ -2,6 +2,15 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-03: Schedule settings: filter, itemize, view template
+- `Schedule.filter_value` (blank means the schedule's name) overrides `IPS_GROUP_Schedule_Name`
+  for every family in the schedule (`resolved_family_params`) and is what the macro filters on.
+- `Schedule.itemize` (default true) sets Revit's "Itemize every instance".
+- `Schedule.view_template`: a Revit schedule view template name, applied to all three Revit
+  schedules after they're built (the macro clears it first so it can rebuild fields).
+- Schedule window: Schedule Settings box above the table. Saved in JSON and as CSV columns
+  `schedule_filter`, `itemize`, `view_template` on schedule entry rows.
+
 ## 2026-11-03: Revit schedule macro working (top priority)
 - Fixed the compile error that stopped every generated macro building (`SchedulableField.GetName`
   needs the document). A test now builds the macro against the installed Revit 2025 API.
