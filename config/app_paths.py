@@ -1,16 +1,26 @@
 """Default filesystem paths used by the application."""
 
+import sys
 from pathlib import Path
 
+APP_VERSION = "0.1.0 Beta"
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-TEST_DATA_DIR = DATA_DIR / "test_data"
+# Packaged as a standalone .exe (PyInstaller), bundled files unpack to a temporary folder and
+# working data lives in a "data" folder next to the .exe.
+FROZEN = getattr(sys, "frozen", False)
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
+DATA_DIR = Path(sys.executable).resolve().parent / "data" if FROZEN else PROJECT_ROOT / "data"
+TEST_DATA_DIR = PROJECT_ROOT / "data" / "test_data"
 
 DEMO_DATA_PATH = TEST_DATA_DIR / "demo_data.ddm.csv"
 TEST_DATABASE_CSV_PATH = TEST_DATA_DIR / "test_data.ddm.csv"
 TEST_CHECKPOINT_PATH = TEST_DATA_DIR / "test_data.ddm.pkl"
 # Working saves live outside test_data/ (untracked), so saving never rewrites fixtures.
 DEFAULT_CHECKPOINT_PATH = DATA_DIR / "database.ddm.json"
+# Opened on first launch, before anything is saved: the demo when run from source, the
+# master database bundled into the .exe when packaged.
+STARTER_DATABASE_PATH = BUNDLE_DIR / "master.ddm.json" if FROZEN else DEMO_DATA_PATH
 
 # Saving also writes the schedule macro into this Revit 2025 application macro module, when
 # it exists on this machine. Build the module in Revit's Macro Manager to pick it up.

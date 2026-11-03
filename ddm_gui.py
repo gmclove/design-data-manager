@@ -13,9 +13,11 @@ from config.revit_dtype_definitions import REVIT_DTYPE_TABLE
 from config.revit_family_category_definitions import REVIT_FAMILY_CATEGORY_TABLE
 from config.revit_property_pallet_definitions import REVIT_PROPERTY_PALLET_TABLE
 from config.app_paths import (
+    APP_VERSION,
     DEFAULT_CHECKPOINT_PATH,
-    DEMO_DATA_PATH,
+    FROZEN,
     REVIT_MACRO_MODULE_DIR,
+    STARTER_DATABASE_PATH,
     get_database_output_paths,
 )
 
@@ -724,7 +726,7 @@ class DDMGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("DDM Review")
+        self.root.title(f"DDM Review {APP_VERSION}")
         self.root.geometry("1360x820")
         self.root.minsize(1100, 700)
 
@@ -747,10 +749,16 @@ class DDMGUI:
         startup_path = (
             DEFAULT_CHECKPOINT_PATH
             if DEFAULT_CHECKPOINT_PATH.exists()
-            else DEMO_DATA_PATH
+            else STARTER_DATABASE_PATH
         )
         self.load_checkpoint(str(startup_path))
         self.checkpoint_path = DEFAULT_CHECKPOINT_PATH
+        if startup_path == STARTER_DATABASE_PATH and FROZEN and self.warning_text is not None:
+            # The bundled copy unpacks to a temporary folder; say what it is instead.
+            self.warning_text.delete("1.0", "2.0")
+            self.warning_text.insert(
+                "1.0", f"First launch: opened the master database. Save keeps your copy in {DEFAULT_CHECKPOINT_PATH}\n"
+            )
 
     # --- views on the catalog -------------------------------------------------
 

@@ -7,6 +7,7 @@ Catalog, validate and sync Revit parameters, families and schedules.
 - `ddm_gui.py`: Tkinter review/edit GUI, a view on the model
 - `ddm_tables.py`: converts between the model and flat tables (CSV, older saves, exports)
 - `excel_import.py`: imports the old Excel master workbook
+- `build_exe.py`: builds the standalone `.exe` (PyInstaller)
 - `revit_shared_parameter_export.py`: Revit shared-parameter file export
 - `revit_parameter_scheduler_export.py`: RF Tools Parameter Scheduler (`.rfps`) export
 - `revit_schedule_macro_generator.py`: Revit schedule macro (`.cs`) generator
@@ -47,6 +48,32 @@ pytest                            # run the tests
 The GUI saves to `data/database.ddm.json` by default, with a readable CSV and the Revit export files
 alongside. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
+
+## Standalone .exe (Beta)
+
+`dist/DesignDataManager.exe` runs without Python or conda. Copy it into its own folder and
+run it.
+
+- **First launch:** it opens the master database built into it.
+- **Saving:** Save writes `data/database.ddm.json` and the exports into a `data` folder next to
+  the `.exe`. Later launches open that copy.
+- **Startup:** takes about 10 seconds, while Windows unpacks the app.
+- **Unsigned:** the `.exe` isn't signed, so Windows SmartScreen may warn the first time. Choose
+  **More info > Run anyway**.
+- **Revit macro:** Save installs and builds the macro only where the `GLoveMacros` Revit 2025
+  macro module and the .NET SDK exist. Elsewhere, Messages says to copy the macro by hand.
+
+To build it, use a pip environment rather than `.conda`. Conda's numpy brings Intel MKL, which
+makes the `.exe` about 230 MB. The master database to bundle defaults to
+`data/database.ddm.json`.
+
+```powershell
+.\.conda\python.exe -m venv $env:LOCALAPPDATA\ddm-buildenv
+& $env:LOCALAPPDATA\ddm-buildenv\Scripts\pip install pandas==3.0.6 numpy==2.5.3 openpyxl requests pyinstaller
+& $env:LOCALAPPDATA\ddm-buildenv\Scripts\python build_exe.py [master database] [--console]
+```
+
+`--console` builds a version that shows errors in a console window.
 
 ## Importing the Excel Master Workbook
 

@@ -39,6 +39,15 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
       parameters, and `IPS_GROUP_Schedule_Name` being schedulable in each category.
 - [ ] CSV saves lose column order (fields are sorted on load); JSON keeps it.
 
+## Beta (0.1.0, 2026-11-03)
+- [x] Excel master workbook imported; standalone .exe built (`dist/DesignDataManager.exe`).
+- [ ] Hand the .exe to testers; collect feedback.
+- [ ] Link families to schedules and parameters (the workbook didn't record it); RF Tools
+      export is empty until families have parameters.
+- [ ] Review the import report (`data/import-report.txt`): 14 formula differences, 10 schedule
+      columns with no parameter definition, 6 export-leftover columns, duplicate family rows.
+- [ ] Testers without the GLoveMacros module/.NET SDK: decide how they get the macro.
+
 ## Next steps
 - [ ] Copy the open items from the claude.ai plan doc into this file.
 - [x] Make the model the GUI's source of truth in `ddm_gui.py` (branch `gui-on-catalog`).

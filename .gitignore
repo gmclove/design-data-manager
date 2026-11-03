@@ -9,3 +9,5 @@ __pycache__/
 /data/*
 !/data/test_data/
 !/data/test_data/**
+/build/
+/dist/

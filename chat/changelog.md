@@ -2,6 +2,15 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-03: 0.1.0 Beta standalone .exe
+- `build_exe.py` (PyInstaller, one file, windowed): bundles the master database as
+  `master.ddm.json`, opened on first launch; working data goes to `data/` next to the .exe
+  (`config/app_paths.py`: FROZEN, BUNDLE_DIR, STARTER_DATABASE_PATH, APP_VERSION).
+- Built from a pip venv in `%LOCALAPPDATA%\ddm-buildenv` (conda's MKL numpy made a 231 MB,
+  26 s-startup .exe; pip's gives 37 MB, ~10 s). The build puts the conda `Libraryin` on PATH
+  so Tcl/Tk and libffi DLLs get bundled.
+- Window title shows the version; first launch says where Save will keep the database.
+
 ## 2026-11-03: Excel master workbook import
 - `excel_import.py` + **Import Excel...** button: Parameters sheet, Families sheet (codes from
   the abbreviations) and every schedule sheet after Backstage (columns, stacked headings, header
