@@ -8,8 +8,9 @@ Newest first. One entry per piece of work; link commits where useful.
 - Each database schedule makes `3D - {name}` (multi-category), `{name} - Working` and `{name}`
   (Detail Items), filtered on `IPS_GROUP_Schedule_Name`; re-running updates them. Header groups
   are applied; missing parameters are reported instead of failing the schedule.
-- Hidden columns: `Schedule.hidden_field_names`, a "Hidden Column" checkbox in the schedule
-  column settings, "(Hidden)" in the table header; saved in JSON and the CSV `hidden` column.
+- Hidden columns: `Schedule.hidden_field_names`, a "Hidden Column" row of checkboxes under the
+  column headers in the schedule window (one click toggles), also in the column settings
+  dialog; saved in JSON and the CSV `hidden` column.
 - Save installs `CreateSchedulesFromDatabase.cs` in the GLoveMacros module and removes older
   generated copies. Tests redirect the module folder (`tests/conftest.py`).
 

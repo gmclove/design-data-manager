@@ -72,8 +72,9 @@ Each schedule in the database becomes three Revit schedules:
 - **Filter:** each schedule lists only the elements whose `IPS_GROUP_Schedule_Name` is the
   database schedule's name. The filter column itself is hidden.
 - **Columns:** every column takes its header text, width and header groups from the database. To
-  hide a column, open the schedule window, double-click the column header and tick **Hidden
-  Column**. The schedule table then marks that column "(Hidden)".
+  hide a column, tick its box in the **Hidden Column** row under the column headers in the
+  schedule window. The same checkbox is also in the column settings that open when you
+  double-click a header.
 - **Running it again** updates the schedules it made before: their columns, filter and header
   groups are rebuilt to match the database, and the views keep their place on sheets.
 - **When it finishes,** a dialog lists what was created and updated, plus any problems. Problems

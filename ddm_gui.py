@@ -148,6 +148,8 @@ class OverrideTable(tk.Canvas):
     Columns are parameters. Two label columns on the left name each section
     (Schedule, Parameter, a family) and each row. With ``show_header`` the top
     rows are the schedule's header groups (Group Level N ... 1) and column headers.
+    With ``hidden_names`` (a set) a Hidden Column row of checkboxes follows the
+    column headers; clicking one calls ``on_hidden_toggle(parameter_name)``.
 
     Body rows are dicts: ``{"section": str, "label": str, "cells": [cell, ...]}``,
     plus any keys the caller needs back. A cell is ``{"text": str, "state": ...,
@@ -165,7 +167,7 @@ class OverrideTable(tk.Canvas):
 
     def __init__(self, master, parameter_names, header_texts=None, groups=None, rows=None,
                  show_header=True, on_header_double_click=None, on_cell_double_click=None,
-                 grid_column_widths=None, on_cell_action=None):
+                 grid_column_widths=None, on_cell_action=None, hidden_names=None, on_hidden_toggle=None):
         super().__init__(master, background="#ffffff", highlightthickness=0)
         self.parameter_names = list(parameter_names)
         self.header_texts = dict(header_texts or {})
@@ -178,6 +180,8 @@ class OverrideTable(tk.Canvas):
         self.on_header_double_click = on_header_double_click
         self.on_cell_double_click = on_cell_double_click
         self.on_cell_action = on_cell_action
+        self.hidden_names = None if hidden_names is None else set(hidden_names)
+        self.on_hidden_toggle = on_hidden_toggle
         self.column_width = 170
         self.column_widths = []
         self.column_offsets = []
@@ -200,8 +204,16 @@ class OverrideTable(tk.Canvas):
         return self.section_width + self.label_width
 
     @property
-    def body_top(self):
+    def hidden_row_top(self):
         return self.header_top + self.header_height
+
+    @property
+    def hidden_row_height(self):
+        return self.row_height if self.show_header and self.hidden_names is not None else 0
+
+    @property
+    def body_top(self):
+        return self.hidden_row_top + self.hidden_row_height
 
     def set_grid_column_widths(self, widths_in_inches):
         self.column_widths = [
@@ -258,6 +270,10 @@ class OverrideTable(tk.Canvas):
         self.rows = list(rows)
         self._draw_grid()
 
+    def set_hidden_names(self, hidden_names):
+        self.hidden_names = set(hidden_names)
+        self._draw_grid()
+
     def get_selected_parameter_names(self):
         return [
             self.parameter_names[index]
@@ -276,7 +292,15 @@ class OverrideTable(tk.Canvas):
         canvas_y = self.canvasy(event.y)
         if not self.show_header or not self.parameter_names:
             return None
-        if not self.header_top <= canvas_y < self.body_top:
+        if not self.header_top <= canvas_y < self.hidden_row_top:
+            return None
+        return self._column_at(self.canvasx(event.x))
+
+    def _hidden_toggle_at(self, event):
+        """The column whose Hidden Column checkbox is under the event, or ``None``."""
+        if not self.hidden_row_height:
+            return None
+        if not self.hidden_row_top <= self.canvasy(event.y) < self.body_top:
             return None
         return self._column_at(self.canvasx(event.x))
 
@@ -358,6 +382,11 @@ class OverrideTable(tk.Canvas):
         if action is not None:
             if self.on_cell_action is not None:
                 self.on_cell_action(*action)
+            return
+        toggle = self._hidden_toggle_at(event)
+        if toggle is not None:
+            if self.on_hidden_toggle is not None:
+                self.on_hidden_toggle(self.parameter_names[toggle])
             return
         index = self._parameter_index_at(event)
         if index is None:
@@ -469,6 +498,29 @@ class OverrideTable(tk.Canvas):
                 justify="center", font=self.header_font,
             )
 
+        if self.hidden_row_height:
+            self._draw_hidden_row()
+
+    def _draw_hidden_row(self):
+        top = self.hidden_row_top
+        height = self.hidden_row_height
+        self._label_cell(self.section_width, top, self.label_width, height, "Hidden Column")
+        size = 14
+        for index, name in enumerate(self.parameter_names):
+            left = self.column_offsets[index]
+            hidden = name in self.hidden_names
+            self.create_rectangle(left, top, left + self.column_widths[index], top + height,
+                                  fill="#f1f5f3" if hidden else "#ffffff", outline="#c8d2ce")
+            box_left = left + (self.column_widths[index] - size) / 2
+            box_top = top + (height - size) / 2
+            self.create_rectangle(box_left, box_top, box_left + size, box_top + size,
+                                  fill="#ffffff", outline="#374151")
+            if hidden:
+                self.create_line(
+                    box_left + 3, box_top + size / 2, box_left + size / 2 - 1, box_top + size - 4,
+                    box_left + size - 3, box_top + 3, fill="#111827", width=2,
+                )
+
     def _draw_body(self, right):
         section_start = 0
         for row_index, row in enumerate(self.rows + [None]):
@@ -552,7 +604,8 @@ class OverrideTable(tk.Canvas):
         return cell
 
     def _on_motion(self, event):
-        self.configure(cursor="hand2" if self._action_at(event) else "")
+        clickable = self._action_at(event) is not None or self._hidden_toggle_at(event) is not None
+        self.configure(cursor="hand2" if clickable else "")
 
     def _fit_text(self, text: str, max_width: int) -> str:
         """``text`` on one line, cut short with an ellipsis if it is wider than ``max_width``."""
@@ -1715,6 +1768,11 @@ class DDMGUI:
             schedule.set_field_hidden(parameter_name, hidden)
         self.validate_all()
 
+    def _set_schedule_column_hidden(self, schedule_name: str, parameter_name: str, hidden: bool):
+        """Hide a column in the finished Revit schedule; the working schedule still shows it."""
+        self._get_schedule(schedule_name).set_field_hidden(parameter_name, hidden)
+        self.validate_all()
+
     def _add_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
         group = self._get_schedule(schedule_name).add_header_group(caption, parameter_names)
         self.validate_all()
@@ -2018,6 +2076,7 @@ class DDMGUI:
                     messagebox.showwarning("Invalid width", str(exc), parent=editor)
                     return
                 table.set_header_texts(header_texts())
+                table.set_hidden_names(schedule.hidden_field_names)
                 table.set_grid_column_widths([
                     self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
                 ])
@@ -2031,12 +2090,13 @@ class DDMGUI:
             width_entry.bind("<Return>", lambda _event: save_header_override())
 
         def header_texts():
-            # Hidden columns are marked, since only the working schedule in Revit shows them.
-            return {
-                name: self._get_schedule_header_text(schedule, name)
-                + (" (Hidden)" if name in schedule.hidden_field_names else "")
-                for name in parameter_names
-            }
+            return {name: self._get_schedule_header_text(schedule, name) for name in parameter_names}
+
+        def toggle_hidden(parameter_name):
+            self._set_schedule_column_hidden(
+                selected_name, parameter_name, parameter_name not in schedule.hidden_field_names
+            )
+            table.set_hidden_names(schedule.hidden_field_names)
 
         rows_builder = lambda: self._schedule_table_rows(schedule)  # noqa: E731 - rebuilt after each edit
         table = self._build_override_table(
@@ -2046,6 +2106,8 @@ class DDMGUI:
             header_texts=header_texts(),
             groups=schedule.header_groups,
             on_header_double_click=edit_schedule_header,
+            hidden_names=schedule.hidden_field_names,
+            on_hidden_toggle=toggle_hidden,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
                 table, rows_builder, selected_name, row_index, column_index
             ),

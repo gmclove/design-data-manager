@@ -1384,7 +1384,19 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         assert schedule.grid_column_width_overrides == {"Width": 2.25}
         assert table.column_widths[1] == 2.25 * table.pixels_per_inch
         assert schedule.hidden_field_names == {"Width"}
-        assert table.header_texts["Width"].endswith(" (Hidden)")
+        assert table.hidden_names == {"Width"}
+
+        # The Hidden Column row under the headers toggles a column with one click.
+        hidden_row_y = table.hidden_row_top + table.hidden_row_height // 2
+        assert table.body_top == table.hidden_row_top + table.row_height
+        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 10, y=hidden_row_y, state=0))
+        assert schedule.hidden_field_names == {"Length", "Width"}
+        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[1] + 10, y=hidden_row_y, state=0))
+        assert schedule.hidden_field_names == {"Length"}
+        assert table.hidden_names == {"Length"}
+        assert table.get_selected_parameter_names() == []  # a checkbox click doesn't select the header
+        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 10, y=hidden_row_y, state=0))
+        assert schedule.hidden_field_names == set()
 
         table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 10, y=header_y, state=0))
         table._on_mouse_drag(SimpleNamespace(x=table.column_offsets[1] + 10, y=header_y))
