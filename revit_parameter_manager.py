@@ -376,7 +376,8 @@ class Fam(object):
 			return self
 
 		if not self.custom_params:
-			self.status = 'Error'
+			# A warning, not an error: imported families start without parameters.
+			self.status = 'Warning'
 			self.validation_message = 'Family has no associated parameters.'
 			return self
 
@@ -618,6 +619,7 @@ class Schedule(object):
 			catalog._register_schedule(self)
 		for fam in fams or []:
 			self.add_family(fam)
+		self.refresh_params()
 		for group in header_groups or []:
 			self.add_header_group(
 				group.get('caption'),
@@ -751,10 +753,11 @@ class Schedule(object):
 				issues.append(f"Family '{fam.name}': {fam.validation_message}")
 
 		if self.field_names is not None:
-			available = {param.name for fam in self.fams for param in fam.params}
+			available = set(self._available_params())
 			missing = [name for name in self.field_names if name not in available]
 			if missing:
-				issues.append('Field(s) not on any family in the schedule: {}'.format(', '.join(missing)))
+				issues.append('Field(s) not on any family in the schedule or in the catalog: {}'.format(
+					', '.join(missing)))
 			duplicates = sorted({name for name in self.field_names if self.field_names.count(name) > 1})
 			if duplicates:
 				issues.append('Duplicate field(s): {}'.format(', '.join(duplicates)))
@@ -775,11 +778,23 @@ class Schedule(object):
 			self.validation_message = '; '.join(issues)
 		return self
 
-	def refresh_params(self):
+	def _available_params(self):
+		"""Parameters this schedule can show, by name: its families' parameters, then the
+		catalog's. A schedule with chosen columns can stand alone, without families."""
 		params_by_name = {}
 		for fam in self.fams:
 			for param in fam.resolved_params():
 				params_by_name.setdefault(param.name, param)
+		if self.field_names is not None and self.catalog is not None:
+			for name in self.field_names:
+				if name not in params_by_name:
+					param = self.catalog.get_param(name)
+					if param is not None:
+						params_by_name[name] = param
+		return params_by_name
+
+	def refresh_params(self):
+		params_by_name = self._available_params()
 		order = list(params_by_name) if self.field_names is None else [
 			name for name in self.field_names if name in params_by_name
 		]
@@ -903,7 +918,7 @@ class Schedule(object):
 				continue
 			matching_families.append(fam)
 
-		if not matching_families:
+		if not matching_families and param_name not in {param.name for param in self.params}:
 			raise ValueError('Parameter not found: {}'.format(param_name))
 
 		if 'header_text' in overrides:

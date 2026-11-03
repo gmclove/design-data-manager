@@ -117,3 +117,11 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   schedule override of that parameter is ignored inside the schedule.
 - **Itemize Every Instance defaults to on** (user). **View template** is a name typed in the
   GUI (the database can't see the Revit project); applied to all three Revit schedules last.
+
+## Excel import (user, 2026-11-03)
+- **Schedules stand alone**: the workbook doesn't link families to schedules or parameters, so
+  schedule columns come straight from catalog parameters and families import unlinked.
+- **Schedule filters import blank** (default to the schedule name), even where the sheet has one.
+- **"Hidden Parameters" captions mark Hidden Columns**, not header groups.
+- **Only sheets after Backstage are schedules** (the AHU sheets before it aren't imported).
+- Formulas: Static over Dynamic when both exist (my default; differences are reported).

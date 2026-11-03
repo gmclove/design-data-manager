@@ -2,6 +2,18 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-03: Excel master workbook import
+- `excel_import.py` + **Import Excel...** button: Parameters sheet, Families sheet (codes from
+  the abbreviations) and every schedule sheet after Backstage (columns, stacked headings, header
+  groups from caption spans, "Hidden ..." columns, itemize, view template; filters blank).
+- Schedules can stand alone: with chosen columns, a schedule's parameters can come from the
+  catalog without families. CSV gains `schedule_column` records that keep column order (CSV
+  loads no longer sort columns).
+- A family with no parameters is a Warning, not an Error.
+- Imported the real workbook (1242 parameters, 232 families, 130 schedules / 5757 columns,
+  2279 hidden, 710 header groups, 40 report lines) into `data/database.ddm.json`; the demo-based
+  database was kept as `data/database.before-import.*`. The macro for all 130 schedules builds.
+
 ## 2026-11-03: Save builds the macro module
 - After installing the macro, Save runs `dotnet build` in the GLoveMacros module
   (`build_macro_module`) and lists the build's errors, warnings and a summary in Messages, so

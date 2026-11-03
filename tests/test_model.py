@@ -594,6 +594,32 @@ def test_hidden_columns_follow_renames_removals_and_round_trip(scheduled):
 	assert schedule.hidden_field_names == set()
 
 
+# --- schedules without families --------------------------------------------
+
+def test_a_schedule_can_stand_alone_with_catalog_parameters(scheduled):
+	schedule = scheduled.add_schedule('Loose', field_names=['Depth', 'Width'])
+
+	assert [param.name for param in schedule.params] == ['Depth', 'Width']
+	assert schedule.status == 'Ready'
+	schedule.override_param('Depth', header_text='DEPTH (IN)', grid_column_width=2)
+	assert schedule.params[0].header_text == 'DEPTH (IN)'
+	schedule.set_field_hidden('Width', True)
+	schedule.add_header_group('Size', ['Depth', 'Width'])
+
+	restored = Catalog.from_dict(json.loads(json.dumps(scheduled.to_dict()))).get_schedule('Loose')
+	assert [param.name for param in restored.params] == ['Depth', 'Width']
+	assert restored.hidden_field_names == {'Width'}
+
+	schedule.set_field_names(['Depth', 'Ghost'])
+	assert schedule.status == 'Error'
+	assert 'Ghost' in schedule.validation_message
+
+	# Adding a family later links it as usual.
+	schedule.set_field_names(['Depth', 'Width'])
+	schedule.add_family(scheduled.get_family('F1'))
+	assert schedule.family_param_names(scheduled.get_family('F1')) == ['Depth', 'Width']
+
+
 # --- schedule settings -----------------------------------------------------
 
 def test_schedule_filter_value_overrides_every_family_and_defaults_to_the_name(scheduled):

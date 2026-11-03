@@ -42,6 +42,7 @@ from ddm_tables import (
     text as cell_text,
     write_database_csv,
 )
+from excel_import import import_workbook
 from revit_parameter_manager import (
     CODE_KINDS, COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, guid_change_warning,
 )
@@ -824,8 +825,11 @@ class DDMGUI:
             row=0, column=2, padx=(0, 8)
         )
         ttk.Button(self.file_actions, text="Save As...", command=self.save_checkpoint_as, style="Action.TButton").grid(
-            row=0, column=3
+            row=0, column=3, padx=(0, 8)
         )
+        ttk.Button(
+            self.file_actions, text="Import Excel...", command=self.import_excel_workbook, style="Action.TButton",
+        ).grid(row=0, column=4)
 
     def _show_messages(self, lines: Sequence[str]):
         if self.warning_text is None:
@@ -2117,10 +2121,11 @@ class DDMGUI:
             current_override = schedule.header_text_overrides.get(parameter_name, "")
             width_override = schedule.grid_column_width_overrides.get(parameter_name)
             current_width_override = "" if width_override is None else f"{width_override:g}"
+            # The column's default: its family's version, or the catalog's when no family has it.
             default_param = next(
-                param for fam in schedule.fams for param in fam.resolved_params()
-                if param.name == parameter_name
-            )
+                (param for fam in schedule.fams for param in fam.resolved_params() if param.name == parameter_name),
+                None,
+            ) or self.catalog.get_param(parameter_name)
             default_header = default_param.header_text
             default_width = default_param.grid_column_width
 
@@ -2329,6 +2334,56 @@ class DDMGUI:
             lines.extend(f"  {issue}" for issue in issues)
         if self.warning_text is not None:
             self.warning_text.insert("1.0", "\n".join(lines) + "\n\n")
+
+    def import_excel_workbook(self, workbook_path=None, confirm=True):
+        """Replace the open database with the Excel master workbook's contents.
+
+        Nothing is saved: the import is open like a loaded database, and Save keeps it.
+        """
+        root = getattr(self, "root", None)
+        if workbook_path is None:
+            workbook_path = filedialog.askopenfilename(
+                title="Import Excel Master Workbook",
+                filetypes=[("Excel workbooks", "*.xlsm *.xlsx"), ("All files", "*.*")],
+            )
+        if not workbook_path:
+            return
+        if confirm and not messagebox.askyesno(
+            "Replace the Open Database?",
+            "Importing replaces the open database with the workbook's parameters, families and "
+            "schedules. Nothing is saved until you click Save.\n\nImport the Workbook?",
+            parent=root,
+        ):
+            return
+
+        if root is not None:
+            root.configure(cursor="watch")
+            root.update_idletasks()
+        try:
+            result = import_workbook(workbook_path)
+        except ImportError:
+            messagebox.showerror(
+                "Import Failed", "Reading Excel workbooks needs the openpyxl package.", parent=root,
+            )
+            return
+        except (OSError, ValueError, KeyError) as exc:
+            messagebox.showerror("Import Failed", f"The workbook couldn't be imported:\n{exc}", parent=root)
+            return
+        finally:
+            if root is not None:
+                root.configure(cursor="")
+
+        self.catalog = result.catalog
+        self.load_issues = result.issues
+        self.validate_all()
+        lines = list(result.summary)
+        if result.issues:
+            lines.append(f"{len(result.issues)} thing(s) in the workbook were fixed or skipped:")
+            lines.extend(f"  {issue}" for issue in result.issues)
+        lines.append("Click Save to keep the imported database.")
+        if self.warning_text is not None:
+            self.warning_text.insert("1.0", "\n".join(lines) + "\n\n")
+        return result
 
     @staticmethod
     def _read_database(path):

@@ -6,6 +6,7 @@ Catalog, validate and sync Revit parameters, families and schedules.
 - `formula.py`: formula tokenizer, syntax checks and reference scanning
 - `ddm_gui.py`: Tkinter review/edit GUI, a view on the model
 - `ddm_tables.py`: converts between the model and flat tables (CSV, older saves, exports)
+- `excel_import.py`: imports the old Excel master workbook
 - `revit_shared_parameter_export.py`: Revit shared-parameter file export
 - `revit_parameter_scheduler_export.py`: RF Tools Parameter Scheduler (`.rfps`) export
 - `revit_schedule_macro_generator.py`: Revit schedule macro (`.cs`) generator
@@ -46,6 +47,36 @@ pytest                            # run the tests
 The GUI saves to `data/database.ddm.json` by default, with a readable CSV and the Revit export files
 alongside. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
+
+## Importing the Excel Master Workbook
+
+**Import Excel...** reads the old master workbook (`REVIT Schedules_Masters_Macro.xlsm`) into a
+new database:
+
+- **Parameters** come from the Parameters sheet: name, GUID, data type, instance or type, Group
+  Parameter Under, default value and formula. Where the Static and Dynamic formulas differ, the
+  Static one is used and the difference is listed.
+- **Families** come from the Families sheet, with category, client and country, and the client
+  and country abbreviations as codes.
+- **Schedules** come from every sheet after **Backstage**. Rows are found by their labels in
+  column B, so their positions can vary.
+  - **Columns** are the Parameter Name row.
+  - **Headings** are the text rows directly above it; stacked lines are joined.
+  - **Header groups** are captions spanning several columns above the headings.
+  - **Hidden columns** are those under a "Hidden ..." caption.
+  - **Settings** are Itemize Every Instance and View Template.
+
+  Schedule filters are left blank, so each defaults to its schedule's name. A column flagged
+  REMOVE is left out. A parameter used on a schedule but missing from the Parameters sheet is
+  defined from the schedule's own rows.
+
+The workbook doesn't record which families belong to which schedule, or which parameters each
+family has. Schedules are therefore imported on their own, with their columns taken straight
+from the parameters, and families are imported unlinked. A family without parameters shows a
+warning.
+
+The import replaces the open database but saves nothing until you click **Save**. Anything that
+was fixed or skipped is listed in Messages.
 
 ## Revit Schedule Macro
 

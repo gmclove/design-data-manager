@@ -643,7 +643,7 @@ def test_family_validation_detects_missing_link():
     gui.validate_all()
 
     family_a = gui.families_df[gui.families_df["name"] == "Family_A"].iloc[0]
-    assert str(family_a["status"]).lower() == "error"
+    assert str(family_a["status"]).lower() == "warning"  # flagged, but not an error: imported families start unlinked
 
 
 def test_sync_is_blocked_when_validation_errors_exist(monkeypatch):
@@ -779,7 +779,7 @@ def test_gui_rename_updates_every_reference_to_the_parameter(monkeypatch):
     entry = gui.family_groups_df.set_index("parameter_name").loc["Rough Width"]
     assert entry["header_text_override"] == "W"
     assert entry["override_entry"] == "3"
-    assert gui.schedule_header_groups["Schedule A"][0]["parameter_names"] == ["Height", "Rough Width"]
+    assert gui.schedule_header_groups["Schedule A"][0]["parameter_names"] == ["Rough Width", "Height"]  # schedule column order
 
     gui._apply_cell_value("params", 1, "name", "Tall")
     assert gui.params_df.set_index("name").at["Tall", "header_text"] == "Clear Height"
@@ -1362,7 +1362,7 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         assert [
             widget.cget("text")
             for widget in sorted(gui.file_actions.winfo_children(), key=lambda item: item.grid_info()["column"])
-        ] == ["Load", "Save", "Save As..."]
+        ] == ["Load", "Save", "Save As...", "Import Excel..."]
         assert "demo_data.ddm.csv" in gui.warning_text.get("1.0", tk.END)
         assert "Safety and Clearance" in gui._build_schedule_summary_df()["name"].tolist()
 

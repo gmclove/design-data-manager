@@ -48,6 +48,7 @@ _CSV_RECORD_TYPES = {
     "parameter": "params",
     "family": "families",
     "link": "links",
+    "schedule_column": "columns",
     "schedule_entry": "entries",
 }
 _TRUE_TEXT = {"true", "1", "yes", "y"}
@@ -93,7 +94,8 @@ def _rows(frame):
 
 # --- tables -> catalog --------------------------------------------------------
 
-def catalog_from_tables(params=None, families=None, links=None, entries=None, header_groups=None):
+def catalog_from_tables(params=None, families=None, links=None, entries=None, header_groups=None,
+                        columns=None):
     """Build a ``Catalog`` from table rows. Returns ``(catalog, issues)``.
 
     ``params``, ``families``, ``links`` and ``entries`` are DataFrames (or
@@ -103,7 +105,8 @@ def catalog_from_tables(params=None, families=None, links=None, entries=None, he
     issues = []
     _load_params(catalog, _rows(params), issues)
     _load_families(catalog, _rows(families), _rows(links), issues)
-    _load_schedules(catalog, _rows(entries), header_groups or {}, issues)
+    # Column rows first: they set each schedule's column order.
+    _load_schedules(catalog, _rows(columns) + _rows(entries), header_groups or {}, issues)
     return catalog, issues
 
 
@@ -221,7 +224,8 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
         if not schedule_name:
             continue
         entry = schedules.setdefault(schedule_name, {
-            "families": [], "fields": set(), "headers": {}, "widths": {}, "values": [], "hidden": set(),
+            # Fields keep the order they first appear in: the schedule's column order.
+            "families": [], "fields": {}, "headers": {}, "widths": {}, "values": [], "hidden": set(),
             "filter": "", "itemize": True, "view_template": "",
         })
         # Schedule-wide settings repeat on every row of the schedule; the first one given wins.
@@ -234,18 +238,20 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
                 entry["itemize"] = entry["itemize"] and parse_bool(row.get("itemize"))
             except ValueError:
                 issues.append(f"Schedule '{schedule_name}': Itemize must be true or false; itemized.")
-        fam = catalog.get_family(family_name)
-        if fam is None:
-            issues.append(f"Schedule '{schedule_name}' uses unknown family '{family_name}'; skipped.")
-            continue
-        if family_name not in entry["families"]:
-            entry["families"].append(family_name)
+        # A row without a family is a schedule column on its own (a schedule can stand alone).
+        if family_name:
+            fam = catalog.get_family(family_name)
+            if fam is None:
+                issues.append(f"Schedule '{schedule_name}' uses unknown family '{family_name}'; skipped.")
+                continue
+            if family_name not in entry["families"]:
+                entry["families"].append(family_name)
         if not param_name:
             continue
         if catalog.get_param(param_name) is None and param_name not in COMMON_PARAM_NAMES:
             issues.append(f"Schedule '{schedule_name}' uses unknown parameter '{param_name}'; skipped.")
             continue
-        entry["fields"].add(param_name)
+        entry["fields"][param_name] = None
 
         header_text = text(row.get("header_text_override"))
         if header_text:
@@ -269,7 +275,7 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
         schedule = catalog.add_schedule(
             schedule_name,
             entry["families"],
-            field_names=sorted(entry["fields"]),
+            field_names=list(entry["fields"]),
             header_text_overrides=entry["headers"],
             grid_column_width_overrides=entry["widths"],
             hidden_field_names=entry["hidden"],
@@ -364,30 +370,50 @@ def links_table(catalog):
     )
 
 
-def entries_table(catalog):
+def _schedule_rows(catalog, columns):
+    """With ``columns``, one row per schedule column in column order (no family);
+    otherwise one row per family and column (the schedule's families)."""
     rows = []
+
+    def entry(schedule, family_name, param_name, value=None):
+        width = schedule.grid_column_width_overrides.get(param_name)
+        return {
+            "family_name": family_name,
+            "group_name": schedule.name,
+            "parameter_name": param_name,
+            "header_text_override": schedule.header_text_overrides.get(param_name, ""),
+            "grid_column_width_override": "" if width is None else width,
+            "hidden": param_name in schedule.hidden_field_names,
+            "schedule_filter": _blank(schedule.filter_value),
+            "itemize": schedule.itemize,
+            "view_template": _blank(schedule.view_template),
+            "override_entry": _blank(value),
+            "status": schedule.status,
+            "validation_message": schedule.validation_message,
+        }
+
     for schedule in catalog.schedules:
+        if columns:
+            if schedule.field_names is not None:
+                rows.extend(entry(schedule, "", param.name) for param in schedule.params)
+            continue
         for fam in schedule.fams:
             family_overrides = schedule.family_overrides.get(fam.name, {})
             for param_name in schedule.family_param_names(fam):
                 if schedule.field_names is None and param_name in COMMON_PARAM_NAMES:
                     continue
-                width = schedule.grid_column_width_overrides.get(param_name)
-                rows.append({
-                    "family_name": fam.name,
-                    "group_name": schedule.name,
-                    "parameter_name": param_name,
-                    "header_text_override": schedule.header_text_overrides.get(param_name, ""),
-                    "grid_column_width_override": "" if width is None else width,
-                    "hidden": param_name in schedule.hidden_field_names,
-                    "schedule_filter": _blank(schedule.filter_value),
-                    "itemize": schedule.itemize,
-                    "view_template": _blank(schedule.view_template),
-                    "override_entry": _blank(family_overrides.get(param_name, {}).get("value")),
-                    "status": schedule.status,
-                    "validation_message": schedule.validation_message,
-                })
+                rows.append(entry(schedule, fam.name, param_name, family_overrides.get(param_name, {}).get("value")))
     return pd.DataFrame(rows, columns=ENTRY_COLUMNS)
+
+
+def entries_table(catalog):
+    """One row per schedule, family and column."""
+    return _schedule_rows(catalog, columns=False)
+
+
+def schedule_columns_table(catalog):
+    """One row per schedule column, in column order: what a schedule shows even without families."""
+    return _schedule_rows(catalog, columns=True)
 
 
 def header_groups_by_schedule(catalog):
@@ -407,6 +433,7 @@ def write_database_csv(catalog, csv_path):
         ("parameter", params_table(catalog)),
         ("family", families_table(catalog)),
         ("link", links_table(catalog)),
+        ("schedule_column", schedule_columns_table(catalog)),
         ("schedule_entry", entries_table(catalog)),
     ):
         for row in table.to_dict(orient="records"):

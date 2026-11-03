@@ -7,10 +7,12 @@ dependencies = [
     "pandas",
     "numpy",
     "requests",
+    "openpyxl",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+build = ["pyinstaller"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
