@@ -868,12 +868,31 @@ class DDMGUI:
             root.configure(cursor="watch")
             root.update_idletasks()
         try:
-            _succeeded, build_messages = build_macro_module(REVIT_MACRO_MODULE_DIR)
+            succeeded, build_messages = build_macro_module(REVIT_MACRO_MODULE_DIR)
         finally:
             if root is not None:
                 root.configure(cursor="")
         for line in build_messages:
             self._append_message(line)
+        if not succeeded:
+            self._show_macro_build_failure(build_messages)
+
+    # Most build errors a pop-up lists; the rest are only in Messages.
+    _max_popup_build_errors = 10
+
+    def _show_macro_build_failure(self, build_messages: Sequence[str]):
+        """Pop up the build errors, so a failed build isn't missed among the save messages."""
+        details = list(build_messages[:-1])
+        shown = details[:self._max_popup_build_errors]
+        if len(details) > len(shown):
+            shown.append(f"... and {len(details) - len(shown)} more (see Messages).")
+        messagebox.showerror(
+            "Macro Build Failed",
+            "The database was saved, but the GLoveMacros module didn't build, so Revit's Macro "
+            "Manager still has the previous build of CreateSchedulesFromDatabase.\n\n"
+            + "\n".join(shown or build_messages),
+            parent=getattr(self, "root", None),
+        )
 
     def _generate_rfps_file(self):
         try:

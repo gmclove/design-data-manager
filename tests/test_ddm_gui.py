@@ -1944,6 +1944,8 @@ def test_save_installs_the_schedule_macro_in_the_revit_module(tmp_path, monkeypa
         return False, ["CreateSchedulesFromDatabase.cs(12,5): error CS1002: ; expected", "The macro module failed to build"]
 
     monkeypatch.setattr(gui_module, "build_macro_module", fake_build)
+    popups = []
+    monkeypatch.setattr(gui_module.messagebox, "showerror", lambda title, message, **_kw: popups.append((title, message)))
     messages = []
     gui = make_test_gui()
     monkeypatch.setattr(gui, "_append_message", messages.append)
@@ -1960,6 +1962,27 @@ def test_save_installs_the_schedule_macro_in_the_revit_module(tmp_path, monkeypa
     assert built == [module_dir]
     assert "CreateSchedulesFromDatabase.cs(12,5): error CS1002: ; expected" in messages
     assert "The macro module failed to build" in messages
+    # A failed build also pops up its errors.
+    assert len(popups) == 1
+    title, message = popups[0]
+    assert title == "Macro Build Failed"
+    assert "CreateSchedulesFromDatabase.cs(12,5): error CS1002: ; expected" in message
+
+
+def test_build_failure_popup_lists_at_most_ten_errors(monkeypatch):
+    popups = []
+    monkeypatch.setattr(gui_module.messagebox, "showerror", lambda title, message, **_kw: popups.append(message))
+    gui = make_test_gui()
+    errors = [f"A.cs({n},1): error CS0001: bad" for n in range(1, 14)]
+
+    gui._show_macro_build_failure(errors + ["The macro module failed to build (see above)."])
+
+    assert "A.cs(10,1)" in popups[0] and "A.cs(11,1)" not in popups[0]
+    assert popups[0].endswith("... and 3 more (see Messages).")
+
+    # Nothing to list (dotnet missing): the reason itself is shown.
+    gui._show_macro_build_failure(["The .NET SDK (dotnet) isn't installed, so the macro module wasn't built."])
+    assert popups[1].endswith("The .NET SDK (dotnet) isn't installed, so the macro module wasn't built.")
 
 
 def test_save_without_the_revit_module_says_to_copy_the_macro(tmp_path, monkeypatch):

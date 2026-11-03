@@ -5,7 +5,8 @@ Newest first. One entry per piece of work; link commits where useful.
 ## 2026-11-03: Save builds the macro module
 - After installing the macro, Save runs `dotnet build` in the GLoveMacros module
   (`build_macro_module`) and lists the build's errors, warnings and a summary in Messages, so
-  Macro Manager shows the new macro without opening VS Code.
+  Macro Manager shows the new macro without opening VS Code. A failed build also pops up a
+  "Macro Build Failed" error listing up to 10 of its errors.
 
 ## 2026-11-03: Schedule settings: filter, itemize, view template
 - `Schedule.filter_value` (blank means the schedule's name) overrides `IPS_GROUP_Schedule_Name`
