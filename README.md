@@ -68,9 +68,9 @@ makes the `.exe` about 230 MB. The master database to bundle defaults to
 `data/database.ddm.json`.
 
 ```powershell
-.\.conda\python.exe -m venv $env:LOCALAPPDATA\ddm-buildenv
-& $env:LOCALAPPDATA\ddm-buildenv\Scripts\pip install pandas==3.0.6 numpy==2.5.3 openpyxl requests pyinstaller
-& $env:LOCALAPPDATA\ddm-buildenv\Scripts\python build_exe.py [master database] [--console]
+.\.conda\python.exe -m venv $env:LOCALAPPDATA\ddm-build\venv
+& $env:LOCALAPPDATA\ddm-build\venv\Scripts\pip install pandas==3.0.6 numpy==2.5.3 openpyxl requests pyinstaller
+& $env:LOCALAPPDATA\ddm-build\venv\Scripts\python build_exe.py [master database] [--console]
 ```
 
 `--console` builds a version that shows errors in a console window.
