@@ -22,12 +22,6 @@ DEFAULT_CHECKPOINT_PATH = DATA_DIR / "database.ddm.json"
 # master database bundled into the .exe when packaged.
 STARTER_DATABASE_PATH = BUNDLE_DIR / "master.ddm.json" if FROZEN else DEMO_DATA_PATH
 
-# Saving also writes the schedule macro into this Revit 2025 application macro module, when
-# it exists on this machine. Build the module in Revit's Macro Manager to pick it up.
-REVIT_MACRO_MODULE_DIR = Path(
-    r"C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\GLoveMacros\Source\GLoveMacros"
-)
-
 
 def get_database_output_paths(database_path):
     """Return sibling output paths sharing a database filename stem."""

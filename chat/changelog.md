@@ -2,6 +2,17 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-03: Revit macro install and build work on any machine
+- `revit_macro_module.py`: finds every Revit 2025+ application macro module under
+  `%ProgramData%\Autodesk\Revit\Macros`, reads its namespace, remembers each user's choice in
+  `%APPDATA%\DesignDataManager\settings.json`, and builds it. CS1705 (module's .NET older than
+  Revit's API) retargets the .csproj (keeping `.csproj.bak`) and rebuilds; a missing SDK is
+  explained with the download link.
+- The macro is generated in the chosen module's namespace (no more hard-coded GLoveMacros). One
+  module: used automatically. Several: Save asks once; **Revit Macro Settings** changes it. None:
+  Messages says how to create one.
+- Tested the retarget against a real .NET 8 copy of GLoveMacros (CS1705 -> net10 -> builds).
+
 ## 2026-11-03: Workbook mistakes corrected on import
 - 35 corrections in `excel_import.py` (see `chat/workbook-fixes.md`): 16 stray
   `IPS_SPACE_AirReq_Recirc` columns, 10 columns naming nonexistent parameters, 3 new parameters,

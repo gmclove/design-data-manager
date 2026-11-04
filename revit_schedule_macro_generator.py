@@ -1,7 +1,8 @@
 """Generate the Revit schedule macro (C#) from the parameter catalog.
 
-The macro, ``CreateSchedulesFromDatabase``, goes in the ``GLoveMacros`` application
-module. Each schedule in the database becomes three Revit schedules:
+The macro, ``CreateSchedulesFromDatabase``, goes in a Revit application macro module
+(see ``revit_macro_module``), in that module's namespace. Each schedule in the
+database becomes three Revit schedules:
 
 - ``3D - {name}``: a multi-category schedule of the model elements;
 - ``{name} - Working``: a Detail Items schedule with every column showing;
@@ -17,15 +18,14 @@ data changes from one database to the next.
 """
 
 import json
-import re
-import shutil
-import subprocess
 from pathlib import Path
 
 from revit_parameter_manager import COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM
 
 FILTER_PARAMETER = SCHEDULE_FILTER_PARAM
 MODEL_PREFIX = "3D - "
+# Namespace when no macro module is chosen; copying the file into a module means changing it.
+DEFAULT_NAMESPACE = "RevitMacros"
 WORKING_SUFFIX = " - Working"
 # Characters Revit doesn't allow in view names.
 INVALID_VIEW_NAME_CHARACTERS = set('\\:{}[]|;<>?`~')
@@ -122,8 +122,9 @@ def _spec_source(spec):
     return lines
 
 
-def generate_schedule_macro_source(catalog, source_name="the database") -> str:
-    """The C# source of the ``CreateSchedulesFromDatabase`` macro for ``catalog``."""
+def generate_schedule_macro_source(catalog, source_name="the database", namespace=DEFAULT_NAMESPACE) -> str:
+    """The C# source of the ``CreateSchedulesFromDatabase`` macro for ``catalog``,
+    in ``namespace`` (the macro module's)."""
     specs, notes = schedule_specs(catalog)
     data = []
     for spec in specs:
@@ -132,6 +133,7 @@ def generate_schedule_macro_source(catalog, source_name="the database") -> str:
     return (
         MACRO_TEMPLATE
         .replace("/*SOURCE*/", source_name.replace("\n", " "))
+        .replace("/*NAMESPACE*/", namespace)
         .replace("/*FILTER_PARAMETER*/", _csharp_string(FILTER_PARAMETER))
         .replace("/*MODEL_PREFIX*/", _csharp_string(MODEL_PREFIX))
         .replace("/*WORKING_SUFFIX*/", _csharp_string(WORKING_SUFFIX))
@@ -171,46 +173,8 @@ def install_macro(source, module_dir):
     return target, removed
 
 
-def build_macro_module(module_dir, timeout=300):
-    """Build a Revit macro module with ``dotnet build`` so Macro Manager lists its macros.
-
-    Returns ``(succeeded, messages)``: the compiler's errors and warnings, each as
-    ``file(line,col): message``, then a one-line summary.
-    """
-    module_dir = Path(module_dir)
-    dotnet = shutil.which("dotnet")
-    if dotnet is None:
-        return False, ["The .NET SDK (dotnet) isn't installed, so the macro module wasn't built."]
-    try:
-        result = subprocess.run(
-            [dotnet, "build", "-nologo", "-v", "q"],
-            cwd=module_dir, capture_output=True, text=True, timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except subprocess.TimeoutExpired:
-        return False, [f"The macro module build took over {timeout} seconds and was stopped."]
-    except OSError as exc:
-        return False, [f"The macro module couldn't be built: {exc}"]
-
-    messages = []
-    for line in result.stdout.splitlines():
-        if ": error " not in line and ": warning " not in line:
-            continue
-        line = re.sub(r"\s*\[[^\]]*\.csproj\]\s*$", "", line.strip())
-        # Drop the folder; the file name and line number are enough.
-        line = re.sub(r"^[^(]*[\\/]", "", line)
-        if line not in messages:
-            messages.append(line)
-    if result.returncode == 0:
-        messages.append("Built the GLoveMacros module; its macros are ready in Revit's Macro Manager.")
-    else:
-        messages.append(
-            "The macro module failed to build (see above); Macro Manager still has the previous build."
-        )
-    return result.returncode == 0, messages
-
 MACRO_TEMPLATE = GENERATED_HEADER + """ from /*SOURCE*/. Saving the database rewrites this file;
-// don't edit it by hand. Build the GLoveMacros module in the Macro Manager, then run
+// don't edit it by hand. Build its macro module in the Macro Manager, then run
 // CreateSchedulesFromDatabase.
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -218,7 +182,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace GLoveMacros
+namespace /*NAMESPACE*/
 {
     public partial class ThisApplication
     {

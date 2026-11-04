@@ -45,7 +45,7 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [ ] Link families to schedules and parameters (the workbook didn't record it); RF Tools
       export is empty until families have parameters.
 - [x] Workbook mistakes corrected on import (`chat/workbook-fixes.md`).
-- [ ] Testers without the GLoveMacros module/.NET SDK: decide how they get the macro.
+- [x] Macro install/build works on any machine (user picks their module; .NET retarget).
 
 ## Next steps
 - [ ] Copy the open items from the claude.ai plan doc into this file.

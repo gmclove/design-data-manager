@@ -7,6 +7,7 @@ Catalog, validate and sync Revit parameters, families and schedules.
 - `ddm_gui.py`: Tkinter review/edit GUI, a view on the model
 - `ddm_tables.py`: converts between the model and flat tables (CSV, older saves, exports)
 - `excel_import.py`: imports the old Excel master workbook
+- `revit_macro_module.py`: finds, remembers and builds the user's Revit macro module
 - `build_exe.py`: builds the standalone `.exe` (PyInstaller)
 - `revit_shared_parameter_export.py`: Revit shared-parameter file export
 - `revit_parameter_scheduler_export.py`: RF Tools Parameter Scheduler (`.rfps`) export
@@ -60,8 +61,8 @@ run it.
 - **Startup:** takes about 10 seconds, while Windows unpacks the app.
 - **Unsigned:** the `.exe` isn't signed, so Windows SmartScreen may warn the first time. Choose
   **More info > Run anyway**.
-- **Revit macro:** Save installs and builds the macro only where the `GLoveMacros` Revit 2025
-  macro module and the .NET SDK exist. Elsewhere, Messages says to copy the macro by hand.
+- **Revit macro:** see **Revit Schedule Macro** below. Each user needs a Revit 2025+
+  application macro module and the .NET SDK.
 
 To build it, use a pip environment rather than `.conda`. Conda's numpy brings Intel MKL, which
 makes the `.exe` about 230 MB. The master database to bundle defaults to
@@ -107,25 +108,36 @@ was fixed or skipped is listed in Messages.
 
 ## Revit Schedule Macro
 
-Saving the database also writes a Revit macro, `CreateSchedulesFromDatabase`. It goes next to
-the save as `<database>.cs` and, when the Revit 2025 macro module exists on this machine, into
-`C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\GLoveMacros\Source\GLoveMacros` as
-`CreateSchedulesFromDatabase.cs`. Any older generated macro file in that folder is removed, since
-two copies would stop the module building.
+Saving the database also writes a Revit macro, `CreateSchedulesFromDatabase`. A copy always goes
+next to the save as `<database>.cs`. Save also installs the macro in the user's own Revit
+application macro module and builds that module, so the macro appears in Macro Manager.
 
-To run it in Revit 2025:
+**What each user needs (once):**
 
-1. Save in the GUI. Save installs the macro, then builds the module with `dotnet build`. The
-   build's errors and warnings and a summary appear in Messages. Macro Manager lists a macro only
-   once it's in the built module; a new `.cs` file alone doesn't show. If Revit was open when you
-   saved and the macro doesn't appear, restart Revit. To build by hand instead, open the module
-   from Macro Manager with **Edit** and press **Ctrl+Shift+B**.
+1. **A macro module.** If you don't have an application macro module yet, create one in Revit
+   2025 or later: **Manage > Macro Manager > Application > Module**, language C#, any name.
+2. **The .NET SDK,** from https://dotnet.microsoft.com/download. Save uses it to build the module.
+3. **Pick the module.** Save picks it by itself when there's only one. With several, it asks
+   once, or you can choose under **Revit Macro Settings**. The choice is remembered per user in
+   `%APPDATA%\DesignDataManager\settings.json`.
 
-   Since Revit 2025.5, the Revit API needs .NET 10. A module that targets `net8.0-windows` fails
-   to build with error CS1705 and Revit keeps the old build, so set `<TargetFramework>` in
-   `GLoveMacros.csproj` to `net10.0-windows`.
-2. In Revit, open **Manage > Macro Manager**, select `CreateSchedulesFromDatabase` under
-   **GLoveMacros** and click **Run**.
+**What Save does:**
+
+- **Installs:** it writes the macro into the module's source folder,
+  `%ProgramData%\Autodesk\Revit\Macros\<year>\Revit\AppHookup\<module>\Source\<module>`, as
+  `CreateSchedulesFromDatabase.cs`. The code uses that module's namespace. Any older generated
+  macro file there is removed, since two copies would stop the module building.
+- **Builds:** it builds the module with `dotnet build`. The build's errors, warnings and a summary
+  appear in Messages, and a failed build also pops up its errors.
+- **Fixes the .NET version:** Revit updates can need a newer .NET than the module targets. Since
+  Revit 2025.5 the API needs .NET 10, and a .NET 8 module fails with error CS1705. Save then
+  switches the module to the needed version, keeps the old project file as `.csproj.bak`, and
+  builds again. If that .NET SDK isn't installed, Messages says which one to install.
+
+**Running it:** in Revit, open **Manage > Macro Manager**, select `CreateSchedulesFromDatabase`
+under your module and click **Run**. If Revit was open when you saved and the macro doesn't
+appear, restart Revit. To build by hand instead, open the module with **Edit** and press
+**Ctrl+Shift+B**.
 
 Each schedule in the database becomes three Revit schedules:
 

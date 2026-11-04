@@ -16,7 +16,6 @@ from config.app_paths import (
     APP_VERSION,
     DEFAULT_CHECKPOINT_PATH,
     FROZEN,
-    REVIT_MACRO_MODULE_DIR,
     STARTER_DATABASE_PATH,
     get_database_output_paths,
 )
@@ -48,7 +47,10 @@ from excel_import import import_workbook
 from revit_parameter_manager import (
     CODE_KINDS, COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, guid_change_warning,
 )
-from revit_schedule_macro_generator import build_macro_module, generate_schedule_macro_source, install_macro
+from revit_macro_module import (
+    MACROS_ROOT, USER_SETTINGS_PATH, build_module, choose_module, chosen_module, find_macro_modules,
+)
+from revit_schedule_macro_generator import generate_schedule_macro_source, install_macro
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content
 
@@ -798,7 +800,10 @@ class DDMGUI:
         toolbar.grid(row=1, column=0, sticky="ew")
 
         ttk.Button(toolbar, text="Validate", command=self.validate_all, style="Action.TButton").pack(side="left", padx=(0, 8))
-        ttk.Button(toolbar, text="Sync to Quickbase", command=self.sync_to_quickbase, style="Action.TButton").pack(side="left")
+        ttk.Button(toolbar, text="Sync to Quickbase", command=self.sync_to_quickbase, style="Action.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(
+            toolbar, text="Revit Macro Settings", command=self.open_macro_settings, style="Action.TButton",
+        ).pack(side="left")
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
@@ -853,12 +858,17 @@ class DDMGUI:
     # --- exports ----------------------------------------------------------------
 
     def _generate_revit_schedule_macro_file(self):
+        """Write the schedule macro next to the save; install it in the user's macro module and build it."""
+        module = self._macro_module_for_save()
         try:
             output_path = get_database_output_paths(self.checkpoint_path)["macro"]
-            source = generate_schedule_macro_source(self.catalog, Path(self.checkpoint_path).name)
+            source = generate_schedule_macro_source(
+                self.catalog, Path(self.checkpoint_path).name,
+                **({"namespace": module.namespace} if module else {}),
+            )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(source, encoding="utf-8")
-            installed_path, removed_paths = install_macro(source, REVIT_MACRO_MODULE_DIR)
+            installed_path, removed_paths = install_macro(source, module.source_dir) if module else (None, [])
         except (OSError, ValueError) as exc:
             messagebox.showerror(
                 "Schedule Macro Generation Failed",
@@ -868,31 +878,106 @@ class DDMGUI:
             return
         self._append_message(f"Generated Revit schedule macro: {output_path}")
         if installed_path is None:
-            self._append_message(
-                f"Revit macro module not found ({REVIT_MACRO_MODULE_DIR}); copy the macro into it by hand."
-            )
             return
         for removed_path in removed_paths:
             self._append_message(f"Removed older generated macro: {removed_path}")
-        self._append_message(f"Installed the schedule macro in {installed_path}. Building the module...")
+        self._append_message(f"Installed the schedule macro in {installed_path}. Building {module.name}...")
         root = getattr(self, "root", None)
         if root is not None:
             root.configure(cursor="watch")
             root.update_idletasks()
         try:
-            succeeded, build_messages = build_macro_module(REVIT_MACRO_MODULE_DIR)
+            succeeded, build_messages = build_module(module)
         finally:
             if root is not None:
                 root.configure(cursor="")
         for line in build_messages:
             self._append_message(line)
         if not succeeded:
-            self._show_macro_build_failure(build_messages)
+            self._show_macro_build_failure(module, build_messages)
+
+    def _macro_module_for_save(self):
+        """The macro module Save installs into, or ``None`` (with a message saying why).
+
+        The user's choice is remembered; with only one module on the machine it is used,
+        and with several the user is asked once.
+        """
+        modules = find_macro_modules(MACROS_ROOT)
+        module = chosen_module(modules, USER_SETTINGS_PATH)
+        if module is not None:
+            return module
+        if not modules:
+            self._append_message(
+                "No Revit 2025 (or later) application macro module was found, so the schedule macro "
+                "wasn't installed. Create one in Revit (Manage > Macro Manager > Application > Module, "
+                "C#), then save again."
+            )
+            return None
+        if len(modules) == 1:
+            choose_module(modules[0], USER_SETTINGS_PATH)
+            self._append_message(f"Using {modules[0].label} for the schedule macro (the only macro module found).")
+            return modules[0]
+        if getattr(self, "root", None) is not None:
+            module = self.open_macro_settings(modules)
+            if module is not None:
+                return module
+        self._append_message(
+            "The schedule macro wasn't installed: choose a macro module with Revit Macro Settings, then save again."
+        )
+        return None
+
+    def open_macro_settings(self, modules=None):
+        """Ask which macro module gets the schedule macro. Returns the chosen module, or ``None``."""
+        if modules is None:
+            modules = find_macro_modules(MACROS_ROOT)
+        root = getattr(self, "root", None)
+        if not modules:
+            messagebox.showinfo(
+                "Revit Macro Settings",
+                "No Revit 2025 (or later) application macro module was found.\n\nCreate one in Revit: "
+                "Manage > Macro Manager > Application > Module (C#). Then open these settings again.",
+                parent=root,
+            )
+            return None
+        current = chosen_module(modules, USER_SETTINGS_PATH)
+
+        dialog = tk.Toplevel(root)
+        dialog.title("Revit Macro Settings")
+        dialog.transient(root)
+        dialog.geometry("520x220")
+        ttk.Label(dialog, text="Install the Schedule Macro In", style="Section.TLabel").pack(anchor="w", padx=10, pady=(10, 4))
+        ttk.Label(
+            dialog, wraplength=490, justify="left",
+            text="Save writes CreateSchedulesFromDatabase into this Revit application macro module "
+                 "and builds it, so it appears in Revit's Macro Manager.",
+        ).pack(anchor="w", padx=10)
+        labels = [module.label for module in modules]
+        combo = ttk.Combobox(dialog, values=labels, state="readonly")
+        combo.set(current.label if current else labels[0])
+        combo.pack(fill="x", padx=10, pady=10)
+        result = {"module": None}
+
+        def use():
+            module = modules[labels.index(combo.get())]
+            choose_module(module, USER_SETTINGS_PATH)
+            result["module"] = module
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", side="bottom", padx=10, pady=8)
+        ttk.Button(buttons, text="Use This Module", command=use).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 6))
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.grab_set()
+        dialog.wait_window()
+        if result["module"] is not None:
+            self._append_message(f"The schedule macro will be installed in {result['module'].label}.")
+        return result["module"]
 
     # Most build errors a pop-up lists; the rest are only in Messages.
     _max_popup_build_errors = 10
 
-    def _show_macro_build_failure(self, build_messages: Sequence[str]):
+    def _show_macro_build_failure(self, module, build_messages: Sequence[str]):
         """Pop up the build errors, so a failed build isn't missed among the save messages."""
         details = list(build_messages[:-1])
         shown = details[:self._max_popup_build_errors]
@@ -900,7 +985,7 @@ class DDMGUI:
             shown.append(f"... and {len(details) - len(shown)} more (see Messages).")
         messagebox.showerror(
             "Macro Build Failed",
-            "The database was saved, but the GLoveMacros module didn't build, so Revit's Macro "
+            f"The database was saved, but the {module.name} module didn't build, so Revit's Macro "
             "Manager still has the previous build of CreateSchedulesFromDatabase.\n\n"
             + "\n".join(shown or build_messages),
             parent=getattr(self, "root", None),

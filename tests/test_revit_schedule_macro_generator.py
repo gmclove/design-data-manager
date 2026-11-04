@@ -7,10 +7,10 @@ import pytest
 
 from config.app_paths import DEMO_DATA_PATH
 from ddm_tables import catalog_from_tables, read_database_csv
+from revit_macro_module import MacroModule, build_module
 from revit_parameter_manager import Catalog
 from revit_schedule_macro_generator import (
     GENERATED_HEADER,
-    build_macro_module,
     MACRO_FILE_NAME,
     generate_schedule_macro_source,
     install_macro,
@@ -104,6 +104,11 @@ def test_columns_carry_headers_widths_in_feet_and_hidden_flags():
     assert 'new DdmHeaderGroup("Performance", new[] { "DDM_Airflow", "DDM_Capacity" }),' in source
 
 
+def test_the_macro_goes_in_the_modules_namespace():
+    assert "namespace RevitMacros\n" in generate_schedule_macro_source(make_catalog())
+    assert "namespace Team.Macros\n" in generate_schedule_macro_source(make_catalog(), namespace="Team.Macros")
+
+
 def test_schedule_settings_reach_the_macro():
     catalog = make_catalog()
     specs, _notes = schedule_specs(catalog)
@@ -192,18 +197,19 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
     schedule.filter_value = "FILTER"
     schedule.itemize = False
     schedule.view_template = "IPS Schedules"
-    source = generate_schedule_macro_source(demo)
+    source = generate_schedule_macro_source(demo, namespace="GLoveMacros")
     (tmp_path / "Generated.cs").write_text(source, encoding="utf-8")
     (tmp_path / "ThisApplication.cs").write_text(MACRO_ENTRY_POINT, encoding="utf-8")
     (tmp_path / "Macro.csproj").write_text(MACRO_PROJECT.format(framework=framework, revit=revit), encoding="utf-8")
+    module = MacroModule(2025, "Macro", tmp_path, "GLoveMacros")
 
-    succeeded, messages = build_macro_module(tmp_path)
+    succeeded, messages = build_module(module)
     assert succeeded, "\n".join(messages)
-    assert messages == ["Built the GLoveMacros module; its macros are ready in Revit's Macro Manager."]
+    assert messages == ["Built the Macro module; its macros are ready in Revit 2025's Macro Manager."]
 
     # A broken macro fails, and the messages name the file and line without the folder.
     (tmp_path / "Generated.cs").write_text(source.replace("tx.Commit();", "tx.Commit()"), encoding="utf-8")
-    succeeded, messages = build_macro_module(tmp_path)
+    succeeded, messages = build_module(module)
     assert not succeeded
     assert messages[0].startswith("Generated.cs(") and ": error CS" in messages[0]
-    assert messages[-1].startswith("The macro module failed to build")
+    assert messages[-1].startswith("The Macro module failed to build")
