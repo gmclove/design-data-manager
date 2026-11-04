@@ -17,7 +17,7 @@ import pandas as pd
 
 from config.revit_dtype_definitions import get_dtype_row
 from config.revit_family_category_definitions import get_family_category_row
-from revit_parameter_manager import COMMON_PARAM_NAMES, Catalog, Param
+from revit_parameter_manager import CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, Catalog, Param
 from revit_shared_parameter_export import parameter_guid
 
 DEFAULT_GRID_COLUMN_WIDTH_IN = 1.0
@@ -27,7 +27,8 @@ PARAM_COLUMNS = [
     "instance_param", "default_value", "status", "validation_message", "guid",
 ]
 FAMILY_COLUMNS = [
-    "name", "client", "client_code", "country", "country_code", "category", "description",
+    "name", "client", "client_code", "country", "country_code", "category", "category_code",
+    "category_1", "category_1_code", "category_2", "category_2_code", "description",
     "status", "validation_message",
 ]
 # A link row also carries the family's own Default Value, Formula, Group Under and Instance or
@@ -45,7 +46,8 @@ ENTRY_COLUMNS = [
 CSV_COLUMNS = [
     "record_type", "name", "guid", "header_text", "grid_column_width", "dtype", "group_under",
     "formula", "instance_param", "default_value", "status", "validation_message", "client", "client_code",
-    "country", "country_code", "category", "description", "family_name", "parameter_name", "group_name",
+    "country", "country_code", "category", "category_code", "category_1", "category_1_code", "category_2",
+    "category_2_code", "description", "family_name", "parameter_name", "group_name",
     "header_text_override", "grid_column_width_override", "hidden", "override_entry",
     "schedule_filter", "itemize", "view_template", "caption",
     "parameter_names", "top_row", "bottom_row",
@@ -174,6 +176,8 @@ def _load_families(catalog, family_rows, link_rows, issues):
             name,
             client=text(row.get("client")) or None,
             country=text(row.get("country")) or None,
+            category_1=text(row.get("category_1")) or None,
+            category_2=text(row.get("category_2")) or None,
             description=text(row.get("description")) or None,
             category=category,
         )
@@ -213,8 +217,9 @@ def _load_families(catalog, family_rows, link_rows, issues):
 
 
 def _load_codes(catalog, family_name, row, issues):
-    """Codes sit on each family row; the first family to give a client (or country) a code sets it."""
-    for kind in ("client", "country"):
+    """Codes sit on each family row; the first family to give a client (country, category, ...) a
+    code sets it."""
+    for kind in CODED_KINDS:
         name = text(row.get(kind))
         code = text(row.get(f"{kind}_code"))
         if not name or not code:
@@ -222,7 +227,7 @@ def _load_codes(catalog, family_name, row, issues):
         current = catalog.code(kind, name)
         if current and current != code:
             issues.append(
-                f"Family '{family_name}' gives {kind} '{name}' code '{code}', "
+                f"Family '{family_name}' gives {CODE_LABELS[kind].lower()} '{name}' code '{code}', "
                 f"but it already has '{current}'; kept '{current}'."
             )
             continue
@@ -366,6 +371,11 @@ def families_table(catalog):
                 "country": _blank(fam.country),
                 "country_code": fam.country_code,
                 "category": _blank(fam.category),
+                "category_code": fam.category_code,
+                "category_1": _blank(fam.category_1),
+                "category_1_code": fam.category_1_code,
+                "category_2": _blank(fam.category_2),
+                "category_2_code": fam.category_2_code,
                 "description": _blank(fam.description),
                 "status": fam.status,
                 "validation_message": fam.validation_message,

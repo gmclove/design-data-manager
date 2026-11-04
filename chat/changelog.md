@@ -2,6 +2,38 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-04: Unsaved changes warning
+- Close, Load and Import Excel... offer Save / Discard / Cancel when the catalog differs from the
+  last load or save (a JSON snapshot of `Catalog.to_dict()`; ~20 ms on the master database).
+  Closing mid-build waits for the macro build to finish.
+
+## 2026-11-04: Families: Category 1/2, category codes, Family Name Builder
+- New Families columns before Description: Category Code, Category 1, Category 1 Code,
+  Category 2, Category 2 Code. Category 1/2 are Add New... lists with unique codes; Category Code
+  is per Revit category (2D / 3D / blank, shared). `CODE_KINDS` / `CODED_KINDS` / `CODE_LABELS`.
+- Family Name Builder (one click on a Name): terms with Use / Prefix / Suffix / order, shared
+  `Catalog.family_name_format`; prefixes act as separators (none on the first term). Rename This
+  Family, Rename All Families to Match (skips blank and clashing names). No family double-click.
+- Excel import reads Family Category 1/2 (+ famCat1 / FamCat2 code tables) and derives each Revit
+  category's code from its families' Revit View (one view: its code; mixed: blank). Applied to
+  `data/database.ddm.json` (backup `database.before-family-naming.ddm.json`); 229 of 231 imported
+  names match the default format (2 workbook names lack their AHU term).
+
+## 2026-11-04: Schedule macro asks what to build
+- Save writes the CSV, `.rfps` and shared parameters first, then the macro; the module build runs
+  on a background thread (Tk polled with `after`), and a save made mid-build is queued.
+- Schedule window: Parameter section cells edit the parameter itself (name with GUID prompt,
+  Default Header, Default Value, Formula, Group Under, Instance or Type).
+- Schedule window: Default Header row in the Parameter section (the parameter's header text; gray
+  when it's just the name).
+- `CreateSchedulesFromDatabase` opens a Windows Forms dialog: Rebuild All Schedules or Rebuild
+  Selected Schedules (searchable checklist, Select All / Clear, ✓ for schedules already in the
+  project) and Override Existing Schedules With the Same Name (on by default; off leaves
+  existing Revit schedules alone and lists them in the summary).
+- `build_module` turns on `<UseWindowsForms>` in the module's .csproj once (removing the
+  System.Windows.Forms / System.Drawing global usings so `View` etc. don't clash), with `.bak`.
+  The macro uses `WinForms` / `Drawing` aliases. Compile test covers it against the Revit API.
+
 ## 2026-11-04: Search, schedule families, header groups from merged cells
 - Search box on each main tab (every word must match, any column). Rows keep their position in
   the full table as their Treeview ID, so edits and windows reach the right item while filtered.

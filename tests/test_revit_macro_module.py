@@ -89,9 +89,25 @@ def test_a_module_built_for_an_older_dotnet_is_retargeted_and_rebuilt(tmp_path, 
     assert succeeded
     assert "<TargetFramework>net10.0-windows</TargetFramework>" in (source / "A.csproj").read_text(encoding="utf-8")
     assert "net8.0-windows" in (source / "A.csproj.bak").read_text(encoding="utf-8")
-    assert messages[0].startswith("Revit's API needs .NET 10; switched the A module to it")
+    assert messages[0].startswith("Turned on Windows Forms in the A module")
+    assert messages[1].startswith("Revit's API needs .NET 10; switched the A module to it")
     assert messages[-1] == "Built the A module; its macros are ready in Revit 2025's Macro Manager."
     assert [call[0] for call in calls] == ["build", "--list-sdks", "build"]
+
+
+def test_windows_forms_is_turned_on_once_without_its_global_usings(tmp_path):
+    source = make_module(tmp_path, 2025, "A")
+    project = source / "A.csproj"
+
+    assert revit_macro_module._enable_windows_forms(project) is True
+    text = project.read_text(encoding="utf-8")
+    assert "<TargetFramework>net8.0-windows</TargetFramework>\n    <UseWindowsForms>true</UseWindowsForms>" in text
+    assert '<Using Remove="System.Windows.Forms" />' in text and '<Using Remove="System.Drawing" />' in text
+    assert text.rstrip().endswith("</Project>")
+    assert (source / "A.csproj.bak").read_text(encoding="utf-8") == SDK_PROJECT
+    # Already on: nothing changes.
+    assert revit_macro_module._enable_windows_forms(project) is False
+    assert project.read_text(encoding="utf-8") == text
 
 
 def test_missing_sdks_and_compile_errors_are_explained(tmp_path, monkeypatch):

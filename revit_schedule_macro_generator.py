@@ -10,8 +10,13 @@ database becomes three Revit schedules:
 
 Each lists only elements whose ``IPS_GROUP_Schedule_Name`` is the schedule's
 filter value (its name unless set), is itemized or not as set, and gets the
-schedule's view template when it has one. Running the macro again updates
-schedules it made before, so the Revit schedules follow the database.
+schedule's view template when it has one.
+
+When it runs, the macro asks (in a Windows Forms dialog) whether to rebuild all
+schedules or the ones picked from a list, and whether to override Revit schedules
+that already have the same name. Overriding updates them in place, so the Revit
+schedules follow the database and keep their place on sheets; otherwise they're
+left as they are.
 
 The generated file is a fixed routine plus a table of schedule data; only the
 data changes from one database to the next.
@@ -181,6 +186,8 @@ using Autodesk.Revit.UI;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Drawing = System.Drawing;
+using WinForms = System.Windows.Forms;
 
 namespace /*NAMESPACE*/
 {
@@ -205,9 +212,11 @@ namespace /*NAMESPACE*/
         };
 
         /// <summary>
-        /// Create or update three Revit schedules for each database schedule: a multi-category
-        /// model schedule ("3D - name"), a Detail Items working schedule showing every column
-        /// ("name - Working") and a Detail Items schedule with hidden columns hidden ("name").
+        /// Create or update three Revit schedules for each database schedule chosen: a
+        /// multi-category model schedule ("3D - name"), a Detail Items working schedule showing
+        /// every column ("name - Working") and a Detail Items schedule with hidden columns
+        /// hidden ("name"). A dialog asks which schedules to build and whether to override
+        /// schedules that already exist.
         /// </summary>
         public void CreateSchedulesFromDatabase()
         {
@@ -218,19 +227,31 @@ namespace /*NAMESPACE*/
                 return;
             }
 
+            DdmChoice? choice = DdmAskWhatToBuild(doc, MainWindowHandle);
+            if (choice == null)
+            {
+                return;
+            }
+
             var created = new List<string>();
             var updated = new List<string>();
+            var skipped = new List<string>();
             var problems = new List<string>(DdmGeneratorNotes);
             ElementId detailItems = new ElementId(BuiltInCategory.OST_DetailComponents);
 
-            foreach (DdmSchedule spec in DdmSchedules)
+            foreach (DdmSchedule spec in DdmSchedules.Where(spec => choice.Names.Contains(spec.Name)))
             {
-                DdmBuildSchedule(doc, DdmModelPrefix + spec.Name, ElementId.InvalidElementId, spec, true, created, updated, problems);
-                DdmBuildSchedule(doc, spec.Name + DdmWorkingSuffix, detailItems, spec, false, created, updated, problems);
-                DdmBuildSchedule(doc, spec.Name, detailItems, spec, true, created, updated, problems);
+                DdmBuildSchedule(doc, DdmModelPrefix + spec.Name, ElementId.InvalidElementId, spec, true, choice.OverrideExisting, created, updated, skipped, problems);
+                DdmBuildSchedule(doc, spec.Name + DdmWorkingSuffix, detailItems, spec, false, choice.OverrideExisting, created, updated, skipped, problems);
+                DdmBuildSchedule(doc, spec.Name, detailItems, spec, true, choice.OverrideExisting, created, updated, skipped, problems);
             }
 
             string message = $"Created {created.Count} schedule(s), updated {updated.Count}.";
+            if (skipped.Count > 0)
+            {
+                message += $"\\n\\nLeft {skipped.Count} existing schedule(s) as they were (Override Existing Schedules was off):\\n"
+                    + DdmShortList(skipped);
+            }
             if (problems.Count > 0)
             {
                 message += "\\n\\nProblems:\\n" + string.Join("\\n", problems);
@@ -238,14 +259,161 @@ namespace /*NAMESPACE*/
             TaskDialog.Show(DdmTitle, message);
         }
 
+        private static string DdmShortList(List<string> names)
+        {
+            const int shown = 15;
+            string list = string.Join("\\n", names.Take(shown));
+            return names.Count > shown ? list + $"\\n...and {names.Count - shown} more" : list;
+        }
+
+        /// <summary>
+        /// Ask which schedules to build (all, or those checked in a searchable list) and whether
+        /// to override Revit schedules with the same name. Returns null if the user cancels.
+        /// </summary>
+        private static DdmChoice? DdmAskWhatToBuild(Document doc, IntPtr owner)
+        {
+            var inProject = new HashSet<string>(new FilteredElementCollector(doc)
+                .OfClass(typeof(ViewSchedule))
+                .Cast<ViewSchedule>()
+                .Where(view => !view.IsTemplate)
+                .Select(view => view.Name));
+            List<string> names = DdmSchedules.Select(spec => spec.Name).ToList();
+            var chosen = new HashSet<string>();
+
+            using var form = new WinForms.Form
+            {
+                Text = DdmTitle,
+                Font = new Drawing.Font("Segoe UI", 9F),
+                AutoScaleMode = WinForms.AutoScaleMode.Font,
+                StartPosition = WinForms.FormStartPosition.CenterParent,
+                Size = new Drawing.Size(560, 680),
+                MinimumSize = new Drawing.Size(420, 420),
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+            };
+            var allRadio = new WinForms.RadioButton { Text = $"Rebuild All Schedules ({names.Count})", Checked = true, AutoSize = true };
+            var selectedRadio = new WinForms.RadioButton { Text = "Rebuild Selected Schedules:", AutoSize = true };
+            var search = new WinForms.TextBox { PlaceholderText = "Search", Dock = WinForms.DockStyle.Fill };
+            var list = new WinForms.CheckedListBox { CheckOnClick = true, IntegralHeight = false, Dock = WinForms.DockStyle.Fill };
+            var selectAll = new WinForms.Button { Text = "Select All", AutoSize = true };
+            var clear = new WinForms.Button { Text = "Clear", AutoSize = true };
+            var note = new WinForms.Label
+            {
+                Text = "\\u2713 = already in this project (its 3 Revit schedules, or some of them).",
+                AutoSize = true,
+                ForeColor = Drawing.SystemColors.GrayText,
+            };
+            var overrideBox = new WinForms.CheckBox { Text = "Override Existing Schedules With the Same Name", Checked = true, AutoSize = true };
+            var build = new WinForms.Button { DialogResult = WinForms.DialogResult.OK, AutoSize = true };
+            var cancel = new WinForms.Button { Text = "Cancel", DialogResult = WinForms.DialogResult.Cancel, AutoSize = true };
+
+            var listButtons = new WinForms.FlowLayoutPanel { AutoSize = true, Dock = WinForms.DockStyle.Fill, Margin = WinForms.Padding.Empty };
+            listButtons.Controls.AddRange(new WinForms.Control[] { selectAll, clear, note });
+            var buttons = new WinForms.FlowLayoutPanel
+            {
+                FlowDirection = WinForms.FlowDirection.RightToLeft,
+                AutoSize = true,
+                Dock = WinForms.DockStyle.Fill,
+                Margin = WinForms.Padding.Empty,
+            };
+            buttons.Controls.AddRange(new WinForms.Control[] { cancel, build });
+            var layout = new WinForms.TableLayoutPanel { Dock = WinForms.DockStyle.Fill, ColumnCount = 1, Padding = new WinForms.Padding(10) };
+            layout.ColumnStyles.Add(new WinForms.ColumnStyle(WinForms.SizeType.Percent, 100));
+            WinForms.Control[] rows = { allRadio, selectedRadio, search, list, listButtons, overrideBox, buttons };
+            foreach (WinForms.Control control in rows)
+            {
+                layout.RowStyles.Add(control == list
+                    ? new WinForms.RowStyle(WinForms.SizeType.Percent, 100)
+                    : new WinForms.RowStyle(WinForms.SizeType.AutoSize));
+                layout.Controls.Add(control);
+            }
+            form.Controls.Add(layout);
+            form.AcceptButton = build;
+            form.CancelButton = cancel;
+
+            bool filling = false;
+            void UpdateBuildButton()
+            {
+                build.Text = allRadio.Checked ? $"Build All ({names.Count})" : $"Build Selected ({chosen.Count})";
+                build.Enabled = allRadio.Checked || chosen.Count > 0;
+            }
+            void FillList()
+            {
+                filling = true;
+                list.BeginUpdate();
+                list.Items.Clear();
+                string[] words = search.Text.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                foreach (string name in names.Where(name => words.All(word => name.ToLowerInvariant().Contains(word))))
+                {
+                    bool exists = DdmRevitNames(name).Any(inProject.Contains);
+                    list.Items.Add(new DdmListItem(name, exists), chosen.Contains(name));
+                }
+                list.EndUpdate();
+                filling = false;
+            }
+            void CheckShown(bool check)
+            {
+                for (int index = 0; index < list.Items.Count; index++)
+                {
+                    list.SetItemChecked(index, check);
+                }
+            }
+
+            list.ItemCheck += (_, e) =>
+            {
+                if (filling)
+                {
+                    return;
+                }
+                string name = ((DdmListItem)list.Items[e.Index]).Name;
+                if (e.NewValue == WinForms.CheckState.Checked)
+                {
+                    chosen.Add(name);
+                }
+                else
+                {
+                    chosen.Remove(name);
+                }
+                // Picking schedules means building the picked ones.
+                selectedRadio.Checked = true;
+                // ItemCheck comes before the change; count it once the change is made.
+                form.BeginInvoke(new Action(UpdateBuildButton));
+            };
+            search.TextChanged += (_, _) => FillList();
+            allRadio.CheckedChanged += (_, _) => UpdateBuildButton();
+            selectAll.Click += (_, _) => CheckShown(true);
+            clear.Click += (_, _) => CheckShown(false);
+            FillList();
+            UpdateBuildButton();
+
+            if (form.ShowDialog(new DdmOwner(owner)) != WinForms.DialogResult.OK)
+            {
+                return null;
+            }
+            return new DdmChoice(allRadio.Checked ? new HashSet<string>(names) : chosen, overrideBox.Checked);
+        }
+
+        private static IEnumerable<string> DdmRevitNames(string name)
+        {
+            yield return DdmModelPrefix + name;
+            yield return name + DdmWorkingSuffix;
+            yield return name;
+        }
+
         private static void DdmBuildSchedule(
             Document doc, string viewName, ElementId categoryId, DdmSchedule spec, bool hideHiddenColumns,
-            List<string> created, List<string> updated, List<string> problems)
+            bool overrideExisting, List<string> created, List<string> updated, List<string> skipped, List<string> problems)
         {
             ViewSchedule? existing = new FilteredElementCollector(doc)
                 .OfClass(typeof(ViewSchedule))
                 .Cast<ViewSchedule>()
                 .FirstOrDefault(view => !view.IsTemplate && view.Name == viewName);
+            if (existing != null && !overrideExisting)
+            {
+                skipped.Add(viewName);
+                return;
+            }
             if (existing != null && !existing.Definition.CategoryId.Equals(categoryId))
             {
                 problems.Add($"{viewName}: a schedule with this name lists a different category; left unchanged.");
@@ -385,6 +553,43 @@ namespace /*NAMESPACE*/
                 .Where(field => field.GetName(doc) == parameter)
                 .OrderBy(field => field.FieldType == ScheduleFieldType.Instance ? 0 : 1)
                 .FirstOrDefault();
+        }
+
+        private sealed class DdmChoice
+        {
+            public DdmChoice(HashSet<string> names, bool overrideExisting)
+            {
+                Names = names;
+                OverrideExisting = overrideExisting;
+            }
+
+            public HashSet<string> Names { get; }
+            public bool OverrideExisting { get; }
+        }
+
+        private sealed class DdmListItem
+        {
+            public DdmListItem(string name, bool inProject)
+            {
+                Name = name;
+                InProject = inProject;
+            }
+
+            public string Name { get; }
+            public bool InProject { get; }
+
+            public override string ToString() => InProject ? Name + "   \\u2713" : Name;
+        }
+
+        // Revit's main window, so the dialog opens over it.
+        private sealed class DdmOwner : WinForms.IWin32Window
+        {
+            public DdmOwner(IntPtr handle)
+            {
+                Handle = handle;
+            }
+
+            public IntPtr Handle { get; }
         }
 
         private sealed class DdmColumn

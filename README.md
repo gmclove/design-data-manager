@@ -47,7 +47,9 @@ pytest                            # run the tests
 ```
 
 The GUI saves to `data/database.ddm.json` by default, with a readable CSV and the Revit export files
-alongside. CSV and older `.ddm.pkl` databases can still be loaded.
+alongside. Closing the window, **Load** and **Import Excel...** check for unsaved changes first and
+offer **Save**, **Discard** or **Cancel**. Closing while the schedule macro is still building
+waits for the build to finish. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
 
 Each main tab (Parameters, Families, Schedules) has a **Search** box above its list. A row shows
@@ -156,8 +158,10 @@ application macro module and builds that module, so the macro appears in Macro M
   `%ProgramData%\Autodesk\Revit\Macros\<year>\Revit\AppHookup\<module>\Source\<module>`, as
   `CreateSchedulesFromDatabase.cs`. The code uses that module's namespace. Any older generated
   macro file there is removed, since two copies would stop the module building.
-- **Builds:** it builds the module with `dotnet build`. The build's errors, warnings and a summary
-  appear in Messages, and a failed build also pops up its errors.
+- **Builds:** it builds the module with `dotnet build`, in the background and after the other
+  save files are written, so you can keep working. The build's errors, warnings and a summary
+  appear in Messages when it finishes, and a failed build also pops up its errors. If you save
+  again while it's building, that save's macro is installed and built once the build finishes.
 - **Fixes the .NET version:** Revit updates can need a newer .NET than the module targets. Since
   Revit 2025.5 the API needs .NET 10, and a .NET 8 module fails with error CS1705. Save then
   switches the module to the needed version, keeps the old project file as `.csproj.bak`, and
@@ -167,6 +171,18 @@ application macro module and builds that module, so the macro appears in Macro M
 under your module and click **Run**. If Revit was open when you saved and the macro doesn't
 appear, restart Revit. To build by hand instead, open the module with **Edit** and press
 **Ctrl+Shift+B**.
+
+When it runs, the macro asks what to build:
+- **Rebuild All Schedules** (the default) or **Rebuild Selected Schedules**. Pick schedules from
+  the list; the search box narrows it, and **Select All** / **Clear** act on the schedules shown.
+  Checking a schedule switches to Rebuild Selected. A ✓ marks schedules already in the project.
+- **Override Existing Schedules With the Same Name** (on by default). On, a Revit schedule that
+  already exists is updated in place. Off, it's left as it is, and the summary lists it as left
+  unchanged; only missing schedules are created.
+
+The dialog uses Windows Forms, so the first Save switches it on in the module's project file
+(`<UseWindowsForms>`, without its automatic `using`s, so names such as `View` don't clash with
+Revit's). The original project file is kept as `.csproj.bak`, and Messages says so.
 
 Each schedule in the database becomes three Revit schedules:
 
@@ -188,9 +204,11 @@ Each schedule in the database becomes three Revit schedules:
   hide a column, tick its box in the **Hidden Column** row under the column headers in the
   schedule window. The same checkbox is also in the column settings that open when you
   double-click a header.
-- **Running it again** updates the schedules it made before: their columns, filter and header
-  groups are rebuilt to match the database, and the views keep their place on sheets.
-- **When it finishes,** a dialog lists what was created and updated, plus any problems. Problems
+- **Running it again** with Override Existing Schedules on updates the schedules it made
+  before: their columns, filter and header groups are rebuilt to match the database, and the
+  views keep their place on sheets.
+- **When it finishes,** a dialog lists what was created, updated and left unchanged, plus any
+  problems. Problems
   include a parameter that isn't loaded in the project's families, or a same-named schedule of a
   different category.
 
@@ -198,14 +216,37 @@ Each schedule in the database becomes three Revit schedules:
 Revit API (it needs Revit 2025+ and the .NET SDK; otherwise it's skipped), so a macro that won't
 compile fails the tests.
 
-## Clients and Countries
+## Families: Codes and Names
 
-A family's **Client** and **Country** are picked from dropdowns listing every client (or country)
-already in the database. To add one that isn't listed, choose **Add New...** and enter its name and
-code. The **Client Code** and **Country Code** columns show the abbreviation of the family's client
-and country, for example ACME or USA. A code belongs to the client or country, not the family, so
-editing it on one family changes it for every family with that client or country. Each code must be
-unique among clients (or among countries).
+On the Families tab, one click on a cell edits it in place; one click on a **Name** opens the Family
+Name Builder (below). Double-click does nothing.
+
+A family's **Client**, **Country**, **Category 1** and **Category 2** are picked from dropdowns
+listing every one already in the database. To add one that isn't listed, choose **Add New...** and
+enter its name and code. The **Client Code**, **Country Code**, **Category 1 Code** and
+**Category 2 Code** columns show their abbreviations, for example IPS, US, EQUIP and AHU. A code
+belongs to the client (country, ...), not the family, so editing it on one family changes it for
+every family with that client. Each code must be unique within its kind.
+
+**Category Code** belongs to the Revit category: **3D** for categories placed in floor plans
+(Mechanical Equipment, Duct Accessories, ...), **2D** for those on drafting views (Detail Item,
+Generic Annotation, ...), and blank for categories used in both (Multi-Category Tags). Several
+categories share a code; editing it on one family changes it for every family of that category.
+
+**Family Name Builder:** builds a family's name from its terms: Client Code, Country Code,
+Category 1 Code, Category 2 Code, Description, Category Code, and the Category 1 and Category 2
+names. Each term has **Use**, a **Prefix**, a **Suffix** and ▲▼ to reorder it. A used term adds
+Prefix + value + Suffix; a blank value is left out with its prefix and suffix, and the first term
+in a name has no prefix, so prefixes work as separators. The default format reproduces the master
+workbook's names, e.g. `IPS-US_CTRL_Device_Pilot Light_2D`. The **New Name** can be edited before
+renaming.
+- **Rename This Family** renames the family and saves the format.
+- **Rename All Families to Match...** lists the families whose names differ from the format and
+  renames them after you confirm. Families whose new name would be blank, or the same as another
+  family's, are left as they are and listed in Messages. Only names in the database change.
+
+The format (order, prefixes, suffixes) is shared by every family and saved in the `.ddm.json`
+database (not in the CSV copy).
 
 ## Overriding Default Values
 
@@ -236,6 +277,13 @@ Value, and a Family Default Value beats the Parameter Default Value. If you clea
 - **Gray text:** inherited from the level above.
 - **Shaded cell:** doesn't apply, because the family doesn't have that parameter. In a schedule,
   an **Add Parameter to Family** button adds the missing parameter to the family.
+- **Default Header** (schedule window, Parameter section): the parameter's own header text, which
+  a column uses unless the schedule overrides it (double-click the column header). Gray means
+  the parameter has none, so the header is its name.
+- **Parameter section in the schedule window:** double-click a cell to edit the parameter itself
+  (Name, Default Header, Default Value, Formula, Group Under, Instance or Type). It changes the
+  parameter for every family and schedule, as editing it on the Parameters tab does; a rename
+  asks about the GUID first. In the family window the section is read-only.
 
 To edit a cell, double-click it and type. Enter or clicking away saves, Tab moves to the next
 cell, and Escape cancels.

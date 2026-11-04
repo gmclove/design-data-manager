@@ -104,6 +104,20 @@ def test_columns_carry_headers_widths_in_feet_and_hidden_flags():
     assert 'new DdmHeaderGroup("Performance", new[] { "DDM_Airflow", "DDM_Capacity" }),' in source
 
 
+def test_the_macro_asks_what_to_build_and_whether_to_override():
+    source = generate_schedule_macro_source(make_catalog())
+    assert "DdmChoice? choice = DdmAskWhatToBuild(doc, MainWindowHandle);" in source
+    assert '"Rebuild All Schedules ({names.Count})"' in source
+    assert '"Rebuild Selected Schedules:"' in source
+    assert '"Override Existing Schedules With the Same Name", Checked = true' in source
+    assert "DdmSchedules.Where(spec => choice.Names.Contains(spec.Name))" in source
+    # With override off, a schedule that already exists is left as it is.
+    assert "if (existing != null && !overrideExisting)" in source
+    # Windows Forms comes in under an alias, so its names can't clash with Revit's.
+    assert "using WinForms = System.Windows.Forms;" in source
+    assert "\nusing System.Windows.Forms;" not in source
+
+
 def test_the_macro_goes_in_the_modules_namespace():
     assert "namespace RevitMacros\n" in generate_schedule_macro_source(make_catalog())
     assert "namespace Team.Macros\n" in generate_schedule_macro_source(make_catalog(), namespace="Team.Macros")
@@ -205,7 +219,12 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
 
     succeeded, messages = build_module(module)
     assert succeeded, "\n".join(messages)
-    assert messages == ["Built the Macro module; its macros are ready in Revit 2025's Macro Manager."]
+    # The build turned on Windows Forms (for the macro's dialog) the way it would in a user's module.
+    assert messages == [
+        "Turned on Windows Forms in the Macro module, for the schedule macro's dialog "
+        "(the original project file is Macro.csproj.bak).",
+        "Built the Macro module; its macros are ready in Revit 2025's Macro Manager.",
+    ]
 
     # A broken macro fails, and the messages name the file and line without the folder.
     (tmp_path / "Generated.cs").write_text(source.replace("tx.Commit();", "tx.Commit()"), encoding="utf-8")

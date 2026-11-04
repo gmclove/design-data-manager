@@ -749,4 +749,49 @@ def test_codes_must_be_unique_and_round_trip(catalog):
 
 	data = catalog.to_dict()
 	del data['clients'], data['countries']
-	assert Catalog.from_dict(data).codes == {'client': {}, 'country': {}}
+	assert Catalog.from_dict(data).codes == {
+		'client': {}, 'country': {}, 'category': {}, 'category_1': {}, 'category_2': {}}
+
+
+def test_category_codes_are_shared_and_families_build_their_names(catalog):
+	catalog.set_code('client', 'IPS', 'IPS')
+	catalog.set_code('country', 'United States', 'US')
+	catalog.set_code('category_1', 'Control', 'CTRL')
+	catalog.set_code('category_2', 'Device', 'Device')
+	with pytest.raises(ValueError, match="Category 1 code 'ctrl' is already used by 'Control'"):
+		catalog.set_code('category_1', 'Controls', 'ctrl')
+	# Categories share their view codes.
+	catalog.set_code('category', 'Detail Item', '2D')
+	catalog.set_code('category', 'Generic Annotation', '2D')
+
+	fam = catalog.add_family(
+		'Old Name', client='IPS', country='United States', category='Detail Item',
+		category_1='Control', category_2='Device', description='Pilot Light',
+	)
+	assert (fam.category_code, fam.category_1_code, fam.category_2_code) == ('2D', 'CTRL', 'Device')
+	assert catalog.build_family_name(fam) == 'IPS-US_CTRL_Device_Pilot Light_2D'
+	# A blank term is left out with its prefix and suffix; unused terms are skipped.
+	fam.category_2 = None
+	assert catalog.build_family_name(fam) == 'IPS-US_CTRL_Pilot Light_2D'
+	name_format = [
+		{'term': 'client_code', 'use': False, 'prefix': '', 'suffix': ''},
+		{'term': 'description', 'use': True, 'prefix': '#', 'suffix': ' ('},
+		{'term': 'category_1', 'use': True, 'prefix': '', 'suffix': ')'},
+	]
+	# The first term in the name has no prefix: it separates a term from the one before.
+	assert catalog.build_family_name(fam, name_format) == 'Pilot Light (Control)'
+	fam.client = None
+	assert catalog.build_family_name(fam) == 'US_CTRL_Pilot Light_2D'
+	fam.client = 'IPS'
+
+	catalog.set_family_name_format(name_format)
+	assert [part['term'] for part in catalog.family_name_format][:3] == ['client_code', 'description', 'category_1']
+	assert len(catalog.family_name_format) == 8  # the other terms follow, unused
+	with pytest.raises(ValueError, match='Unknown family name term'):
+		catalog.set_family_name_format([{'term': 'nope'}])
+
+	restored = Catalog.from_dict(json.loads(json.dumps(catalog.to_dict())))
+	assert restored.family_name_format == catalog.family_name_format
+	assert restored.codes == catalog.codes
+	restored_fam = restored.get_family('Old Name')
+	assert (restored_fam.category_1, restored_fam.category_2) == ('Control', None)

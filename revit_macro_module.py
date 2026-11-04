@@ -141,11 +141,42 @@ def _retarget(project, major):
     return True
 
 
+_WINDOWS_FORMS = """  <ItemGroup>
+    <!-- Windows Forms, for the schedule macro's dialog, without its global usings: names such as
+         View would otherwise clash with Revit's. Added by Design Data Manager. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+"""
+
+
+def _enable_windows_forms(project):
+    """Turn on Windows Forms in the project (for the schedule macro's dialog), keeping the
+    original as ``.csproj.bak``. Returns ``False`` when it's already on."""
+    text = project.read_text(encoding="utf-8-sig")
+    if re.search(r"<UseWindowsForms>\s*true\s*</UseWindowsForms>", text, re.I):
+        return False
+    new_text, count = re.subn(
+        r"(\s*)(<TargetFramework>[^<]*</TargetFramework>)",
+        r"\1\2\1<UseWindowsForms>true</UseWindowsForms>", text, count=1,
+    )
+    if not count or "</Project>" not in new_text:
+        return False
+    new_text = new_text.replace("</Project>", _WINDOWS_FORMS + "</Project>", 1)
+    backup = project.with_name(project.name + ".bak")
+    if not backup.exists():
+        shutil.copy2(project, backup)
+    project.write_text(new_text, encoding="utf-8")
+    return True
+
+
 def build_module(module, timeout=300):
     """Build ``module`` so Macro Manager lists its macros. Returns ``(succeeded, messages)``.
 
-    A Revit update can ship an API for a newer .NET than the module targets (error
-    CS1705); the module is then retargeted to that .NET, with a backup, and rebuilt.
+    The schedule macro shows a Windows Forms dialog, so Windows Forms is turned on in
+    the module's project first (once, with a backup). A Revit update can ship an API
+    for a newer .NET than the module targets (error CS1705); the module is then
+    retargeted to that .NET, with a backup, and rebuilt.
     """
     if shutil.which("dotnet") is None:
         return False, [
@@ -153,6 +184,14 @@ def build_module(module, timeout=300):
             f"Install it from {DOTNET_DOWNLOAD_URL}, or build the module in Revit's Macro Manager."
         ]
     messages = []
+    try:
+        if _enable_windows_forms(module.project):
+            messages.append(
+                f"Turned on Windows Forms in the {module.name} module, for the schedule macro's dialog "
+                f"(the original project file is {module.project.name}.bak)."
+            )
+    except OSError as exc:
+        return False, [f"The {module.name} module's project file couldn't be updated: {exc}"]
     try:
         result = _dotnet_build(module.source_dir, timeout)
         needed = re.search(r"CS1705.*?System\.Runtime, Version=(\d+)\.", result.stdout)

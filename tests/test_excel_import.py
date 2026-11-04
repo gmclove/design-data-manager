@@ -2,6 +2,7 @@ import pytest
 
 openpyxl = pytest.importorskip("openpyxl")
 from openpyxl.styles import Border, Font, Side  # noqa: E402
+from openpyxl.worksheet.table import Table  # noqa: E402
 
 from excel_import import import_workbook  # noqa: E402
 
@@ -34,16 +35,30 @@ def make_workbook(path):
     families.append([])
     header = [None] * 17
     header[1], header[3], header[4], header[7] = "Revit Family Category", "Client", "Country", "Description"
+    header[5], header[6] = "Family Category 1", "Family Category 2"
     header[9], header[10], header[16] = "Client Abbrev.", "Country Abbrev.", "Family Name"
+    header[11], header[12], header[13] = "Family Category 1 Abbrev.", "Family Category 2 Abbrev.", "Revit View Abbrev."
     families.append(header)
-    for name in ("IPS-US_Pump", "IPS-US_Pump"):
+    rows = (
+        ("IPS-US_Pump", "Mechanical Equipment", "Equipment", "Pump", "EQUIP", "PUMP", "3D"),
+        ("IPS-US_Pump", "Mechanical Equipment", "Equipment", "Pump", "EQUIP", "PUMP", "3D"),
+        ("IPS-US_Tag_2D", "Multi-Category Tags", "General", None, "GEN", None, "2D"),
+        ("IPS-US_Tag_3D", "Multi-Category Tags", "General", None, "GEN", None, "3D"),
+        ("IPS-US_Line_2D", "Detail Item", "General", None, "GEN", None, "2D"),
+    )
+    for name, category, category_1, category_2, code_1, code_2, view in rows:
         row = [None] * 17
         row[1], row[3], row[4], row[7], row[9], row[10], row[16] = (
-            "Mechanical Equipment", "IPS", "United States", "Pump", "IPS", "US", name)
+            category, "IPS", "United States", "Pump", "IPS", "US", name)
+        row[5], row[6], row[11], row[12], row[13] = category_1, category_2, code_1, code_2, view
         families.append(row)
 
     wb.create_sheet("Not A Schedule")
-    wb.create_sheet("Backstage")
+    backstage = wb.create_sheet("Backstage")
+    # The Category 1 code table, listing one no family uses yet.
+    for row in (("Category 1", "Category 1 Abbrev."), ("Equipment", "EQUIP"), ("Piping", "PIPE")):
+        backstage.append(row)
+    backstage.add_table(Table(displayName="famCat1", ref="A1:B3"))
 
     sheet = wb.create_sheet("Pump")
     sheet["B6"], sheet["C6"] = "Schedule Name Filter:", "equip, "
@@ -111,6 +126,19 @@ def test_families_import_with_client_and_country_codes(imported):
         "Mechanical Equipment", "IPS", "US", "Pump")
     assert fam.status == "Warning"  # no parameters yet; not an error
     assert any("'IPS-US_Pump' is listed twice" in issue for issue in imported.issues)
+
+
+def test_families_import_categories_with_codes_and_category_codes_from_their_views(imported):
+    catalog = imported.catalog
+    fam = catalog.get_family("IPS-US_Pump")
+    assert (fam.category_1, fam.category_1_code, fam.category_2, fam.category_2_code) == (
+        "Equipment", "EQUIP", "Pump", "PUMP")
+    assert catalog.code("category_1", "Piping") == "PIPE"  # from the code table, though unused
+    # A category's code is its families' view: one view gives it, both views give none.
+    assert catalog.code("category", "Mechanical Equipment") == "3D"
+    assert catalog.code("category", "Detail Item") == "2D"
+    assert catalog.code("category", "Multi-Category Tags") == ""
+    assert catalog.build_family_name(fam) == "IPS-US_EQUIP_PUMP_Pump_3D"
 
 
 def test_schedule_sheets_after_backstage_become_standalone_schedules(imported):

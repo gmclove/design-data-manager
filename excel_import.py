@@ -167,9 +167,43 @@ def _import_parameters(wb, catalog, result):
 
 # --- families -----------------------------------------------------------------
 
+# Excel tables (on the Backstage sheet) listing each Category 1 and 2 with its code, so names
+# no family uses yet are kept too.
+CODE_TABLES = {"category_1": "famCat1", "category_2": "FamCat2"}
+# Families sheet columns holding each kind's name and code.
+FAMILY_CODE_COLUMNS = {
+    "client": ("Client", "Client Abbrev."),
+    "country": ("Country", "Country Abbrev."),
+    "category_1": ("Family Category 1", "Family Category 1 Abbrev."),
+    "category_2": ("Family Category 2", "Family Category 2 Abbrev."),
+}
+
+
+def _lookup_table(wb, table_name):
+    """The Excel table ``table_name``'s first two columns as ``{name: code}``; ``{}`` if missing."""
+    for ws in wb.worksheets:
+        if table_name in ws.tables:
+            rows = list(ws[ws.tables[table_name].ref])[1:]
+            return {_text(row[0].value): _text(row[1].value) for row in rows if _text(row[0].value)}
+    return {}
+
+
+def _set_code(catalog, result, kind, name, code, where):
+    if name and code and catalog.code(kind, name) != code:
+        try:
+            catalog.set_code(kind, name, code)
+        except ValueError as exc:
+            result.issues.append(f"{where}: {exc}")
+
+
 def _import_families(wb, catalog, result):
+    for kind, table_name in CODE_TABLES.items():
+        for name, code in _lookup_table(wb, table_name).items():
+            _set_code(catalog, result, kind, name, code, f"Table {table_name}")
     ws = wb["Families"]
     header_row, columns = _header_columns(ws, ("Family Name", "Revit Family Category"))
+    # The Revit View code (2D / 3D) of each Revit category's families, for its Category Code.
+    view_codes = {}
     for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
         get = lambda name: _text(row[columns[name] - 1]) if name in columns and columns[name] <= len(row) else ""  # noqa: E731
         name = get("Family Name")
@@ -183,23 +217,27 @@ def _import_families(wb, catalog, result):
         if catalog.get_family(name) is not None:
             result.issues.append(f"Families: '{name}' is listed twice; kept the first.")
             continue
-        for kind, code_column in (("client", "Client Abbrev."), ("country", "Country Abbrev.")):
-            kind_name, code = get(kind.capitalize()), get(code_column)
-            if kind_name and code and catalog.code(kind, kind_name) != code:
-                try:
-                    catalog.set_code(kind, kind_name, code)
-                except ValueError as exc:
-                    result.issues.append(f"Families: '{name}': {exc}")
+        for kind, (name_column, code_column) in FAMILY_CODE_COLUMNS.items():
+            _set_code(catalog, result, kind, get(name_column), get(code_column), f"Families: '{name}'")
         category = get("Revit Family Category") or None
+        if category:
+            view_codes.setdefault(category, set()).add(get("Revit View Abbrev."))
+        details = {
+            "client": get("Client") or None, "country": get("Country") or None,
+            "category_1": get("Family Category 1") or None, "category_2": get("Family Category 2") or None,
+            "description": get("Description") or None,
+        }
         try:
-            catalog.add_family(
-                name, client=get("Client") or None, country=get("Country") or None,
-                description=get("Description") or None, category=category,
-            )
+            catalog.add_family(name, category=category, **details)
         except ValueError as exc:
             result.issues.append(f"Families: '{name}' imported without its category: {exc}")
-            catalog.add_family(name, client=get("Client") or None, country=get("Country") or None,
-                               description=get("Description") or None)
+            catalog.add_family(name, **details)
+
+    # Category Code: 3D for categories placed in floor plans, 2D for drafting views; a
+    # category whose families use both (or no view) gets none.
+    for category, codes in sorted(view_codes.items()):
+        if len(codes) == 1 and "" not in codes:
+            _set_code(catalog, result, "category", category, codes.pop(), "Families")
 
 
 # --- schedules ----------------------------------------------------------------

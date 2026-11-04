@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import threading
 import tkinter.font as tkfont
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -45,7 +46,8 @@ from ddm_tables import (
 )
 from excel_import import import_workbook
 from revit_parameter_manager import (
-    CODE_KINDS, COMMON_PARAM_NAMES, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, guid_change_warning,
+    CODE_KINDS, CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, FAMILY_NAME_TERMS, SCHEDULE_FILTER_PARAM, Catalog,
+    Param, Schedule, guid_change_warning,
 )
 from revit_macro_module import (
     MACROS_ROOT, USER_SETTINGS_PATH, build_module, choose_module, chosen_module, find_macro_modules,
@@ -131,7 +133,9 @@ OVERRIDE_RULES = (
         "Shaded cell: doesn't apply, for example the family doesn't have that parameter. In a "
         "schedule, an \"Add Parameter to Family\" button adds the missing parameter to the family.\n"
         "Double-click a cell to edit it in place. Enter or clicking away saves, Tab moves to the "
-        "next cell, Escape cancels."
+        "next cell, Escape cancels.\n"
+        "In a schedule, the Parameter section edits the parameter itself, for every family and "
+        "schedule, like the Parameters tab."
     )),
     ("The Apply to All Families Rows", (
         "In a schedule, the Apply to All Families rows are a shortcut, not another level. They set every "
@@ -824,6 +828,7 @@ class DDMGUI:
         )
         self.load_checkpoint(str(startup_path))
         self.checkpoint_path = DEFAULT_CHECKPOINT_PATH
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
         if startup_path == STARTER_DATABASE_PATH and FROZEN and self.warning_text is not None:
             # The bundled copy unpacks to a temporary folder; say what it is instead.
             self.warning_text.delete("1.0", "2.0")
@@ -900,7 +905,7 @@ class DDMGUI:
         self.file_actions = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         self.file_actions.grid(row=5, column=0, sticky="ew")
         self.file_actions.columnconfigure(0, weight=1)
-        ttk.Button(self.file_actions, text="Load", command=self.load_checkpoint, style="Action.TButton").grid(
+        ttk.Button(self.file_actions, text="Load", command=self.open_database, style="Action.TButton").grid(
             row=0, column=1, padx=(0, 8)
         )
         ttk.Button(self.file_actions, text="Save", command=self.save_checkpoint, style="Action.TButton").grid(
@@ -910,7 +915,7 @@ class DDMGUI:
             row=0, column=3, padx=(0, 8)
         )
         ttk.Button(
-            self.file_actions, text="Import Excel...", command=self.import_excel_workbook, style="Action.TButton",
+            self.file_actions, text="Import Excel...", command=self.import_excel_from_button, style="Action.TButton",
         ).grid(row=0, column=4)
 
     def _show_messages(self, lines: Sequence[str]):
@@ -927,7 +932,11 @@ class DDMGUI:
     # --- exports ----------------------------------------------------------------
 
     def _generate_revit_schedule_macro_file(self):
-        """Write the schedule macro next to the save; install it in the user's macro module and build it."""
+        """Write the schedule macro next to the save; install it in the user's macro module and build it.
+
+        With a window, the build runs in the background so the app stays usable; a save
+        made while a build is running installs its macro once that build finishes.
+        """
         module = self._macro_module_for_save()
         try:
             output_path = get_database_output_paths(self.checkpoint_path)["macro"]
@@ -937,33 +946,85 @@ class DDMGUI:
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(source, encoding="utf-8")
-            installed_path, removed_paths = install_macro(source, module.source_dir) if module else (None, [])
         except (OSError, ValueError) as exc:
-            messagebox.showerror(
-                "Schedule Macro Generation Failed",
-                f"The database was saved, but the Revit schedule macro could not be generated:\n{exc}",
-                parent=getattr(self, "root", None),
-            )
+            self._show_macro_generation_failure(exc)
             return
         self._append_message(f"Generated Revit schedule macro: {output_path}")
+        if module is None:
+            return
+        if getattr(self, "_macro_build_thread", None) is not None:
+            # Installing now would change the macro under the running build.
+            self._pending_macro_install = (source, module)
+            self._append_message(
+                f"The {module.name} module is still building; this save's macro will be installed "
+                "and built when it finishes."
+            )
+            return
+        self._install_and_build_macro(source, module)
+
+    def _show_macro_generation_failure(self, exc):
+        messagebox.showerror(
+            "Schedule Macro Generation Failed",
+            f"The database was saved, but the Revit schedule macro could not be generated:\n{exc}",
+            parent=getattr(self, "root", None),
+        )
+
+    def _install_and_build_macro(self, source: str, module):
+        try:
+            installed_path, removed_paths = install_macro(source, module.source_dir)
+        except OSError as exc:
+            self._show_macro_generation_failure(exc)
+            return
         if installed_path is None:
             return
         for removed_path in removed_paths:
             self._append_message(f"Removed older generated macro: {removed_path}")
-        self._append_message(f"Installed the schedule macro in {installed_path}. Building {module.name}...")
         root = getattr(self, "root", None)
-        if root is not None:
-            root.configure(cursor="watch")
-            root.update_idletasks()
-        try:
-            succeeded, build_messages = build_module(module)
-        finally:
-            if root is not None:
-                root.configure(cursor="")
+        if root is None:
+            # No window (tests, scripts): build here and now.
+            self._append_message(f"Installed the schedule macro in {installed_path}. Building {module.name}...")
+            self._finish_macro_build(module, *build_module(module))
+            return
+
+        self._append_message(
+            f"Installed the schedule macro in {installed_path}. Building {module.name} in the background; "
+            "keep working, and its messages will show here when it's done."
+        )
+        outcome = {}
+
+        def build():
+            try:
+                outcome["result"] = build_module(module)
+            except Exception as exc:  # noqa: BLE001 - reported in Messages rather than lost in the thread
+                outcome["result"] = (False, [f"The {module.name} module couldn't be built: {exc}"])
+
+        thread = threading.Thread(target=build, name="macro-build", daemon=True)
+        self._macro_build_thread = thread
+        thread.start()
+
+        def check():
+            # Tk isn't thread-safe: the window only hears about the build from its own thread.
+            if thread.is_alive():
+                root.after(self._macro_build_poll_ms, check)
+                return
+            self._macro_build_thread = None
+            self._finish_macro_build(module, *outcome["result"])
+
+        root.after(self._macro_build_poll_ms, check)
+
+    _macro_build_poll_ms = 250
+
+    def _finish_macro_build(self, module, succeeded: bool, build_messages: Sequence[str]):
         for line in build_messages:
             self._append_message(line)
         if not succeeded:
             self._show_macro_build_failure(module, build_messages)
+        pending = getattr(self, "_pending_macro_install", None)
+        if pending is not None:
+            self._pending_macro_install = None
+            self._install_and_build_macro(*pending)
+        elif getattr(self, "_close_when_built", False):
+            self.root.destroy()
 
     def _macro_module_for_save(self):
         """The macro module Save installs into, or ``None`` (with a message saying why).
@@ -1252,8 +1313,8 @@ class DDMGUI:
     def _configure_detail_clicks(self):
         if self.family_tree is not None:
             # One click edits the cell in place; two clicks open the family window.
+            # One click edits a cell in place; on a name it opens the Family Name Builder.
             self.family_tree.bind("<Button-1>", lambda event: self._on_tree_click(event, "families"), add="+")
-            self.family_tree.bind("<Double-1>", self._on_family_tree_double_click)
         if self.group_tree is not None:
             self.group_tree.bind("<Double-1>", self._open_selected_schedule_window)
 
@@ -1487,13 +1548,13 @@ class DDMGUI:
             fam.name = value
         elif column_name == "category":
             fam.set_category(value or None)
-        elif column_name in {"client", "country", "description"}:
+        elif column_name in {"client", "country", "category_1", "category_2", "description"}:
             setattr(fam, column_name, value or None)
-        elif column_name in {"client_code", "country_code"}:
-            # The code belongs to the client (or country), so every family with it changes.
+        elif column_name.endswith("_code") and column_name[:-len("_code")] in CODED_KINDS:
+            # The code belongs to the client (country, category, ...), so every family with it changes.
             kind = column_name[:-len("_code")]
             if not getattr(fam, kind):
-                raise ValueError(f"Choose a {kind} before setting its code.")
+                raise ValueError(f"Choose a {CODE_LABELS[kind].lower()} before setting its code.")
             self.catalog.set_code(kind, getattr(fam, kind), value)
         else:
             raise ValueError(f"{self._humanize_column_name(column_name)} can't be edited.")
@@ -1507,8 +1568,8 @@ class DDMGUI:
         return self._revit_dropdown_values(column_name)
 
     def _ask_new_code_entry(self, kind: str, parent=None):
-        """Ask for a new client (or country) name and code and add it. Returns the name, or ``None``."""
-        label = kind.capitalize()
+        """Ask for a new client (country, Category 1 or 2) name and code and add it. Returns the name, or ``None``."""
+        label = CODE_LABELS[kind]
         owner = (parent or self.root).winfo_toplevel()
         dialog = tk.Toplevel(owner)
         dialog.title(f"Add New {label}")
@@ -1521,7 +1582,9 @@ class DDMGUI:
         fields.pack(fill="x", padx=10)
         fields.columnconfigure(1, weight=1)
         examples = {"client": ("Client Name", "Abbreviation, e.g. ACME"),
-                    "country": ("e.g. United States", "Abbreviation, e.g. USA")}
+                    "country": ("e.g. United States", "Abbreviation, e.g. USA"),
+                    "category_1": ("e.g. Equipment", "Abbreviation, e.g. EQUIP"),
+                    "category_2": ("e.g. Air Handling Unit", "Abbreviation, e.g. AHU")}
         name_hint, code_hint = examples[kind]
         ttk.Label(fields, text=f"{label} =").grid(row=0, column=0, sticky="w", pady=4)
         name_entry = PlaceholderEntry(fields, placeholder=name_hint)
@@ -1561,6 +1624,169 @@ class DDMGUI:
         dialog.grab_set()
         dialog.wait_window()
         return result["name"]
+
+    # --- family names -----------------------------------------------------------
+
+    def _open_family_name_builder(self, row_index: int):
+        """The Family Name Builder: build a family's name from its codes, categories and description.
+
+        Each term can be used or not, and has a prefix and suffix; a blank term is left
+        out with them, and the first term in a name has no prefix. The order, prefixes and suffixes are one format shared by every
+        family, saved when a family is renamed with it.
+        """
+        if not 0 <= row_index < len(self.catalog.families):
+            return None
+        fam = self.catalog.families[row_index]
+        labels = dict(FAMILY_NAME_TERMS)
+        parts = [dict(part) for part in self.catalog.family_name_format]
+
+        window = tk.Toplevel(self.root)
+        window.title("Family Name Builder")
+        window.transient(self.root)
+        window.grab_set()
+        window.geometry("720x480")
+
+        ttk.Label(window, text=f"Family: {fam.name}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(10, 2))
+        ttk.Label(
+            window,
+            text="Each used term adds Prefix + Value + Suffix. A blank value is left out with its prefix and "
+                 "suffix, and the first term in the name has no prefix. The order, prefixes and suffixes are "
+                 "shared by every family.",
+            wraplength=690, justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        terms_frame = ttk.Frame(window)
+        terms_frame.pack(fill="x", padx=12)
+        name_var = tk.StringVar()
+
+        def built_name():
+            return self.catalog.build_family_name(fam, parts)
+
+        def refresh_name(*_args):
+            name_var.set(built_name())
+
+        def move(index, step):
+            target = index + step
+            if 0 <= target < len(parts):
+                parts[index], parts[target] = parts[target], parts[index]
+                draw_terms()
+
+        def draw_terms():
+            for child in terms_frame.winfo_children():
+                child.destroy()
+            for column, heading in enumerate(("Use", "Term", "Value (This Family)", "Prefix", "Suffix", "Order")):
+                ttk.Label(terms_frame, text=heading, style="Section.TLabel").grid(row=0, column=column, sticky="w", padx=4)
+            terms_frame.columnconfigure(2, weight=1)
+            for index, part in enumerate(parts, start=1):
+                use_var = tk.BooleanVar(value=part["use"])
+                prefix_var = tk.StringVar(value=part["prefix"])
+                suffix_var = tk.StringVar(value=part["suffix"])
+
+                def update(*_args, part=part, use_var=use_var, prefix_var=prefix_var, suffix_var=suffix_var):
+                    part.update(use=use_var.get(), prefix=prefix_var.get(), suffix=suffix_var.get())
+                    refresh_name()
+
+                value = str(getattr(fam, part["term"]) or "")
+                ttk.Checkbutton(terms_frame, variable=use_var).grid(row=index, column=0, padx=4)
+                ttk.Label(terms_frame, text=labels[part["term"]]).grid(row=index, column=1, sticky="w", padx=4)
+                ttk.Label(terms_frame, text=value or "(blank)", foreground="#111827" if value else "#9ca3af").grid(
+                    row=index, column=2, sticky="w", padx=4)
+                ttk.Entry(terms_frame, textvariable=prefix_var, width=8).grid(row=index, column=3, padx=4, pady=1)
+                ttk.Entry(terms_frame, textvariable=suffix_var, width=8).grid(row=index, column=4, padx=4, pady=1)
+                order = ttk.Frame(terms_frame)
+                order.grid(row=index, column=5, padx=4)
+                ttk.Button(order, text="\u25b2", width=3, command=lambda i=index - 1: move(i, -1)).pack(side="left")
+                ttk.Button(order, text="\u25bc", width=3, command=lambda i=index - 1: move(i, 1)).pack(side="left")
+                for var in (use_var, prefix_var, suffix_var):
+                    var.trace_add("write", update)
+            refresh_name()
+
+        draw_terms()
+
+        name_box = ttk.Frame(window)
+        name_box.pack(fill="x", padx=12, pady=(12, 4))
+        ttk.Label(name_box, text="New Name:", style="Section.TLabel").pack(side="left")
+        ttk.Entry(name_box, textvariable=name_var, font=("Segoe UI", 11)).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ttk.Label(window, text="Edit the New Name before renaming to use something else for this family.",
+                  foreground="#6b7280").pack(anchor="w", padx=12)
+
+        def rename_this():
+            new_name = cell_text(name_var.get())
+            old_name = fam.name
+            try:
+                if new_name != old_name:
+                    self._set_family_field(fam, "name", new_name)
+            except ValueError as exc:
+                messagebox.showerror("Invalid Name", str(exc), parent=window)
+                return
+            self.catalog.set_family_name_format(parts)
+            self.validate_all()
+            if new_name != old_name:
+                self._append_message(f"Renamed family '{old_name}' to '{new_name}'.")
+            window.destroy()
+
+        def rename_all():
+            renames, skipped = self._family_renames(parts)
+            if not renames and not skipped:
+                messagebox.showinfo("Rename All Families", "Every family's name already matches.", parent=window)
+                return
+            shown = [f"{old} \u2192 {new}" for old, new in renames[:15]]
+            if len(renames) > len(shown):
+                shown.append(f"...and {len(renames) - len(shown)} more")
+            message = f"Rename {len(renames)} famil{'y' if len(renames) == 1 else 'ies'} to match this format?\n\n" + "\n".join(shown)
+            if skipped:
+                message += (f"\n\n{len(skipped)} left as they are: their new names would be blank or the "
+                            "same as another family's (see Messages).")
+            message += "\n\nOnly names in this database change; families in Revit aren't renamed."
+            if not messagebox.askyesno("Rename All Families", message, parent=window):
+                return
+            self.catalog.set_family_name_format(parts)
+            for old, new in renames:
+                try:
+                    self.catalog.get_family(old).name = new
+                except ValueError as exc:  # e.g. two families swapping names
+                    skipped.append(f"'{old}' ({exc})")
+                    renames = [pair for pair in renames if pair[0] != old]
+            self.validate_all()
+            self._show_messages(
+                [f"Renamed {len(renames)} famil{'y' if len(renames) == 1 else 'ies'} to match the name format."]
+                + [f"Not renamed: {reason}" for reason in skipped]
+            )
+            window.destroy()
+
+        buttons = ttk.Frame(window)
+        buttons.pack(fill="x", side="bottom", padx=12, pady=10)
+        ttk.Button(buttons, text="Rename This Family", command=rename_this, style="Action.TButton").pack(side="right")
+        ttk.Button(buttons, text="Rename All Families to Match...", command=rename_all).pack(side="right", padx=(0, 6))
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="left")
+        # For tests.
+        window.parts, window.name_var, window.move = parts, name_var, move
+        window.rename_this, window.rename_all = rename_this, rename_all
+        return window
+
+    def _family_renames(self, name_format):
+        """Families whose name differs from ``name_format``'s: ``([(old, new), ...], [reason, ...])``.
+
+        A family is left out if its new name is blank or another family has (or would get) it.
+        """
+        wanted = {fam.name: self.catalog.build_family_name(fam, name_format) for fam in self.catalog.families}
+        counts = {}
+        for new in wanted.values():
+            counts[new] = counts.get(new, 0) + 1
+        renames, skipped = [], []
+        for old, new in wanted.items():
+            if new == old:
+                continue
+            if not new:
+                skipped.append(f"'{old}' (its new name would be blank)")
+            elif counts[new] > 1 or (new in wanted and wanted[new] == new):
+                skipped.append(f"'{old}' (another family has or would get '{new}')")
+            else:
+                renames.append((old, new))
+        # A rename onto a name another family gives up: do that family first.
+        order = {old: index for index, (old, _new) in enumerate(renames)}
+        renames.sort(key=lambda pair: (pair[1] in order, order[pair[0]]))
+        return renames, skipped
 
     # --- default value overrides ------------------------------------------------
 
@@ -1779,27 +2005,73 @@ class DDMGUI:
     def _table_cell(text, state: str = "set", editable: bool = False) -> dict:
         return {"text": "" if text is None else str(text), "state": state, "editable": editable}
 
-    def _parameter_table_rows(self, parameter_names: Sequence[str], families) -> List[dict]:
-        """The Parameter section: each column's name and Parameter Default values (read-only)."""
+    # Parameter section rows and the parameter field each one edits.
+    _parameter_row_fields = {
+        "value": "default_value", "formula": "formula", "group_under": "group_under",
+        "instance_param": "instance_param",
+    }
+
+    def _parameter_table_rows(self, parameter_names: Sequence[str], families, schedule_window: bool = False) -> List[dict]:
+        """The Parameter section: each column's name and Parameter Default values.
+
+        In the schedule window (``schedule_window``) a Default Header row follows the
+        name (the parameter's own header text, in gray when it's just the name), and
+        the cells edit the parameter itself; elsewhere they're read-only.
+        """
         definitions = [
             self.catalog.get_param(name)
             or next((param for fam in families for param in fam.params if param.name == name), None)
             for name in parameter_names
         ]
+
+        def editable(param):
+            # Only catalog parameters: a family-only parameter is edited in its family.
+            return schedule_window and param is not None and self.catalog.get_param(param.name) is param
+
         rows = [{
-            "section": "Parameter", "label": "Name", "selects_column": True,
-            "cells": [self._table_cell(name) for name in parameter_names],
+            "section": "Parameter", "label": "Name", "selects_column": True, "param_field": "name",
+            "cells": [self._table_cell(name, editable=editable(param)) for name, param in zip(parameter_names, definitions)],
         }]
+        if schedule_window:
+            rows.append({
+                "section": "",
+                "label": "Default Header",
+                "param_field": "header_text",
+                "cells": [
+                    self._table_cell(None) if param is None else self._table_cell(
+                        param.header_text, "set" if param._header_text is not None else "inherited", editable(param)
+                    )
+                    for param in definitions
+                ],
+            })
         for attribute, _term, label in self._override_attributes:
             rows.append({
                 "section": "",
                 "label": label,
+                "param_field": self._parameter_row_fields[attribute],
                 "cells": [
-                    self._table_cell(None if param is None else self._attribute_text(attribute, getattr(param, attribute)))
+                    self._table_cell(
+                        None if param is None else self._attribute_text(attribute, getattr(param, attribute)),
+                        editable=editable(param),
+                    )
                     for param in definitions
                 ],
             })
         return rows
+
+    def _set_param_from_table(self, param_name: str, field: str, text):
+        """Edit a parameter from the schedule window's Parameter section; it changes everywhere."""
+        param = self.catalog.get_param(param_name)
+        if param is None:
+            raise ValueError(f"Parameter not found: {param_name}")
+        if field == "instance_param":
+            value = self._attribute_value("instance_param", text)
+            if value is None:
+                raise ValueError("A parameter is always Instance or Type; pick one.")
+            param.instance_param = value
+        else:
+            self._set_param_field(param, field, text)
+        self.validate_all()
 
     def _family_table_rows(self, fam, parameter_names: Sequence[str], schedule=None) -> List[dict]:
         """One row per attribute for ``fam``: its Family Default values, or with
@@ -1914,7 +2186,7 @@ class DDMGUI:
 
     def _schedule_table_rows(self, schedule) -> List[dict]:
         parameter_names = self._get_schedule_parameter_names(schedule)
-        rows = self._parameter_table_rows(parameter_names, schedule.fams)
+        rows = self._parameter_table_rows(parameter_names, schedule.fams, schedule_window=True)
         rows.extend(self._all_families_rows(schedule, parameter_names))
         for fam in schedule.fams:
             rows.extend(self._family_table_rows(fam, parameter_names, schedule))
@@ -1936,15 +2208,20 @@ class DDMGUI:
         self.validate_all()
         table.set_rows(rows_builder())
 
-    def _edit_table_cell(self, table: "OverrideTable", rows_builder, schedule_name, row_index: int, column_index: int):
+    def _edit_table_cell(self, table: "OverrideTable", rows_builder, schedule_name, row_index: int, column_index: int,
+                         on_columns_changed=None):
         """Edit one table cell in place; on commit, run the override prompt and refresh.
 
-        Tab moves on to the next editable cell in the row.
+        Tab moves on to the next editable cell in the row. A Parameter section cell
+        edits the parameter itself; a change to its name or Default Header calls
+        ``on_columns_changed()`` (the column headers need redrawing) instead.
         """
         row = table.rows[row_index]
         if not row["cells"][column_index].get("editable"):
             return None
         param_name = table.parameter_names[column_index]
+        if row.get("param_field"):
+            return self._edit_parameter_cell(table, rows_builder, schedule_name, row_index, column_index, on_columns_changed)
         attribute = row["attribute"]
         family_name = row["family"]
         all_families = row.get("all_families", False)
@@ -2002,6 +2279,56 @@ class DDMGUI:
                 self._revit_dropdown_values("group_under") if attribute == "group_under"
                 else ["Instance", "Type"] if attribute == "instance_param" else None
             ),
+            on_tab=edit_next,
+        )
+
+    def _edit_parameter_cell(self, table, rows_builder, schedule_name, row_index, column_index, on_columns_changed):
+        """Edit a Parameter section cell in place: it sets the parameter for every family and schedule."""
+        row = table.rows[row_index]
+        field = row["param_field"]
+        param = self.catalog.get_param(table.parameter_names[column_index])
+        if field == "header_text":
+            current = param._header_text or ""
+        elif field == "name":
+            current = param.name
+        else:
+            current = row["cells"][column_index]["text"]
+
+        def commit(text):
+            if cell_text(text) == current:
+                return
+            try:
+                self._set_param_from_table(param.name, field, text)
+            except ValueError as exc:
+                messagebox.showerror("Invalid value", str(exc), parent=table.winfo_toplevel())
+                return
+            if field in ("name", "header_text") and on_columns_changed is not None:
+                on_columns_changed()
+            else:
+                table.set_rows(rows_builder())
+
+        def edit_next():
+            cells = table.rows[row_index]["cells"]
+            next_column = next(
+                (index for index in range(column_index + 1, len(cells)) if cells[index].get("editable")),
+                None,
+            )
+            if next_column is not None:
+                self._edit_table_cell(table, rows_builder, schedule_name, row_index, next_column, on_columns_changed)
+
+        choices = None
+        if field == "group_under":
+            choices = self._revit_dropdown_values("group_under")
+        elif field == "instance_param":
+            choices = ["Instance", "Type"]
+        return table.start_cell_edit(
+            row_index,
+            column_index,
+            current,
+            commit,
+            placeholder="Blank Uses the Parameter Name" if field == "header_text"
+            else "Sets the Parameter for Every Family and Schedule",
+            choices=choices,
             on_tab=edit_next,
         )
 
@@ -2394,6 +2721,14 @@ class DDMGUI:
         cell = self._tree_cell_at(tree, table_name, event)
         if cell is None:
             return
+        if table_name == "families":
+            # No double-click on the Families tab, so there's nothing to wait for.
+            if self._get_table_columns("families")[cell[1]] == "name":
+                self._finish_tree_cell_edit(True)
+                self._open_family_name_builder(int(cell[0]))
+            else:
+                self._start_tree_cell_edit(tree, table_name, *cell)
+            return
 
         def start():
             self._pending_tree_edit = None
@@ -2401,11 +2736,6 @@ class DDMGUI:
 
         # Wait in case this is the first click of a double-click.
         self._pending_tree_edit = self.root.after(self._single_click_delay_ms, start)
-
-    def _on_family_tree_double_click(self, event):
-        self._cancel_pending_tree_edit()
-        self._finish_tree_cell_edit(False)
-        self._open_selected_family_window(event)
 
     def _start_tree_cell_edit(self, tree: ttk.Treeview, table_name: str, row_id: str, column_number: int):
         """Edit one cell of a main table in place: Enter or clicking away saves, Escape cancels."""
@@ -2714,7 +3044,8 @@ class DDMGUI:
             hidden_names=schedule.hidden_field_names,
             on_hidden_toggle=toggle_hidden,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
-                table, rows_builder, selected_name, row_index, column_index
+                table, rows_builder, selected_name, row_index, column_index,
+                on_columns_changed=lambda: reopen(table.get_selected_parameter_names()),
             ),
             on_cell_action=lambda row_index, column_index: self._add_parameter_from_table(
                 table, rows_builder, row_index, column_index
@@ -2789,7 +3120,7 @@ class DDMGUI:
     # --- files ------------------------------------------------------------------
 
     def save_checkpoint(self):
-        self._save_to(self.checkpoint_path)
+        return self._save_to(self.checkpoint_path)
 
     def save_checkpoint_as(self):
         checkpoint_path = filedialog.asksaveasfilename(
@@ -2804,11 +3135,12 @@ class DDMGUI:
             ],
         )
         if not checkpoint_path:
-            return
-        self._save_to(checkpoint_path)
+            return False
+        return self._save_to(checkpoint_path)
 
-    def _save_to(self, database_path):
-        """Save the catalog as JSON, plus a readable CSV and the Revit exports alongside."""
+    def _save_to(self, database_path) -> bool:
+        """Save the catalog as JSON, plus a readable CSV and the Revit exports alongside.
+        Returns ``False`` if the database couldn't be written."""
         output_paths = get_database_output_paths(database_path)
         self.checkpoint_path = output_paths["checkpoint"]
         try:
@@ -2816,11 +3148,94 @@ class DDMGUI:
             write_database_csv(self.catalog, output_paths["csv"])
         except OSError as exc:
             messagebox.showerror("Save failed", str(exc), parent=getattr(self, "root", None))
-            return
+            return False
+        self._mark_saved()
         self._append_message(f"Saved readable database CSV to {output_paths['csv']}")
-        self._generate_revit_schedule_macro_file()
         self._generate_rfps_file()
         self._generate_shared_parameter_file()
+        # Last: the macro module's build is the slow part (in the background with a window).
+        self._generate_revit_schedule_macro_file()
+        return True
+
+    # --- unsaved changes ----------------------------------------------------------
+
+    def _catalog_state(self) -> str:
+        return json.dumps(self.catalog.to_dict(), sort_keys=True, default=str)
+
+    def _mark_saved(self):
+        """Remember the database as saved (or as loaded): later edits are unsaved changes."""
+        self._saved_state = self._catalog_state()
+
+    def has_unsaved_changes(self) -> bool:
+        saved = getattr(self, "_saved_state", None)
+        return saved is not None and saved != self._catalog_state()
+
+    def _confirm_unsaved_changes(self, action: str) -> bool:
+        """Before ``action`` ("closing", ...), offer to save unsaved changes.
+
+        Returns ``True`` to go ahead (saved, discarded or nothing to save), ``False`` to stop.
+        """
+        if not self.has_unsaved_changes():
+            return True
+        choice = self._ask_save_discard_cancel(action)
+        if choice == "save":
+            return self.save_checkpoint()
+        return choice == "discard"
+
+    def _ask_save_discard_cancel(self, action: str):
+        """The Unsaved Changes window: ``"save"``, ``"discard"`` or ``None`` (cancel)."""
+        root = self.root
+        dialog = tk.Toplevel(root)
+        dialog.title("Unsaved Changes")
+        dialog.transient(root)
+        dialog.resizable(False, False)
+        ttk.Label(dialog, text="Unsaved Changes", style="Section.TLabel").pack(anchor="w", padx=14, pady=(12, 4))
+        ttk.Label(
+            dialog,
+            text=f"The database has changes that aren't saved to {Path(self.checkpoint_path).name}. "
+                 f"Save them before {action}?",
+            wraplength=380, justify="left",
+        ).pack(anchor="w", padx=14)
+        result = {"choice": None}
+
+        def choose(choice):
+            result["choice"] = choice
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=14, pady=12)
+        cancel = ttk.Button(buttons, text="Cancel", command=lambda: choose(None))
+        cancel.pack(side="right")
+        ttk.Button(buttons, text="Discard", command=lambda: choose("discard")).pack(side="right", padx=(0, 6))
+        save = ttk.Button(buttons, text="Save", command=lambda: choose("save"), style="Action.TButton")
+        save.pack(side="right", padx=(0, 6))
+        dialog.bind("<Escape>", lambda _event: choose(None))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+        save.focus_set()
+        dialog.grab_set()
+        dialog.wait_window()
+        return result["choice"]
+
+    def open_database(self):
+        """The Load button: ask about unsaved changes, then pick a database to open."""
+        if self._confirm_unsaved_changes("opening another database"):
+            self.load_checkpoint()
+
+    def import_excel_from_button(self):
+        """The Import Excel... button: ask about unsaved changes, then import."""
+        if self._confirm_unsaved_changes("importing"):
+            self.import_excel_workbook(confirm=False)
+
+    def close(self):
+        """Closing the window: ask about unsaved changes, and let a running macro build finish."""
+        if not self._confirm_unsaved_changes("closing"):
+            return
+        if getattr(self, "_macro_build_thread", None) is not None:
+            # Quitting now would stop the build part-way.
+            self._close_when_built = True
+            self._append_message("Closing once the schedule macro has finished building...")
+            return
+        self.root.destroy()
 
     def _write_checkpoint(self, checkpoint_path):
         self.catalog.save(str(checkpoint_path))
@@ -2856,6 +3271,7 @@ class DDMGUI:
         self.load_issues = issues
         self.checkpoint_path = Path(checkpoint_path)
         self.validate_all()
+        self._mark_saved()
         lines = [f"Loaded database from {checkpoint_path}"]
         if issues:
             lines.append(f"{len(issues)} problem(s) in the file were fixed or skipped while loading:")

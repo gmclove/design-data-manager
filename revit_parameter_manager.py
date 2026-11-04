@@ -21,8 +21,46 @@ CATALOG_FORMAT_VERSION = 3
 # Client and country codes were added within version 3; files without them load with none.
 READABLE_CATALOG_FORMAT_VERSIONS = (2, 3)
 
-# Families name a client and a country; the catalog keeps one code (abbreviation) for each.
-CODE_KINDS = ('client', 'country')
+# Families name a client, a country, a Category 1 and a Category 2, each picked from a list
+# the user adds to; the catalog keeps one code (abbreviation) for each, unique per kind.
+CODE_KINDS = ('client', 'country', 'category_1', 'category_2')
+# The Revit category also has a code: 3D for families placed in floor plans, 2D for those on
+# drafting views, blank for both. Many categories share one, so it isn't unique.
+CODED_KINDS = CODE_KINDS + ('category',)
+CODE_LABELS = {
+	'client': 'Client', 'country': 'Country', 'category': 'Category',
+	'category_1': 'Category 1', 'category_2': 'Category 2',
+}
+# JSON keys of each kind's codes.
+_CODE_KEYS = {
+	'client': 'clients', 'country': 'countries', 'category': 'category_codes',
+	'category_1': 'category_1_codes', 'category_2': 'category_2_codes',
+}
+
+# What a family name can be built from: the attribute and its label, in the builder's order.
+FAMILY_NAME_TERMS = (
+	('client_code', 'Client Code'),
+	('country_code', 'Country Code'),
+	('category_1_code', 'Category 1 Code'),
+	('category_2_code', 'Category 2 Code'),
+	('description', 'Description'),
+	('category_code', 'Category Code'),
+	('category_1', 'Category 1'),
+	('category_2', 'Category 2'),
+)
+# The master workbook's naming, e.g. IPS-US_CTRL_Device_Pilot Light_2D. A blank term is left
+# out with its prefix and suffix, and a prefix separates a term from the one before it, so the
+# first term in a name has none (as the workbook's TEXTJOIN does).
+DEFAULT_FAMILY_NAME_FORMAT = (
+	{'term': 'client_code', 'use': True, 'prefix': '', 'suffix': ''},
+	{'term': 'country_code', 'use': True, 'prefix': '-', 'suffix': ''},
+	{'term': 'category_1_code', 'use': True, 'prefix': '_', 'suffix': ''},
+	{'term': 'category_2_code', 'use': True, 'prefix': '_', 'suffix': ''},
+	{'term': 'description', 'use': True, 'prefix': '_', 'suffix': ''},
+	{'term': 'category_code', 'use': True, 'prefix': '_', 'suffix': ''},
+	{'term': 'category_1', 'use': False, 'prefix': '_', 'suffix': ''},
+	{'term': 'category_2', 'use': False, 'prefix': '_', 'suffix': ''},
+)
 
 GUID_CHANGE_WARNING = (
 	"Renaming parameter '{old_name}' to '{new_name}' will assign it a new GUID. "
@@ -304,10 +342,12 @@ SCHEDULE_FILTER_PARAM = 'IPS_GROUP_Schedule_Name'
 
 class Fam(object):
 	def __init__(self, name=None, client=None, country=None, description=None,
-				 category=None, params=None, overrides=None, catalog=None):
+				 category=None, params=None, overrides=None, catalog=None, category_1=None, category_2=None):
 		self._name = name
 		self.client = client
 		self.country = country
+		self.category_1 = category_1
+		self.category_2 = category_2
 		self.description = description
 		self._validate_category_name(category)
 		self.category = category
@@ -358,6 +398,18 @@ class Fam(object):
 	@property
 	def country_code(self):
 		return self.catalog.code('country', self.country) if self.catalog is not None else ''
+
+	@property
+	def category_code(self):
+		return self.catalog.code('category', self.category) if self.catalog is not None else ''
+
+	@property
+	def category_1_code(self):
+		return self.catalog.code('category_1', self.category_1) if self.catalog is not None else ''
+
+	@property
+	def category_2_code(self):
+		return self.catalog.code('category_2', self.category_2) if self.catalog is not None else ''
 
 	@property
 	def custom_params(self):
@@ -496,6 +548,8 @@ class Fam(object):
 			'name': self.name,
 			'client': self.client,
 			'country': self.country,
+			'category_1': self.category_1,
+			'category_2': self.category_2,
 			'description': self.description,
 			'category': self.category,
 			'param_names': [param.name for param in self.custom_params if param.catalog is not None],
@@ -515,6 +569,8 @@ class Fam(object):
 			name=data.get('name'),
 			client=data.get('client'),
 			country=data.get('country'),
+			category_1=data.get('category_1'),
+			category_2=data.get('category_2'),
 			description=data.get('description'),
 			category=data.get('category'),
 			params=params,
@@ -1065,8 +1121,10 @@ class Catalog(object):
 		self.params = []
 		self.families = []
 		self.schedules = []
-		# Code (abbreviation) of each client and country, by name: {'client': {name: code}, ...}.
-		self.codes = {kind: {} for kind in CODE_KINDS}
+		# Code (abbreviation) of each client, country, category, ... by name: {'client': {name: code}, ...}.
+		self.codes = {kind: {} for kind in CODED_KINDS}
+		# How family names are built: [{'term', 'use', 'prefix', 'suffix'}, ...] (FAMILY_NAME_TERMS).
+		self.family_name_format = [dict(part) for part in DEFAULT_FAMILY_NAME_FORMAT]
 
 	# --- lookups ----------------------------------------------------------
 
@@ -1138,30 +1196,62 @@ class Catalog(object):
 				schedule.remove_family(name)
 		return fam
 
-	# --- client and country codes ------------------------------------------
+	# --- codes and family names -------------------------------------------
 
 	def names(self, kind):
-		"""Every client (or country) name with a code or used by a family, sorted."""
+		"""Every client (country, Category 1, ...) name with a code or used by a family, sorted."""
 		used = {getattr(fam, kind) for fam in self.families if getattr(fam, kind)}
 		return sorted(set(self.codes[kind]) | used, key=str.lower)
 
 	def code(self, kind, name):
-		"""The code of client (or country) ``name``; ``''`` when it has none."""
+		"""The code of client (country, category, ...) ``name``; ``''`` when it has none."""
 		return self.codes[kind].get(name, '') if name else ''
 
 	def set_code(self, kind, name, code):
-		"""Add client (or country) ``name`` or change its code. Codes are unique per kind."""
+		"""Add client (country, Category 1, ...) ``name`` or change its code.
+
+		Codes are unique per kind, except category codes (2D, 3D), which categories share.
+		"""
 		name = (name or '').strip()
 		code = (code or '').strip()
-		label = kind.capitalize()
+		label = CODE_LABELS[kind]
 		if not name:
 			raise ValueError('{} name is required.'.format(label))
-		if code:
+		if code and kind in CODE_KINDS:
 			for other_name, other_code in self.codes[kind].items():
 				if other_name != name and other_code.lower() == code.lower():
 					raise ValueError("{} code '{}' is already used by '{}'.".format(label, code, other_name))
 		self.codes[kind][name] = code
 		return code
+
+	def set_family_name_format(self, name_format):
+		"""Set the shared family name format: a list of {'term', 'use', 'prefix', 'suffix'}."""
+		terms = {term for term, _label in FAMILY_NAME_TERMS}
+		cleaned = []
+		for part in name_format:
+			if part.get('term') not in terms:
+				raise ValueError("Unknown family name term: {}".format(part.get('term')))
+			cleaned.append({
+				'term': part['term'], 'use': bool(part.get('use', True)),
+				'prefix': str(part.get('prefix') or ''), 'suffix': str(part.get('suffix') or ''),
+			})
+		# Terms the format doesn't mention go at the end, unused.
+		listed = {part['term'] for part in cleaned}
+		cleaned.extend(
+			{'term': term, 'use': False, 'prefix': '', 'suffix': ''}
+			for term, _label in FAMILY_NAME_TERMS if term not in listed
+		)
+		self.family_name_format = cleaned
+
+	def build_family_name(self, fam, name_format=None):
+		"""``fam``'s name from the name format: each used, non-blank term with its prefix and
+		suffix, except that the first term in the name has no prefix."""
+		parts = []
+		for part in name_format or self.family_name_format:
+			value = str(getattr(fam, part['term']) or '').strip()
+			if part.get('use', True) and value:
+				parts.append((part.get('prefix', '') if parts else '') + value + part.get('suffix', ''))
+		return ''.join(parts)
 
 	def remove_schedule(self, name):
 		schedule = self.get_schedule(name)
@@ -1288,8 +1378,8 @@ class Catalog(object):
 			'params': [param.to_dict() for param in self.params],
 			'families': [fam.to_dict() for fam in self.families],
 			'schedules': [schedule.to_dict() for schedule in self.schedules],
-			'clients': dict(self.codes['client']),
-			'countries': dict(self.codes['country']),
+			**{key: dict(self.codes[kind]) for kind, key in _CODE_KEYS.items()},
+			'family_name_format': [dict(part) for part in self.family_name_format],
 		}
 
 	@classmethod
@@ -1299,9 +1389,11 @@ class Catalog(object):
 			raise ValueError('Unsupported catalog format version: {}'.format(version))
 
 		catalog = cls()
-		for kind, key in (('client', 'clients'), ('country', 'countries')):
+		for kind, key in _CODE_KEYS.items():
 			for name, code in (data.get(key) or {}).items():
 				catalog.set_code(kind, name, code)
+		if data.get('family_name_format'):
+			catalog.set_family_name_format(data['family_name_format'])
 		for param_data in data.get('params', []):
 			Param.from_dict(param_data, catalog=catalog)
 		for fam_data in data.get('families', []):

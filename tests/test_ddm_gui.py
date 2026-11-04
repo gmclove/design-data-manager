@@ -930,8 +930,14 @@ def test_schedule_table_shows_each_level_and_where_values_come_from(monkeypatch)
     rows = gui._schedule_table_rows(gui.catalog.get_schedule("S1"))
 
     assert [row["section"] for row in rows if row["section"]] == ["Parameter", "Apply to All Families", "F1", "F2", "F3"]
-    assert cells(rows, "Name", "Parameter") == [("Width", "set", False)]
-    assert cells(rows, "Default Value", "Parameter") == [("1", "set", False)]
+    assert cells(rows, "Name", "Parameter") == [("Width", "set", True)]
+    # The Default Header is the parameter's own; gray when it's just the name.
+    assert cells(rows, "Default Header", "Parameter") == [("Width", "inherited", True)]
+    gui.catalog.get_param("Width").header_text = "WIDTH (IN)"
+    assert cells(gui._schedule_table_rows(gui.catalog.get_schedule("S1")), "Default Header", "Parameter") == [
+        ("WIDTH (IN)", "set", True)]
+    assert "Default Header" not in [row["label"] for row in gui._family_window_rows(gui.catalog.get_family("F1"))]
+    assert cells(rows, "Default Value", "Parameter") == [("1", "set", True)]
     assert cells(rows, "Default Value", "Apply to All Families") == [("(Varies)", "inherited", True)]
     assert cells(rows, "Default Value", "F1") == [("5", "inherited", True)]
     assert cells(rows, "Default Value", "F2") == [("9", "set", True)]
@@ -1013,7 +1019,7 @@ def test_instance_or_type_is_set_per_family_from_the_schedule_and_reaches_the_ex
     schedule = gui.catalog.get_schedule("S1")
     rows = gui._schedule_table_rows(schedule)
     # The parameter is Instance; each family inherits it, and can change it from the schedule.
-    assert cells(rows, "Instance or Type", "Parameter") == [("Instance", "set", False)]
+    assert cells(rows, "Instance or Type", "Parameter") == [("Instance", "set", True)]
     assert cells(rows, "Instance or Type", "F1") == [("Instance", "inherited", True)]
 
     # F1's row sets F1 itself (every schedule it's in), not just this schedule.
@@ -1062,6 +1068,67 @@ def test_instance_or_type_is_set_per_family_from_the_schedule_and_reaches_the_ex
     loaded = make_test_gui()
     loaded.load_checkpoint(str(tmp_path / "database.ddm.csv"))
     assert loaded.catalog.get_family("F2").overrides["Width"] == {"instance_param": False, "formula": "Width * 2"}
+
+
+def fake_table(rows, parameter_names):
+    """Stands in for an ``OverrideTable``: committing an edit types ``table.typed``."""
+    table = SimpleNamespace(rows=rows, parameter_names=parameter_names, winfo_toplevel=lambda: None, edits=[])
+
+    def start_cell_edit(row_index, column_index, value, on_commit, placeholder="", choices=None, on_tab=None):
+        table.edits.append({"value": value, "choices": choices, "placeholder": placeholder})
+        on_commit(table.typed)
+
+    table.start_cell_edit = start_cell_edit
+    table.set_rows = lambda new_rows: setattr(table, "rows", new_rows)
+    return table
+
+
+def test_schedule_window_parameter_section_edits_the_parameter_itself(monkeypatch):
+    gui = three_family_gui()
+    schedule = gui.catalog.get_schedule("S1")
+    param = gui.catalog.get_param("Width")
+    rows_builder = lambda: gui._schedule_table_rows(schedule)  # noqa: E731
+    rows = rows_builder()
+    for label in ("Name", "Default Header", "Default Value", "Formula", "Group Under", "Instance or Type"):
+        assert cells(rows, label, "Parameter")[0][2] is True, label
+    # The family window's Parameter section stays read-only.
+    family_rows = gui._family_window_rows(gui.catalog.get_family("F1"))
+    assert not any(cell["editable"] for row in family_rows if row.get("param_field") for cell in row["cells"])
+
+    changed = []
+
+    def edit(label, typed):
+        table = fake_table(rows_builder(), ["Width"])
+        table.typed = typed
+        row = next(i for i, r in enumerate(table.rows) if r["label"] == label and r.get("param_field"))
+        gui._edit_table_cell(table, rows_builder, "S1", row, 0, on_columns_changed=lambda: changed.append(label))
+        return table.edits[-1]
+
+    assert edit("Default Value", "4")["placeholder"] == "Sets the Parameter for Every Family and Schedule"
+    assert param.value == "4"
+    assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "4"  # every schedule
+    assert edit("Instance or Type", "Type")["choices"] == ["Instance", "Type"]
+    assert param.instance_param is False
+    edit("Group Under", "Dimensions")
+    edit("Formula", "Height * 2")
+    assert (param.group_under, param.formula) == ("Dimensions", "Height * 2")
+    assert changed == []  # the table refreshes in place
+
+    # The header and name redraw the column headers, so the window reopens.
+    assert edit("Default Header", "WIDTH")["value"] == ""
+    assert param.header_text == "WIDTH"
+    monkeypatch.setattr(gui, "_confirm_param_rename", lambda old, new: True)
+    assert edit("Name", "Breite")["value"] == "Width"
+    assert gui.catalog.get_param("Breite") is param
+    assert changed == ["Default Header", "Name"]
+
+    errors = []
+    monkeypatch.setattr(gui_module.messagebox, "showerror", lambda title, message, **_kw: errors.append(message))
+    table = fake_table(rows_builder(), ["Breite"])
+    table.typed = ""
+    row = next(i for i, r in enumerate(table.rows) if r["label"] == "Instance or Type" and r.get("param_field"))
+    gui._edit_table_cell(table, rows_builder, "S1", row, 0)
+    assert errors == ["A parameter is always Instance or Type; pick one."] and param.instance_param is False
 
 
 def test_all_families_row_can_also_set_the_parameter_default_or_cancel(monkeypatch):
@@ -1539,49 +1606,119 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         root.destroy()
 
 
-def test_family_list_edits_in_place_on_one_click_and_opens_window_on_two(tmp_path, monkeypatch):
+def test_family_list_edits_in_place_on_one_click_and_names_open_the_name_builder(tmp_path, monkeypatch):
     monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
     root = tk.Tk()
-    root.geometry("1200x800")
+    root.geometry("1400x800")
     try:
         gui = DDMGUI(root)
         gui.notebook.select(gui.family_tab)
         root.update()
         tree = gui.family_tree
         fam = gui.catalog.families[0]
-        column = gui._get_table_columns("families").index("description")
-        x, y, width, height = tree.bbox(tree.get_children()[0], f"#{column + 1}")
-        click = SimpleNamespace(x=x + width // 2, y=y + height // 2)
+        columns = gui._get_table_columns("families")
+        assert columns.index("category_1") < columns.index("description")
 
-        # One click: after the double-click delay, an entry opens over the cell.
-        gui._on_tree_click(click, "families")
-        assert gui._pending_tree_edit is not None
-        root.after(gui._single_click_delay_ms + 50, root.quit)
-        root.mainloop()
+        def click(column_name):
+            column = columns.index(column_name)
+            tree.xview_moveto(0 if column < 6 else 1)  # bring the column into view
+            root.update()
+            x, y, width, height = tree.bbox(tree.get_children()[0], f"#{column + 1}")
+            gui._on_tree_click(SimpleNamespace(x=x + width // 2, y=y + height // 2), "families")
+
+        # One click edits a cell at once (there's no double-click to wait for).
+        click("description")
         editor, finish = gui._tree_cell_editor
-        assert editor.get() == (fam.description or "")
         editor.delete(0, tk.END)
         editor.insert(0, "Edited in place")
         finish(True)
         assert fam.description == "Edited in place"
-        assert gui._tree_cell_editor is None
+        assert "<Double-1>" not in tree.bind()
 
-        # Escape-style cancel leaves the value alone.
-        gui._start_tree_cell_edit(tree, "families", tree.get_children()[0], column)
-        editor, finish = gui._tree_cell_editor
-        editor.insert(0, "discard ")
-        finish(False)
-        assert fam.description == "Edited in place"
-
-        # Two clicks: the pending edit is cancelled and the family window opens.
-        gui._on_tree_click(click, "families")
-        gui._on_family_tree_double_click(click)
-        assert gui._pending_tree_edit is None
+        # One click on a name opens the Family Name Builder.
+        click("name")
         root.update()
-        find_window(root, "Family Details")
-        assert getattr(gui, "_tree_cell_editor", None) is None
+        find_window(root, "Family Name Builder")
     finally:
         root.destroy()
+
+
+def naming_gui():
+    """Two Detail Item families with codes for every term."""
+    gui = make_test_gui()
+    catalog = gui.catalog
+    for kind, name, code in (("client", "IPS", "IPS"), ("country", "United States", "US"),
+                             ("category_1", "Control", "CTRL"), ("category_2", "Device", "Device"),
+                             ("category", "Detail Item", "2D")):
+        catalog.set_code(kind, name, code)
+    for index, fam in enumerate(catalog.families[:2]):
+        fam.client, fam.country, fam.category = "IPS", "United States", "Detail Item"
+        fam.category_1, fam.category_2, fam.description = "Control", "Device", f"Light {index}"
+    return gui
+
+
+def test_family_name_builder_builds_renames_and_saves_the_shared_format(monkeypatch):
+    gui = naming_gui()
+    root = tk.Tk()
+    root.withdraw()
+    gui.root = root
+    try:
+        fam = gui.catalog.families[0]
+        blank = gui.catalog.families[2]
+        blank.description = blank.client = blank.country = blank.category = None
+        blank_name = blank.name
+        window = gui._open_family_name_builder(0)
+        assert window.name_var.get() == "IPS-US_CTRL_Device_Light 0_2D"
+        labels = [w.cget("text") for w in descendants(window) if isinstance(w, ttk.Label)]
+        assert {"Client Code", "Category Code", "Category 1", "Prefix", "Suffix"} <= set(labels)
+
+        # Moving a term and changing a suffix rebuild the name at once.
+        index = next(i for i, part in enumerate(window.parts) if part["term"] == "description")
+        window.move(index, -1)
+        assert window.name_var.get() == "IPS-US_CTRL_Light 0_Device_2D"
+        description_suffix = [w for w in descendants(window) if isinstance(w, ttk.Entry)][2 * index - 1]
+        description_suffix.insert(0, "!")
+        assert window.name_var.get() == "IPS-US_CTRL_Light 0!_Device_2D"
+
+        window.rename_this()
+        assert fam.name == "IPS-US_CTRL_Light 0!_Device_2D"
+        assert [part["term"] for part in gui.catalog.family_name_format][3:5] == ["description", "category_2_code"]
+        assert gui.families_df.iloc[0]["name"] == fam.name
+
+        # Rename All: the second family follows the format; families whose name would be blank stay.
+        window = gui._open_family_name_builder(1)
+        asked = []
+        monkeypatch.setattr(gui_module.messagebox, "askyesno", lambda title, message, **_kw: asked.append(message) or True)
+        window.rename_all()
+        assert gui.catalog.families[1].name == "IPS-US_CTRL_Light 1!_Device_2D"
+        assert "\nFamily_B \u2192 IPS-US_CTRL_Light 1!_Device_2D" in asked[0]
+        assert "left as they are" in asked[0]  # the family with nothing to name it by
+        assert gui.catalog.families[2].name == blank_name
+        assert "families in Revit aren't renamed" in asked[0]
+    finally:
+        root.destroy()
+
+
+def test_family_renames_skip_blank_and_clashing_names():
+    gui = naming_gui()
+    first, second, blank = gui.catalog.families[:3]
+    second.description = first.description  # both would get the same name
+    blank.description = blank.client = blank.country = blank.category = None
+    renames, skipped = gui._family_renames(gui.catalog.family_name_format)
+    assert all(old not in (first.name, second.name) for old, _new in renames)
+    assert any("would get 'IPS-US_CTRL_Device_Light 0_2D'" in reason for reason in skipped)
+    assert any("would be blank" in reason for reason in skipped)
+
+
+def test_family_table_shows_category_codes_and_new_categories_need_a_code(monkeypatch):
+    gui = naming_gui()
+    row = gui.families_df.iloc[0]
+    assert (row["category_code"], row["category_1"], row["category_1_code"], row["category_2_code"]) == (
+        "2D", "Control", "CTRL", "Device")
+    assert gui._dropdown_values("category_1")[-1] == gui_module.ADD_NEW
+    gui._apply_cell_value("families", 0, "category_code", "3D")
+    assert gui.catalog.code("category", "Detail Item") == "3D"
+    assert gui.families_df.iloc[1]["category_code"] == "3D"  # every Detail Item family
 
 
 def test_search_filters_each_main_tab_and_edits_reach_the_right_item(tmp_path, monkeypatch):
@@ -2302,6 +2439,107 @@ def test_family_window_add_new_client_fills_in_its_code(tmp_path, monkeypatch):
         root.destroy()
 
 
+# --- unsaved changes ------------------------------------------------------------
+
+def open_saved_gui(tmp_path, monkeypatch):
+    """A GUI on a database saved at tmp_path, with no macro module to build."""
+    path = tmp_path / "database.ddm.json"
+    make_test_gui().catalog.save(str(path))
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", path)
+    root = tk.Tk()
+    root.withdraw()
+    gui = DDMGUI(root)
+    return root, gui, path
+
+
+def test_edits_are_unsaved_until_saved(tmp_path, monkeypatch):
+    root, gui, path = open_saved_gui(tmp_path, monkeypatch)
+    try:
+        assert not gui.has_unsaved_changes()
+        gui.validate_all()  # refreshing changes nothing
+        assert not gui.has_unsaved_changes()
+        gui.catalog.families[0].description = "Edited"
+        assert gui.has_unsaved_changes()
+        assert gui.save_checkpoint() is True
+        assert not gui.has_unsaved_changes()
+        gui.catalog.families[0].description = "Edited again"
+        gui.load_checkpoint(str(path))  # reloading discards
+        assert not gui.has_unsaved_changes()
+    finally:
+        root.destroy()
+
+
+def test_closing_with_unsaved_changes_asks_to_save_discard_or_cancel(tmp_path, monkeypatch):
+    root, gui, path = open_saved_gui(tmp_path, monkeypatch)
+    try:
+        closed = []
+        monkeypatch.setattr(gui.root, "destroy", lambda: closed.append(True))
+        answers = []
+        monkeypatch.setattr(gui, "_ask_save_discard_cancel", lambda action: answers.pop(0))
+
+        gui.close()  # nothing to save: closes at once
+        assert closed == [True]
+
+        gui.catalog.families[0].description = "Edited"
+        answers.append(None)  # Cancel
+        gui.close()
+        assert closed == [True] and gui.has_unsaved_changes()
+
+        answers.append("save")
+        gui.close()
+        assert closed == [True, True] and not gui.has_unsaved_changes()
+        assert gui_module.Catalog.load(str(path))[0].families[0].description == "Edited"
+
+        gui.catalog.families[0].description = "Thrown away"
+        answers.append("discard")
+        gui.close()
+        assert closed == [True, True, True]
+        assert gui_module.Catalog.load(str(path))[0].families[0].description == "Edited"
+
+        # Load asks too, and Cancel keeps the open database.
+        answers.append(None)
+        monkeypatch.setattr(gui_module.filedialog, "askopenfilename", lambda **_kw: pytest.fail("shouldn't ask"))
+        gui.open_database()
+        assert gui.catalog.families[0].description == "Thrown away"
+    finally:
+        monkeypatch.undo()
+        root.destroy()
+
+
+def test_unsaved_changes_window_has_save_discard_and_cancel(tmp_path, monkeypatch):
+    root, gui, _path = open_saved_gui(tmp_path, monkeypatch)
+    try:
+        seen = []
+
+        def press_discard():
+            dialog = find_window(root, "Unsaved Changes")
+            seen.extend(w.cget("text") for w in descendants(dialog) if isinstance(w, ttk.Button))
+            find_button(dialog, "Discard").invoke()
+
+        failures = run_in_dialog(root, press_discard)
+        assert gui._ask_save_discard_cancel("closing") == "discard"
+        assert not failures
+        assert seen == ["Cancel", "Discard", "Save"]
+    finally:
+        root.destroy()
+
+
+def test_closing_during_a_macro_build_waits_for_it(tmp_path, monkeypatch):
+    root, gui, _path = open_saved_gui(tmp_path, monkeypatch)
+    try:
+        closed = []
+        monkeypatch.setattr(gui.root, "destroy", lambda: closed.append(True))
+        gui._macro_build_thread = object()  # a build is running
+        gui.close()
+        assert closed == []
+        gui._macro_build_thread = None
+        gui._finish_macro_build(SimpleNamespace(name="TeamMacros"), True, ["Built"])
+        assert closed == [True]
+    finally:
+        monkeypatch.undo()
+        root.destroy()
+
+
 # --- Revit schedule macro -----------------------------------------------------
 
 def test_save_installs_the_macro_in_the_only_module_in_its_namespace_and_builds_it(tmp_path, monkeypatch):
@@ -2339,6 +2577,67 @@ def test_save_installs_the_macro_in_the_only_module_in_its_namespace_and_builds_
     assert "CreateSchedulesFromDatabase.cs(12,5): error CS1002: ; expected" in messages
     assert [title for title, _message in popups] == ["Macro Build Failed"]
     assert "TeamMacros module didn't build" in popups[0][1]
+
+
+def test_save_builds_the_macro_in_the_background_and_queues_a_save_made_meanwhile(tmp_path, monkeypatch):
+    import threading
+    import time
+    from tests.test_revit_macro_module import make_module
+
+    macros = tmp_path / "Macros"
+    monkeypatch.setattr(gui_module, "MACROS_ROOT", macros)
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    module_dir = make_module(macros, 2025, "TeamMacros")
+    release = threading.Event()
+    builds = []
+
+    def slow_build(module):
+        builds.append((module.name, (module_dir / "CreateSchedulesFromDatabase.cs").read_text(encoding="utf-8")))
+        release.wait(10)
+        if len(builds) == 1:
+            return True, ["build 1 done"]
+        return False, ["build 2 done", "The module failed to build"]
+
+    monkeypatch.setattr(gui_module, "build_module", slow_build)
+    popups = []
+    monkeypatch.setattr(gui_module.messagebox, "showerror", lambda title, message, **_kw: popups.append(title))
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        messages = []
+        monkeypatch.setattr(gui, "_append_message", messages.append)
+        gui.checkpoint_path = tmp_path / "database.ddm.json"
+
+        def pump_until(condition):
+            deadline = time.monotonic() + 10
+            while not condition() and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.02)
+            assert condition()
+
+        gui.save_checkpoint()
+        # Save returns while the build runs; the other files are already written.
+        pump_until(lambda: len(builds) == 1)
+        assert gui._macro_build_thread is not None
+        for name in ("database.ddm.csv", "database.rfps", "database.txt"):
+            assert (tmp_path / name).exists(), name
+        assert any("Building TeamMacros in the background" in message for message in messages)
+
+        # Saving again mid-build doesn't touch the module until the build finishes.
+        gui.catalog.schedules[0].view_template = "Changed Template"  # shows in the macro
+        gui.save_checkpoint()
+        assert any("still building; this save's macro will be installed" in message for message in messages)
+        assert len(builds) == 1
+
+        release.set()
+        pump_until(lambda: len(builds) == 2 and gui._macro_build_thread is None)
+        assert "build 1 done" in messages and "build 2 done" in messages
+        assert builds[0][1] != builds[1][1]  # the queued save's macro was installed before the second build
+        assert popups == ["Macro Build Failed"]  # only the second build failed
+    finally:
+        release.set()
+        root.destroy()
 
 
 def test_save_uses_the_remembered_module_and_says_when_none_is_chosen(tmp_path, monkeypatch):
