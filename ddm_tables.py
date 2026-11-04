@@ -30,7 +30,13 @@ FAMILY_COLUMNS = [
     "name", "client", "client_code", "country", "country_code", "category", "description",
     "status", "validation_message",
 ]
-LINK_COLUMNS = ["family_name", "parameter_name"]
+# A link row also carries the family's own Default Value, Formula, Group Under and Instance or
+# Type for that parameter; blank uses the parameter's.
+LINK_COLUMNS = ["family_name", "parameter_name", "default_value", "formula", "group_under", "instance_param"]
+# Link columns and the family override each one holds.
+LINK_OVERRIDE_COLUMNS = {
+    "default_value": "value", "formula": "formula", "group_under": "group_under", "instance_param": "instance_param",
+}
 ENTRY_COLUMNS = [
     "family_name", "group_name", "parameter_name", "header_text_override",
     "grid_column_width_override", "hidden", "override_entry", "schedule_filter", "itemize",
@@ -191,6 +197,17 @@ def _load_families(catalog, family_rows, link_rows, issues):
             issues.append(f"Family '{family_name}' links unknown parameter '{param_name}'; skipped.")
             continue
         fam.add_param(param)
+        overrides = {
+            attribute: text(row.get(column)) for column, attribute in LINK_OVERRIDE_COLUMNS.items()
+            if text(row.get(column))
+        }
+        if "instance_param" in overrides:
+            overrides["instance_param"] = parse_bool(overrides["instance_param"])
+        if overrides:
+            try:
+                fam.override_param(param_name, **overrides)
+            except ValueError as exc:
+                issues.append(f"Family '{family_name}': its '{param_name}' overrides not loaded: {exc}")
     for fam in catalog.families:
         fam.validate()
 
@@ -360,14 +377,16 @@ def families_table(catalog):
 
 
 def links_table(catalog):
-    return pd.DataFrame(
-        [
-            {"family_name": fam.name, "parameter_name": param.name}
-            for fam in catalog.families
-            for param in fam.custom_params
-        ],
-        columns=LINK_COLUMNS,
-    )
+    rows = []
+    for fam in catalog.families:
+        for param in fam.custom_params:
+            overrides = fam.overrides.get(param.name, {})
+            row = {"family_name": fam.name, "parameter_name": param.name}
+            for column, attribute in LINK_OVERRIDE_COLUMNS.items():
+                value = overrides.get(attribute)
+                row[column] = "" if value is None else value
+            rows.append(row)
+    return pd.DataFrame(rows, columns=LINK_COLUMNS)
 
 
 def _schedule_rows(catalog, columns):

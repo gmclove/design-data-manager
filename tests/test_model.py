@@ -589,6 +589,52 @@ def test_rename_updates_family_formula_overrides(scheduled):
 
 # --- hidden schedule columns -----------------------------------------------
 
+def test_schedule_columns_are_added_after_a_column_and_removed_with_their_settings(scheduled):
+	schedule = scheduled.get_schedule('S1')
+	schedule.add_columns(['Depth', 'Width'], after='Width')  # Width is already a column
+	assert [param.name for param in schedule.params] == ['Width', 'Depth', 'Height']
+	with pytest.raises(ValueError, match="Unknown parameter 'Nope'"):
+		schedule.add_columns(['Nope'])
+
+	schedule.override_param('Depth', header_text='DEEP')
+	schedule.override_family_param('F1', 'Depth', value='3')
+	schedule.set_field_hidden('Depth', True)
+	schedule.remove_columns(['Depth'])
+	assert [param.name for param in schedule.params] == ['Width', 'Height']
+	assert 'Depth' not in schedule.header_text_overrides
+	assert 'Depth' not in schedule.family_overrides.get('F1', {})
+	assert schedule.hidden_field_names == set()
+	assert schedule.status == 'Ready'
+
+	# A schedule showing all its families' parameters keeps the rest when one is removed.
+	all_fields = scheduled.get_schedule('S2')
+	before = [param.name for param in all_fields.params]
+	all_fields.remove_columns(['Height'])
+	assert [param.name for param in all_fields.params] == [name for name in before if name != 'Height']
+
+
+def test_schedule_columns_move_left_and_right_without_splitting_header_groups(scheduled):
+	schedule = scheduled.get_schedule('S1')
+	schedule.add_columns(['Depth'])
+	names = lambda: [param.name for param in schedule.params]  # noqa: E731
+	assert names() == ['Width', 'Height', 'Depth']
+
+	assert schedule.move_columns(['Depth'], -1) and names() == ['Width', 'Depth', 'Height']
+	assert not schedule.move_columns(['Height'], 1)  # already at the right end
+	# Columns that aren't next to each other move together, keeping their order.
+	assert schedule.move_columns(['Width', 'Height'], -1) is False  # Width is at the left end
+	assert schedule.move_columns(['Depth', 'Height'], -1) and names() == ['Depth', 'Height', 'Width']
+
+	schedule.add_header_group('Pair', ['Depth', 'Height'])
+	with pytest.raises(ValueError, match="split header group 'Pair'"):
+		schedule.move_columns(['Width'], -1)
+	assert names() == ['Depth', 'Height', 'Width']
+	# Inside the group, or the whole group together, is fine.
+	assert schedule.move_columns(['Height'], -1) and names() == ['Height', 'Depth', 'Width']
+	assert schedule.header_groups[0]['parameter_names'] == ['Height', 'Depth']
+	assert schedule.move_columns(['Height', 'Depth'], 1) and names() == ['Width', 'Height', 'Depth']
+
+
 def test_hidden_columns_follow_renames_removals_and_round_trip(scheduled):
 	schedule = scheduled.schedules[0]
 	names = [param.name for param in schedule.params]

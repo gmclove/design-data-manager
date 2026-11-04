@@ -334,16 +334,22 @@ def _read_schedule_sheet(ws):
         for c, text in row_texts(row).items():
             if c in headings:
                 headings[c].append(text)
+    # A merged caption spans exactly its merged cells.
+    merged = {(cells.min_row, cells.min_col): (cells.min_col, cells.max_col) for cells in ws.merged_cells.ranges}
     captions = []  # (row, caption, first column, last column)
     caption_rows = {}
+    notes = []
     for row in range(4, first_heading_row):
         if row in labelled_rows:
             continue
         texts = row_texts(row)
+        # Captions are bold; plain text up here is a note to the workbook's editors.
+        notes.extend(text for c, text in texts.items() if not ws.cell(row, c).font.b)
+        texts = {c: text for c, text in texts.items() if ws.cell(row, c).font.b}
         caption_rows[row] = sorted(texts)
         for c, text in texts.items():
             if not text.lower().startswith(_IGNORED_CAPTIONS):
-                first, last = _caption_span(ws, row, c, last_column)
+                first, last = merged.get((row, c)) or _caption_span(ws, row, c, last_column)
                 captions.append((row, text, first, last))
     captions = _widen_boxed_captions(captions, caption_rows, last_column)
 
@@ -369,6 +375,7 @@ def _read_schedule_sheet(ws):
         "groups": groups,
         "definitions": definitions,
         "corrections": corrections,
+        "notes": notes,
         "itemize": True if itemize is None else bool(itemize),
         "view_template": _text(label_value("view template")) or None,
     }
@@ -386,6 +393,7 @@ def _import_schedules(wb, catalog, result):
             continue
         sheets[name] = sheet
         result.corrections.extend(sheet["corrections"])
+        result.issues.extend(f"Schedule '{name}': note '{note}' isn't a header group; left out." for note in sheet["notes"])
 
     # Parameters a schedule uses but the Parameters sheet lacks: define them from the schedule.
     for name, sheet in sheets.items():

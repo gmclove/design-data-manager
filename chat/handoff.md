@@ -21,9 +21,14 @@ folder works.
   IPS root certificate.
 - A new machine needs its own SSH key added at https://github.com/settings/keys.
 
-## State (2026-11-02)
-- `dev` and `main` are identical and include `gui-on-catalog` (GUI on the `Catalog`, JSON saves,
-  override prompt and tables, in-place editing). See [changelog.md](changelog.md).
-- 139 tests pass; 1 known failure (heading wrap, see [plan.md](plan.md)). On the second machine
-  Tk sometimes fails to start ("can't find a usable init.tcl"), failing a random window test;
-  rerun it alone. Likely cause: the `.conda` env sits inside OneDrive.
+## State (2026-11-04)
+- `dev` and `main` are identical; `v0.1.0-beta` tags `82727d5`. The beta `.exe` is shared with
+  testers outside GitHub (the repo is public and the `.exe` holds the master database).
+- Latest work (see [changelog.md](changelog.md)): main-tab search; schedule window Add/Remove
+  Parameter, Move Left/Right, Add/Remove Family, editable title; Apply to All Families rows
+  (Formula, Group Under, Instance or Type set the family itself); per-family Instance or Type
+  reaches the `.rfps`; header groups from merged cells.
+- Imported families have no parameters yet (the workbook doesn't record them).
+- 191 tests; 1 known failure (heading wrap, see [plan.md](plan.md)). On this machine Tk sometimes
+  fails to start ("can't find a usable init.tcl"), failing a random window test; rerun it alone.
+  Likely cause: the `.conda` env sits inside OneDrive.

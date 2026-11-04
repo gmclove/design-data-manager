@@ -1,7 +1,7 @@
 import pytest
 
 openpyxl = pytest.importorskip("openpyxl")
-from openpyxl.styles import Border, Side  # noqa: E402
+from openpyxl.styles import Border, Font, Side  # noqa: E402
 
 from excel_import import import_workbook  # noqa: E402
 
@@ -62,6 +62,14 @@ def make_workbook(path):
     for column, text in headings.items():
         sheet[f"{column}14"] = text
         sheet[f"{column}14"].border = BOXED
+    # Row 12: a caption merged over F-G, with a border inside the merge (as the workbook has).
+    sheet["F12"] = "OTHER DATA"
+    sheet["F12"].border = Border(right=THIN)
+    sheet.merge_cells("F12:G12")
+    # A plain (not bold) note to the workbook's editors, among the captions.
+    sheet["G11"] = "IGNORE FOR NOW"
+    for cell in ("C10", "D10", "D11", "F11", "E12", "F12"):
+        sheet[cell].font = Font(bold=True)  # the workbook's captions are bold
     sheet["D13"] = "SUPPLY"
     sheet["D13"].border = BOXED
     sheet["E13"], sheet["F13"], sheet["G13"] = "TOTAL", "GENERAL", "MORE"
@@ -128,6 +136,11 @@ def test_stacked_headings_and_boxed_group_captions(imported):
     assert "PUMP SCHEDULE" not in groups  # the title
     assert "Combine Parameters" not in groups
     assert "Hidden Parameters" not in groups
+    # A merged caption spans its merged cells, not just up to the border inside them.
+    assert groups["OTHER DATA"] == ["IPS_Note", "IPS_New"]
+    # Plain text among the captions is a note, not a group.
+    assert "IGNORE FOR NOW" not in groups
+    assert "Schedule 'Pump': note 'IGNORE FOR NOW' isn't a header group; left out." in imported.issues
 
 
 def test_gui_import_replaces_the_database_and_survives_a_save(tmp_path):

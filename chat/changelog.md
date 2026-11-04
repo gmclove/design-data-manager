@@ -2,6 +2,28 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-04: Search, schedule families, header groups from merged cells
+- Search box on each main tab (every word must match, any column). Rows keep their position in
+  the full table as their Treeview ID, so edits and windows reach the right item while filtered.
+- Schedule window: Add Parameter..., Remove Parameter, Add Family..., Remove Family under the
+  table. Column headers and parameter Name cells select columns; family labels select families
+  (Ctrl/Shift). Pickers are searchable and multi-select; new columns go after the selected one.
+  Model: `Schedule.add_columns(names, after=)` / `remove_columns(names)`.
+- The schedule window's title is the schedule's name, editable (rename reopens the window).
+- The All Families section is now titled Apply to All Families, and has Formula and Group Under rows too. They set each family's Family Default
+  (Revit keeps them in the family, so every schedule the family is in sees it); Default Value
+  still sets each family's Schedule Default Value.
+- Instance or Type row (Instance/Type drop-down) under Parameter, Apply to All Families and each
+  family; in a schedule it sets the family's own (family-level) setting. The `.rfps` export now
+  uses each family's own Instance or Type, Default Value, Formula and Group Under (it used the
+  parameter's before), and CSV link rows carry the family's overrides (they were lost before).
+- ◀ Move Left / Move Right ▶ reorder the selected columns (`Schedule.move_columns`; refuses to
+  split a header group). The schedule window reopens in place: same size, scroll and selection.
+- Excel import: a merged caption spans its merged cells (borders inside merges had cut 103 spans
+  short or let them run on); plain (not bold) text among the captions is a note, not a group.
+  Applied to `data/database.ddm.json` (header groups only; 17 schedules; 698 groups); the prior
+  copy is `data/database.before-header-groups.ddm.json`.
+
 ## 2026-11-03: Revit macro install and build work on any machine
 - `revit_macro_module.py`: finds every Revit 2025+ application macro module under
   `%ProgramData%\Autodesk\Revit\Macros`, reads its namespace, remembers each user's choice in

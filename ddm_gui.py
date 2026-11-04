@@ -94,6 +94,8 @@ def _wrap_text_segment(text, max_width, font):
 
 # Label of the schedule table row that sets every family's Schedule Default Value at once.
 ALL_FAMILIES = "All Families"
+# The schedule table section whose rows set every family at once.
+ALL_FAMILIES_SECTION = "Apply to All Families"
 
 # Last choice in the Client and Country dropdowns; opens a dialog to add one that isn't listed.
 ADD_NEW = "Add New..."
@@ -117,7 +119,11 @@ OVERRIDE_RULES = (
     ("What Can Be Overridden", (
         "Default Value: at all three levels.\n"
         "Formula and Group Under: at the Parameter and Family levels only. They describe the family, "
-        "so a schedule shows them read-only."
+        "so a schedule shows each family's read-only; the Apply to All Families rows can still set them for "
+        "every family in the schedule (see below).\n"
+        "Instance or Type: at the Parameter and Family levels only, chosen from a drop-down. In a "
+        "schedule, a family's row and the Apply to All Families rows set the family's own Instance or "
+        "Type, which every schedule it's in uses. Blank uses the parameter's."
     )),
     ("Reading the Tables", (
         "Black text: set at this level.\n"
@@ -127,11 +133,14 @@ OVERRIDE_RULES = (
         "Double-click a cell to edit it in place. Enter or clicking away saves, Tab moves to the "
         "next cell, Escape cancels."
     )),
-    ("The All Families Row", (
-        "In a schedule, the All Families row is a shortcut, not another level. A value set there "
-        "becomes the Schedule Default Value of every family in the schedule that has that column. "
-        "It shows the shared value, \"(Varies)\" when the families differ, or blank when none is "
-        "set. Leaving a \"(Varies)\" cell unchanged changes nothing."
+    ("The Apply to All Families Rows", (
+        "In a schedule, the Apply to All Families rows are a shortcut, not another level. They set every "
+        "family in the schedule that has that column:\n"
+        "Default Value: becomes each family's Schedule Default Value, in this schedule only.\n"
+        "Formula and Group Under: become each family's Family Default Formula or Group Under. "
+        "Revit keeps these in the family, so they change the family in every schedule it's in.\n"
+        "Each cell shows the shared value, \"(Varies)\" when the families differ, or blank when "
+        "none is set. Leaving a \"(Varies)\" cell unchanged changes nothing."
     )),
     ("Where Else to Override", (
         "After you change a Family or Schedule Default Value you're asked where else it should go:\n"
@@ -157,6 +166,10 @@ class OverrideTable(tk.Canvas):
     rows are the schedule's header groups (Group Level N ... 1) and column headers.
     With ``hidden_names`` (a set) a Hidden Column row of checkboxes follows the
     column headers; clicking one calls ``on_hidden_toggle(parameter_name)``.
+
+    Clicking a column header, or a cell in a row with ``"selects_column"``, selects
+    that column; clicking a family's labels selects the family. Ctrl adds to the
+    selection and Shift selects a range. Columns and families aren't selected together.
 
     Body rows are dicts: ``{"section": str, "label": str, "cells": [cell, ...]}``,
     plus any keys the caller needs back. A cell is ``{"text": str, "state": ...,
@@ -184,6 +197,8 @@ class OverrideTable(tk.Canvas):
         self.group_layout = []
         self.selected_indices = set()
         self.selection_anchor = None
+        self.selected_families = set()
+        self.family_anchor = None
         self.on_header_double_click = on_header_double_click
         self.on_cell_double_click = on_cell_double_click
         self.on_cell_action = on_cell_action
@@ -288,6 +303,13 @@ class OverrideTable(tk.Canvas):
             if index in self.selected_indices
         ]
 
+    def get_selected_family_names(self):
+        return [name for name in self._family_names() if name in self.selected_families]
+
+    def _family_names(self):
+        """The families with rows in the table, in order."""
+        return list(dict.fromkeys(row["family"] for row in self.rows if row.get("family")))
+
     def _column_at(self, canvas_x):
         for index, (left, width) in enumerate(zip(self.column_offsets, self.column_widths)):
             if left <= canvas_x < left + width:
@@ -302,6 +324,24 @@ class OverrideTable(tk.Canvas):
         if not self.header_top <= canvas_y < self.hidden_row_top:
             return None
         return self._column_at(self.canvasx(event.x))
+
+    def _selectable_column_at(self, event):
+        """The column whose header, or a cell in a ``"selects_column"`` row, is under the event."""
+        index = self._parameter_index_at(event)
+        if index is not None:
+            return index
+        cell = self._cell_at(event)
+        if cell is not None and self.rows[cell[0]].get("selects_column"):
+            return cell[1]
+        return None
+
+    def _family_at(self, event):
+        """The family whose labels (left of its values) are under the event, or ``None``."""
+        canvas_y = self.canvasy(event.y)
+        if self.canvasx(event.x) >= self.left or canvas_y < self.body_top:
+            return None
+        row_index = int((canvas_y - self.body_top) // self.row_height)
+        return self.rows[row_index].get("family") if row_index < len(self.rows) else None
 
     def _hidden_toggle_at(self, event):
         """The column whose Hidden Column checkbox is under the event, or ``None``."""
@@ -395,9 +435,14 @@ class OverrideTable(tk.Canvas):
             if self.on_hidden_toggle is not None:
                 self.on_hidden_toggle(self.parameter_names[toggle])
             return
-        index = self._parameter_index_at(event)
+        family = self._family_at(event)
+        if family is not None:
+            self._select_family(family, event.state)
+            return
+        index = self._selectable_column_at(event)
         if index is None:
             return
+        self.selected_families = set()
         if event.state & 0x0004:
             if index in self.selected_indices:
                 self.selected_indices.remove(index)
@@ -411,8 +456,22 @@ class OverrideTable(tk.Canvas):
             self.selected_indices = {index}
         self._draw_grid()
 
+    def _select_family(self, family, state):
+        self.selected_indices = set()
+        names = self._family_names()
+        if state & 0x0004:
+            self.selected_families ^= {family}
+            self.family_anchor = family
+        elif state & 0x0001 and self.family_anchor in names:
+            first, last = sorted((names.index(self.family_anchor), names.index(family)))
+            self.selected_families = set(names[first:last + 1])
+        else:
+            self.family_anchor = family
+            self.selected_families = {family}
+        self._draw_grid()
+
     def _on_mouse_drag(self, event):
-        index = self._parameter_index_at(event)
+        index = self._selectable_column_at(event)
         if index is None or self.selection_anchor is None:
             return
         self._select_range(self.selection_anchor, index)
@@ -536,21 +595,25 @@ class OverrideTable(tk.Canvas):
                 # The section label spans every row since the last section started.
                 top = self.body_top + section_start * self.row_height
                 height = (row_index - section_start) * self.row_height
-                self._label_cell(0, top, self.section_width, height, self.rows[section_start].get("section", ""))
+                self._label_cell(0, top, self.section_width, height, self.rows[section_start].get("section", ""),
+                                 fill=self._label_fill(self.rows[section_start]))
                 self.create_line(0, top, right, top, fill="#374151", width=2)
                 section_start = row_index
             if row is None:
                 break
 
             top = self.body_top + row_index * self.row_height
-            self._label_cell(self.section_width, top, self.label_width, self.row_height, row.get("label", ""), fill="#f8faf9")
+            self._label_cell(self.section_width, top, self.label_width, self.row_height, row.get("label", ""),
+                             fill=self._label_fill(row, "#f8faf9"))
             for index, cell in enumerate(row["cells"]):
                 left = self.column_offsets[index]
                 if cell.get("action"):
                     self._draw_action_cell(row_index, index)
                     continue
                 state = cell.get("state", "set")
-                if state == "none":
+                if row.get("selects_column") and index in self.selected_indices:
+                    fill = "#dcefe7"
+                elif state == "none":
                     fill = "#e5e9e7"
                 elif cell.get("editable"):
                     fill = "#ffffff"
@@ -564,6 +627,9 @@ class OverrideTable(tk.Canvas):
                         text=self._fit_text(cell["text"], self.column_widths[index] - 12), anchor="w",
                         font=self.body_font, fill="#9ca3af" if state == "inherited" else "#111827",
                     )
+
+    def _label_fill(self, row, fill="#f1f5f3"):
+        return "#dcefe7" if row.get("family") in self.selected_families else fill
 
     def _action_span(self, row_index: int, column_index: int):
         """The first row and row count of the action button covering this cell.
@@ -611,7 +677,10 @@ class OverrideTable(tk.Canvas):
         return cell
 
     def _on_motion(self, event):
-        clickable = self._action_at(event) is not None or self._hidden_toggle_at(event) is not None
+        clickable = any(found is not None for found in (
+            self._action_at(event), self._hidden_toggle_at(event), self._family_at(event),
+            self._selectable_column_at(event),
+        ))
         self.configure(cursor="hand2" if clickable else "")
 
     def _fit_text(self, text: str, max_width: int) -> str:
@@ -1060,8 +1129,9 @@ class DDMGUI:
         )
 
     def _build_data_table(self, parent: ttk.Frame, table_name: str):
+        self._build_search_bar(parent, table_name)
         frame = ttk.Frame(parent)
-        frame.pack(fill="both", expand=True, padx=8, pady=8)
+        frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         if table_name == "params":
             columns = self._get_table_columns("params")
@@ -1118,6 +1188,29 @@ class DDMGUI:
 
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
+
+    def _build_search_bar(self, parent: ttk.Frame, table_name: str):
+        """A Search box over a main table: rows show only when they contain every word typed."""
+        if not hasattr(self, "_search_vars"):
+            self._search_vars = {}
+            self._search_counts = {}
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(bar, text="Search:").pack(side="left", padx=(0, 6))
+        search_var = tk.StringVar()
+        entry = ttk.Entry(bar, textvariable=search_var, width=40)
+        entry.pack(side="left")
+        entry.bind("<Escape>", lambda _event: search_var.set(""))
+        ttk.Button(bar, text="Clear", command=lambda: search_var.set("")).pack(side="left", padx=(6, 0))
+        count = ttk.Label(bar, text="")
+        count.pack(side="left", padx=(12, 0))
+        self._search_vars[table_name] = search_var
+        self._search_counts[table_name] = count
+        search_var.trace_add("write", lambda *_args: self.render_tables())
+
+    def _search_text(self, table_name: str) -> str:
+        search_var = getattr(self, "_search_vars", {}).get(table_name)
+        return search_var.get() if search_var is not None else ""
 
     def _schedule_table_heading_wrap(self, tree: ttk.Treeview, event):
         if tree.identify_region(event.x, event.y) == "separator":
@@ -1206,7 +1299,7 @@ class DDMGUI:
         if column_number < 0 or column_number >= len(columns):
             return
 
-        row_index = tree.index(row_id)
+        row_index = int(row_id)
         current_value = tree.item(row_id, "values")[column_number] if column_number < len(tree.item(row_id, "values")) else ""
         field_name = columns[column_number]
         if field_name in {"status", "validation_message", "guid"}:
@@ -1265,24 +1358,38 @@ class DDMGUI:
         entry.bind("<FocusOut>", lambda _event: commit_edit())
 
     def render_tables(self):
-        self._render_tree(self.param_tree, self.params_df, self._get_table_columns("params"))
-        self._render_tree(self.family_tree, self.families_df, self._get_table_columns("families"))
-        self._render_tree(self.group_tree, self._build_schedule_summary_df(), self._schedule_summary_columns)
+        tables = (
+            ("params", self.param_tree, self.params_df, self._get_table_columns("params")),
+            ("families", self.family_tree, self.families_df, self._get_table_columns("families")),
+            ("groups", self.group_tree, self._build_schedule_summary_df(), self._schedule_summary_columns),
+        )
+        for table_name, tree, df, columns in tables:
+            shown = self._render_tree(tree, df, columns, self._search_text(table_name))
+            count = getattr(self, "_search_counts", {}).get(table_name)
+            if count is not None:
+                count.configure(text=f"Showing {shown} of {len(df)}" if self._search_text(table_name).strip() else "")
 
     @staticmethod
-    def _render_tree(tree: ttk.Treeview, df: pd.DataFrame, columns: Sequence[str]):
+    def _render_tree(tree: ttk.Treeview, df: pd.DataFrame, columns: Sequence[str], search: str = "") -> int:
+        """Fill the table with the rows matching ``search``; returns how many are shown.
+
+        Each row's item ID is its position in ``df``, so edits reach the right item while filtered.
+        """
         if tree is None:
-            return
+            return 0
 
         for row in tree.get_children():
             tree.delete(row)
 
-        if df.empty:
-            return
-
-        for _, row in df.iterrows():
-            values = [row.get(col, "") for col in columns]
-            tree.insert("", "end", values=["" if value is None else value for value in values])
+        words = search.casefold().split()
+        shown = 0
+        for position, (_, row) in enumerate(df.iterrows()):
+            values = ["" if value is None else value for value in (row.get(col, "") for col in columns)]
+            text = " ".join(str(value) for value in values).casefold()
+            if all(word in text for word in words):
+                tree.insert("", "end", iid=str(position), values=values)
+                shown += 1
+        return shown
 
     # --- validation -------------------------------------------------------------
 
@@ -1462,7 +1569,31 @@ class DDMGUI:
         ("value", "Default Value", "Default Value"),
         ("formula", "Default Formula", "Formula"),
         ("group_under", "Default Group Under", "Group Under"),
+        ("instance_param", "Instance or Type", "Instance or Type"),
     )
+    # Belong to the family, yet editable on a schedule's family rows (where they set the family).
+    _family_level_attributes = ("instance_param",)
+
+    @staticmethod
+    def _attribute_text(attribute: str, value):
+        """How a cell shows ``attribute``'s value: Instance or Type for ``instance_param``."""
+        if attribute == "instance_param" and isinstance(value, bool):
+            return "Instance" if value else "Type"
+        return value
+
+    @staticmethod
+    def _attribute_value(attribute: str, text):
+        """The value a cell's text stores; ``None`` for blank."""
+        value = cell_text(text) or None
+        if attribute == "instance_param" and value is not None:
+            if value not in ("Instance", "Type"):
+                raise ValueError("Instance or Type must be Instance or Type.")
+            return value == "Instance"
+        return value
+
+    def _asks_parameter(self, param, attribute: str, value) -> bool:
+        """Offer the Parameter checkbox? A parameter is always Instance or Type, so never to clear it."""
+        return param is not None and not (attribute == "instance_param" and value is None)
 
     @classmethod
     def _attribute_term(cls, attribute: str) -> str:
@@ -1501,13 +1632,14 @@ class DDMGUI:
         families in the schedule, or the family's schedules) and can also make it the
         parameter's default. Returns ``False`` if the user cancels.
         """
-        value = cell_text(new_value) or None
+        value = self._attribute_value(attribute, new_value)
         connected = self._connected_override_locations(location, param_name, attribute)
         param = self.catalog.get_param(param_name)
+        ask_parameter = self._asks_parameter(param, attribute, value)
 
         answer = {"locations": [], "parameter": False}
-        if connected or param is not None:
-            answer = self._ask_override_scope(param_name, value, location, connected, param is not None, attribute)
+        if connected or ask_parameter:
+            answer = self._ask_override_scope(param_name, value, location, connected, ask_parameter, attribute)
             if answer is None:
                 return False
 
@@ -1528,12 +1660,18 @@ class DDMGUI:
         family_name, schedule_name = location
         verb = "Clear" if value is None else "Override"
         term = self._attribute_term(attribute)
-        shown = "(no value)" if value is None else value
+        shown = "(no value)" if value is None else self._attribute_text(attribute, value)
         if attribute == "group_under":
             assignment = f"{param_name} Group Under = {shown}"
         else:
             assignment = f"{param_name} = {shown}"
-        if schedule_name is None:
+        if family_name == ALL_FAMILIES and attribute != "value":
+            heading = (
+                f"{verb} Family {term}\nEvery Family in {schedule_name} (in Every Schedule They're In)"
+                f"\n{assignment}"
+            )
+            list_label = ""  # every family is already covered; there's no list to pick from
+        elif schedule_name is None:
             heading = f"{verb} Family {term}\n{family_name}\n{assignment}"
             list_label = f"{verb} Schedule {term} in These Schedules?"
         else:
@@ -1648,13 +1786,16 @@ class DDMGUI:
             or next((param for fam in families for param in fam.params if param.name == name), None)
             for name in parameter_names
         ]
-        rows = [{"section": "Parameter", "label": "Name", "cells": [self._table_cell(name) for name in parameter_names]}]
+        rows = [{
+            "section": "Parameter", "label": "Name", "selects_column": True,
+            "cells": [self._table_cell(name) for name in parameter_names],
+        }]
         for attribute, _term, label in self._override_attributes:
             rows.append({
                 "section": "",
                 "label": label,
                 "cells": [
-                    self._table_cell(None if param is None else getattr(param, attribute))
+                    self._table_cell(None if param is None else self._attribute_text(attribute, getattr(param, attribute)))
                     for param in definitions
                 ],
             })
@@ -1677,7 +1818,11 @@ class DDMGUI:
 
         rows = []
         for attribute, _term, label in self._override_attributes:
-            editable = schedule is None or attribute in Schedule.FAMILY_OVERRIDABLE_ATTRIBUTES
+            editable = (
+                schedule is None or attribute in Schedule.FAMILY_OVERRIDABLE_ATTRIBUTES
+                or attribute in self._family_level_attributes
+            )
+            set_here = fam.overrides if attribute in self._family_level_attributes else own_overrides
             cells = []
             for name in parameter_names:
                 param = resolved.get(name)
@@ -1687,8 +1832,10 @@ class DDMGUI:
                         cell["action"] = "Add Parameter to Family"
                     cells.append(cell)
                     continue
-                is_set = editable and attribute in own_overrides.get(name, {})
-                cells.append(self._table_cell(getattr(param, attribute), "set" if is_set else "inherited", editable))
+                is_set = editable and attribute in set_here.get(name, {})
+                cells.append(self._table_cell(
+                    self._attribute_text(attribute, getattr(param, attribute)), "set" if is_set else "inherited", editable
+                ))
             rows.append({
                 "section": "" if rows else fam.name,
                 "label": label,
@@ -1698,65 +1845,77 @@ class DDMGUI:
             })
         return rows
 
-    def _all_families_row(self, schedule, parameter_names: Sequence[str]) -> dict:
-        """The All Families row: a shortcut that sets every family's Schedule Default Value.
+    def _all_families_rows(self, schedule, parameter_names: Sequence[str]) -> List[dict]:
+        """The Apply to All Families rows: shortcuts that set every family in the schedule at once.
 
+        Default Value sets each family's Schedule Default Value. Formula and Group
+        Under belong to the family itself (Revit keeps them in the family), so they
+        set each family's Family Default, which every schedule the family is in uses.
         A cell shows the shared value when every family with that column agrees,
         "(Varies)" when they differ, and blank when none has one.
         """
-        cells = []
-        for name in parameter_names:
-            families = [fam for fam in schedule.fams if name in schedule.family_param_names(fam)]
-            if not families:
-                cells.append(self._table_cell(None, "none"))
-                continue
-            values = {
-                schedule.family_overrides.get(fam.name, {}).get(name, {}).get("value")
-                for fam in families
-            }
-            if len(values) > 1:
-                cells.append(self._table_cell("(Varies)", "inherited", True))
-            else:
-                value = values.pop()
-                cells.append(self._table_cell(value, "inherited" if value is None else "set", True))
-        return {
-            "section": ALL_FAMILIES,
-            "label": "Default Value",
-            "cells": cells,
-            "family": None,
-            "attribute": "value",
-            "all_families": True,
-        }
+        rows = []
+        for attribute, _term, label in self._override_attributes:
+            cells = []
+            for name in parameter_names:
+                families = [fam for fam in schedule.fams if name in schedule.family_param_names(fam)]
+                if not families:
+                    cells.append(self._table_cell(None, "none"))
+                    continue
+                values = {
+                    self._attribute_text(attribute, (
+                        schedule.family_overrides.get(fam.name, {}) if attribute == "value" else fam.overrides
+                    ).get(name, {}).get(attribute))
+                    for fam in families
+                }
+                if len(values) > 1:
+                    cells.append(self._table_cell("(Varies)", "inherited", True))
+                else:
+                    value = values.pop()
+                    cells.append(self._table_cell(value, "inherited" if value is None else "set", True))
+            rows.append({
+                "section": "" if rows else ALL_FAMILIES_SECTION,
+                "label": label,
+                "cells": cells,
+                "family": None,
+                "attribute": attribute,
+                "all_families": True,
+            })
+        return rows
 
-    def _override_all_families(self, schedule_name: str, param_name: str, new_value) -> bool:
-        """Set (or clear) the Schedule Default Value of every family in the schedule with the column.
+    def _override_all_families(self, schedule_name: str, param_name: str, new_value, attribute: str = "value") -> bool:
+        """Set (or clear) ``attribute`` for every family in the schedule with the column.
 
-        The prompt only offers the Parameter Default Value, since every family is
-        already covered. Returns ``False`` if the user cancels.
+        A Default Value goes to each family's Schedule Default Value; a Formula or
+        Group Under to each family's Family Default. The prompt only offers the
+        Parameter default, since every family is already covered. Returns ``False``
+        if the user cancels.
         """
-        value = cell_text(new_value) or None
+        value = self._attribute_value(attribute, new_value)
         schedule = self._get_schedule(schedule_name)
         targets = [
-            (fam.name, schedule_name) for fam in schedule.fams
+            (fam.name, schedule_name if attribute == "value" else None) for fam in schedule.fams
             if param_name in schedule.family_param_names(fam)
         ]
         param = self.catalog.get_param(param_name)
         answer = {"locations": [], "parameter": False}
-        if param is not None:
-            answer = self._ask_override_scope(param_name, value, (ALL_FAMILIES, schedule_name), [], True)
+        if self._asks_parameter(param, attribute, value):
+            answer = self._ask_override_scope(
+                param_name, value, (ALL_FAMILIES, schedule_name), [], True, attribute
+            )
             if answer is None:
                 return False
         for target in targets:
-            self.catalog.apply_override(target, param_name, value=value)
+            self.catalog.apply_override(target, param_name, **{attribute: value})
         if answer["parameter"]:
-            param.value = value
+            setattr(param, attribute, value)
         self.validate_all()
         return True
 
     def _schedule_table_rows(self, schedule) -> List[dict]:
         parameter_names = self._get_schedule_parameter_names(schedule)
         rows = self._parameter_table_rows(parameter_names, schedule.fams)
-        rows.append(self._all_families_row(schedule, parameter_names))
+        rows.extend(self._all_families_rows(schedule, parameter_names))
         for fam in schedule.fams:
             rows.extend(self._family_table_rows(fam, parameter_names, schedule))
         return rows
@@ -1794,25 +1953,32 @@ class DDMGUI:
             own = {attribute: cell["text"]} if cell["state"] == "set" else {}
             if cell["text"] == "(Varies)":
                 placeholder = "Varies: Type a Value to Set Every Family"
-            else:
+            elif attribute == "value":
                 placeholder = "Blank Uses Each Family Default Value"
+            else:
+                placeholder = f"Blank Uses Parameter {self._attribute_term(attribute)}"
         elif schedule_name is None:
+            own = self.catalog.get_family(family_name).overrides.get(param_name, {})
+            placeholder = f"Blank Uses Parameter {self._attribute_term(attribute)}"
+        elif attribute in self._family_level_attributes:
             own = self.catalog.get_family(family_name).overrides.get(param_name, {})
             placeholder = f"Blank Uses Parameter {self._attribute_term(attribute)}"
         else:
             own = self._get_schedule(schedule_name).family_overrides.get(family_name, {}).get(param_name, {})
             placeholder = f"Blank Uses Family {self._attribute_term(attribute)}"
-        current = own.get(attribute)
+        current = self._attribute_text(attribute, own.get(attribute))
         current = "" if current is None else str(current)
+        # A family-level setting on a schedule's family row sets the family itself.
+        location_schedule = None if attribute in self._family_level_attributes else schedule_name
 
         def commit(text):
             if cell_text(text) == current:
                 return
             try:
                 if all_families:
-                    self._override_all_families(schedule_name, param_name, text)
+                    self._override_all_families(schedule_name, param_name, text, attribute)
                 else:
-                    self._override_value((family_name, schedule_name), param_name, text, attribute)
+                    self._override_value((family_name, location_schedule), param_name, text, attribute)
             except ValueError as exc:
                 messagebox.showerror("Invalid value", str(exc), parent=table.winfo_toplevel())
             table.set_rows(rows_builder())
@@ -1832,7 +1998,10 @@ class DDMGUI:
             current,
             commit,
             placeholder=placeholder,
-            choices=self._revit_dropdown_values("group_under") if attribute == "group_under" else None,
+            choices=(
+                self._revit_dropdown_values("group_under") if attribute == "group_under"
+                else ["Instance", "Type"] if attribute == "instance_param" else None
+            ),
             on_tab=edit_next,
         )
 
@@ -1951,6 +2120,245 @@ class DDMGUI:
         box.save = save  # for tests
         return box
 
+    def _rename_schedule(self, schedule_name: str, new_name: str):
+        """Rename a schedule; raises ``ValueError`` for a blank or taken name."""
+        self._get_schedule(schedule_name).name = cell_text(new_name)
+        self.validate_all()
+
+    def _build_schedule_name_entry(self, parent, form, schedule):
+        """The schedule window's title as an editable name: Enter or clicking away renames, Escape undoes.
+
+        A rename reopens the window under the new name.
+        """
+        name_var = tk.StringVar(value=schedule.name)
+        entry = ttk.Entry(parent, textvariable=name_var, font=("Segoe UI", 18, "bold"))
+        renaming = False
+
+        def rename(_event=None):
+            nonlocal renaming
+            new_name = name_var.get().strip()
+            if renaming or new_name == schedule.name:
+                return
+            renaming = True
+            old_name = schedule.name
+            try:
+                self._rename_schedule(old_name, new_name)
+            except ValueError as exc:
+                messagebox.showwarning("Rename Schedule", str(exc), parent=form)
+                name_var.set(old_name)
+                renaming = False
+                return
+            self._show_messages([f"Renamed schedule '{old_name}' to '{new_name}'."])
+            form.destroy()
+            self._open_schedule_window(new_name)
+
+        entry.bind("<Return>", rename)
+        entry.bind("<FocusOut>", rename)
+        entry.bind("<Escape>", lambda _event: name_var.set(schedule.name))
+        entry.rename = rename  # for tests
+        return entry
+
+    def _link_schedule_families(self, schedule_name: str, family_names: Sequence[str]):
+        """Add families to a schedule; ones already in it are left as they are."""
+        schedule = self._get_schedule(schedule_name)
+        for family_name in family_names:
+            fam = self.catalog.get_family(family_name)
+            if fam is None:
+                raise ValueError("Family not found: {}".format(family_name))
+            if schedule.get_family(family_name) is None:
+                schedule.add_family(fam)
+        self.validate_all()
+
+    def _unlink_schedule_family(self, schedule_name: str, family_name: str):
+        """Take a family out of a schedule, with its Schedule Default Values for that family."""
+        self._get_schedule(schedule_name).remove_family(family_name)
+        self.validate_all()
+
+    def _add_schedule_parameters(self, schedule_name: str, parameter_names: Sequence[str], after=None):
+        """Add catalog parameters as schedule columns, after column ``after`` or at the end."""
+        self._get_schedule(schedule_name).add_columns(parameter_names, after=after)
+        self.validate_all()
+
+    def _remove_schedule_parameters(self, schedule_name: str, parameter_names: Sequence[str]):
+        """Take columns out of a schedule, with their settings and Schedule Default Values."""
+        self._get_schedule(schedule_name).remove_columns(parameter_names)
+        self.validate_all()
+
+    def _move_schedule_parameters(self, schedule_name: str, parameter_names: Sequence[str], step: int) -> bool:
+        """Move columns one place left (-1) or right (+1); ``False`` if they're already at that end."""
+        moved = self._get_schedule(schedule_name).move_columns(parameter_names, step)
+        if moved:
+            self.validate_all()
+        return moved
+
+    def _build_schedule_edit_buttons(self, parent, schedule, get_table, on_change):
+        """Add Parameter..., Remove Parameter, Move Left, Move Right, Add Family... and Remove Family.
+
+        The Remove and Move buttons act on the columns or families selected in the
+        table (``get_table()``, which may be ``None`` when the schedule has no columns).
+        ``on_change(selected_parameters=())`` runs after a change.
+        """
+        bar = ttk.Frame(parent)
+
+        def selected(kind):
+            table = get_table()
+            if table is None:
+                return []
+            return table.get_selected_parameter_names() if kind == "parameter" else table.get_selected_family_names()
+
+        def add_parameters():
+            columns = {param.name for param in schedule.params}
+            choices = [
+                (param.name, f"{param.name} {param.header_text or ''} {param.group_under or ''}")
+                for param in self.catalog.params if param.name not in columns
+            ]
+            after = (selected("parameter") or [None])[-1]
+
+            def add(names):
+                self._add_schedule_parameters(schedule.name, names, after=after)
+                on_change()
+
+            hint = (
+                f"Added to the right of {after}." if after
+                else "Added at the right end (select a column first to add to its right)."
+            )
+            return self._pick_names(bar.winfo_toplevel(), f"Add Parameters to {schedule.name}", choices, add, hint)
+
+        def remove_parameters():
+            names = selected("parameter")
+            if not names:
+                messagebox.showinfo(
+                    "Remove Parameters", "Select the columns to remove first: click their headers or names.",
+                    parent=bar,
+                )
+                return
+            if not messagebox.askyesno(
+                "Remove Parameters",
+                "Remove these columns from the schedule? Their column settings and Schedule Default "
+                "Values go with them:\n\n" + "\n".join(names),
+                parent=bar,
+            ):
+                return
+            self._remove_schedule_parameters(schedule.name, names)
+            on_change()
+
+        def move(step):
+            names = selected("parameter")
+            if not names:
+                messagebox.showinfo(
+                    "Move Parameters", "Select the columns to move first: click their headers or names.",
+                    parent=bar,
+                )
+                return
+            try:
+                moved = self._move_schedule_parameters(schedule.name, names, step)
+            except ValueError as exc:
+                messagebox.showwarning("Move Parameters", str(exc), parent=bar)
+                return
+            if moved:
+                on_change(names)
+
+        def add_families():
+            linked = {fam.name for fam in schedule.fams}
+            choices = [
+                (fam.name, f"{fam.name} {fam.category or ''} {fam.description or ''}")
+                for fam in self.catalog.families if fam.name not in linked
+            ]
+
+            def add(names):
+                self._link_schedule_families(schedule.name, names)
+                on_change()
+
+            return self._pick_names(bar.winfo_toplevel(), f"Add Families to {schedule.name}", choices, add)
+
+        def remove_families():
+            names = selected("family")
+            if not names:
+                messagebox.showinfo(
+                    "Remove Families", "Select the families to remove first: click their names on the left.",
+                    parent=bar,
+                )
+                return
+            message = "Remove these families from the schedule?\n\n" + "\n".join(names)
+            if any(schedule.family_overrides.get(name) for name in names):
+                message += "\n\nTheir Schedule Default Values in this schedule are deleted with them."
+            if not messagebox.askyesno("Remove Families", message, parent=bar):
+                return
+            for name in names:
+                self._unlink_schedule_family(schedule.name, name)
+            on_change()
+
+        for text, command in (
+            ("Add Parameter...", add_parameters), ("Remove Parameter", remove_parameters),
+            ("◀ Move Left", lambda: move(-1)), ("Move Right ▶", lambda: move(1)),
+            ("Add Family...", add_families), ("Remove Family", remove_families),
+        ):
+            ttk.Button(bar, text=text, command=command).pack(side="left", padx=(0, 6))
+        # For tests.
+        bar.add_parameters, bar.remove_parameters = add_parameters, remove_parameters
+        bar.add_families, bar.remove_families = add_families, remove_families
+        bar.move = move
+        return bar
+
+    def _pick_names(self, parent, title: str, choices, on_pick, hint: str = ""):
+        """A searchable, multi-select list of ``choices`` (``(name, search text)`` pairs).
+
+        Add calls ``on_pick(names)`` with the selected names; double-click adds one.
+        """
+        picker = tk.Toplevel(parent)
+        picker.title(title)
+        picker.transient(parent)
+        picker.grab_set()
+        picker.geometry("560x520")
+
+        search_bar = ttk.Frame(picker)
+        search_bar.pack(fill="x", padx=10, pady=(10, 4))
+        ttk.Label(search_bar, text="Search:").pack(side="left", padx=(0, 6))
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_bar, textvariable=search_var)
+        search_entry.pack(side="left", fill="x", expand=True)
+        search_entry.focus_set()
+
+        list_frame = ttk.Frame(picker)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=4)
+        listbox = tk.Listbox(list_frame, selectmode="extended", exportselection=False)
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scroll.set)
+        listbox.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="left", fill="y")
+        help_text = " ".join(filter(None, [hint, "Ctrl-click or Shift-click to select several; double-click adds one."]))
+        ttk.Label(picker, text=help_text, wraplength=530).pack(anchor="w", padx=10)
+
+        shown = []
+
+        def refresh(*_args):
+            words = search_var.get().casefold().split()
+            shown[:] = [name for name, text in choices if all(word in text.casefold() for word in words)]
+            listbox.delete(0, "end")
+            for name in shown:
+                listbox.insert("end", name)
+
+        def add(_event=None):
+            names = [shown[index] for index in listbox.curselection()]
+            if not names:
+                messagebox.showinfo(title, "Select one or more first.", parent=picker)
+                return
+            picker.destroy()
+            on_pick(names)
+
+        search_var.trace_add("write", refresh)
+        listbox.bind("<Double-1>", add)
+        refresh()
+
+        buttons = ttk.Frame(picker)
+        buttons.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(buttons, text="Add", command=add, style="Action.TButton").pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=picker.destroy).pack(side="right", padx=(0, 6))
+        picker.search_var = search_var  # for tests
+        picker.listbox = listbox
+        picker.add = add
+        return picker
+
     def _add_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
         group = self._get_schedule(schedule_name).add_header_group(caption, parameter_names)
         self.validate_all()
@@ -2008,7 +2416,7 @@ class DDMGUI:
         bbox = tree.bbox(row_id, f"#{column_number + 1}")
         if not bbox:
             return
-        row_index = tree.index(row_id)
+        row_index = int(row_id)
         values = tree.item(row_id, "values")
         current_value = str(values[column_number]) if column_number < len(values) else ""
 
@@ -2073,7 +2481,7 @@ class DDMGUI:
         row_id = self.family_tree.identify_row(event.y)
         if not row_id:
             return
-        row_index = self.family_tree.index(row_id)
+        row_index = int(row_id)
         self._open_detail_window("family", row_index)
 
     def _open_selected_schedule_window(self, event):
@@ -2082,7 +2490,7 @@ class DDMGUI:
         row_id = self.group_tree.identify_row(event.y)
         if not row_id:
             return
-        row_index = self.group_tree.index(row_id)
+        row_index = int(row_id)
         if row_index < 0 or row_index >= len(self.catalog.schedules):
             return
         self._open_detail_window("schedule", self.catalog.schedules[row_index].name)
@@ -2179,7 +2587,9 @@ class DDMGUI:
             ),
         )
 
-    def _open_schedule_window(self, selected_name: str):
+    def _open_schedule_window(self, selected_name: str, view=None):
+        """The schedule window. ``view`` (from a reopen) restores its place, size, scrolling
+        and selected columns: ``{"geometry", "xview", "yview", "selected"}``."""
         schedule = self.catalog.get_schedule(selected_name)
         if schedule is None:
             return
@@ -2188,26 +2598,41 @@ class DDMGUI:
         form.title(f"Schedule Details: {selected_name}")
         form.transient(self.root)
         form.grab_set()
-        form.geometry("1040x760")
+        form.geometry(view["geometry"] if view else "1040x840")
 
         title_bar = ttk.Frame(form)
         title_bar.pack(fill="x", padx=12, pady=(10, 4))
-        ttk.Label(title_bar, text=f"Schedule: {selected_name}", style="Title.TLabel").pack(side="left")
+        ttk.Label(title_bar, text="Schedule:", style="Title.TLabel").pack(side="left")
         self._info_button(title_bar).pack(side="right")
+        self._build_schedule_name_entry(title_bar, form, schedule).pack(
+            side="left", fill="x", expand=True, padx=(8, 12)
+        )
         ttk.Label(form, text=f"Status: {schedule.status}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(0, 6))
         ttk.Label(form, text=f"Validation: {schedule.validation_message or 'None'}", wraplength=1000, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
         self._build_schedule_settings(form, schedule).pack(fill="x", padx=12, pady=(0, 8))
 
+        def reopen(selected_parameters=()):
+            # Adding, removing or moving columns and families rebuilds the table, in the same place.
+            reopened_view = {"geometry": form.geometry(), "selected": list(selected_parameters)}
+            if table is not None:
+                reopened_view.update(xview=table.xview()[0], yview=table.yview()[0])
+            form.destroy()
+            self._open_schedule_window(selected_name, reopened_view)
+
+        table = None
+
         table_box = ttk.LabelFrame(
             form,
-            text="Schedule Default Values (double-click a value to edit it, a header for column settings)",
+            text="Schedule Default Values (double-click a value to edit it, a header for column settings; "
+                 "click headers or family names to select them)",
             padding=8,
         )
         table_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         parameter_names = self._get_schedule_parameter_names(schedule)
         if not parameter_names:
-            ttk.Label(table_box, text="No parameters assigned").pack(anchor="w")
-            ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(0, 10))
+            ttk.Label(table_box, text="No Parameters Yet: Add Parameter... Adds Columns").pack(anchor="w")
+            self._build_schedule_edit_buttons(form, schedule, lambda: table, reopen).pack(fill="x", padx=12)
+            ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(8, 10))
             return
 
         def edit_schedule_header(parameter_name):
@@ -2299,8 +2724,18 @@ class DDMGUI:
             ],
         )
 
+        if view:
+            table.selected_indices = {
+                index for index, name in enumerate(parameter_names) if name in view["selected"]
+            }
+            table._draw_grid()
+            form.update_idletasks()
+            table.xview_moveto(view.get("xview", 0))
+            table.yview_moveto(view.get("yview", 0))
+
         group_controls = ttk.Frame(form)
         group_controls.pack(fill="x", padx=12)
+        self._build_schedule_edit_buttons(group_controls, schedule, lambda: table, reopen).pack(side="left")
 
         def begin_header_group():
             selected_parameters = table.get_selected_parameter_names()
@@ -2348,7 +2783,7 @@ class DDMGUI:
             ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
             caption_entry.bind("<Return>", lambda _event: save_header_group())
 
-        ttk.Button(group_controls, text="Group Selected Headers", command=begin_header_group).pack(side="left")
+        ttk.Button(group_controls, text="Group Selected Headers", command=begin_header_group).pack(side="left", padx=(12, 0))
         ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(8, 10))
 
     # --- files ------------------------------------------------------------------

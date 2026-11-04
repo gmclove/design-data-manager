@@ -50,6 +50,10 @@ The GUI saves to `data/database.ddm.json` by default, with a readable CSV and th
 alongside. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
 
+Each main tab (Parameters, Families, Schedules) has a **Search** box above its list. A row shows
+only if it contains every word typed, in any column; case doesn't matter. Escape or **Clear** shows
+every row again. Editing works the same on a filtered list.
+
 ## Standalone .exe (Beta)
 
 `dist/DesignDataManager.exe` runs without Python or conda. Copy it into its own folder and
@@ -102,6 +106,31 @@ The workbook doesn't record which families belong to which schedule, or which pa
 family has. Schedules are therefore imported on their own, with their columns taken straight
 from the parameters, and families are imported unlinked. A family without parameters shows a
 warning.
+
+To rename a schedule, edit its name at the top of the schedule window. Enter or clicking away
+renames it, and Escape undoes the edit. A blank name or one another schedule has is refused. A
+blank Schedule Filter follows the new name.
+
+Under the schedule window's table are **Add Parameter...**, **Remove Parameter**, **◀ Move
+Left**, **Move Right ▶**, **Add Family...** and **Remove Family**:
+
+- **Selecting:** click a column header or a parameter's Name cell to select a column, or click a
+  family's name on the left to select the family. Ctrl-click adds to the selection and
+  Shift-click selects a range.
+- **Add Parameter...** opens a searchable list of the parameters that aren't columns yet; pick
+  one or several. They go to the right of the selected column (the rightmost one, if several
+  are selected), or at the right end with none selected.
+- **◀ Move Left** and **Move Right ▶** move the selected columns one place; they stay selected,
+  so click again to keep moving. A move that would split a header group is refused: select all
+  of the group's columns to move the group.
+- **Add Family...** does the same for families not yet in the schedule. Each linked family is a
+  row in the table.
+- **Remove Parameter** and **Remove Family** act on the selection and ask first. A removed column
+  takes its column settings and Schedule Default Values with it; a removed family takes its
+  Schedule Default Values in that schedule.
+
+Linking families doesn't change the Revit macro: Revit finds a schedule's elements by
+`IPS_GROUP_Schedule_Name`.
 
 The import replaces the open database but saves nothing until you click **Save**. Anything that
 was fixed or skipped is listed in Messages.
@@ -211,10 +240,21 @@ Value, and a Family Default Value beats the Parameter Default Value. If you clea
 To edit a cell, double-click it and type. Enter or clicking away saves, Tab moves to the next
 cell, and Escape cancels.
 
-**All Families row:** in a schedule, this row is a shortcut, not another level. A value set there
-becomes the Schedule Default Value of every family in the schedule that has that column. The row
-shows the shared value, **(Varies)** when the families differ, or blank when none is set. Leaving
-a (Varies) cell unchanged changes nothing.
+**Apply to All Families rows:** in a schedule, these rows are a shortcut, not another level. They set
+every family in the schedule that has that column:
+- **Default Value** becomes each family's Schedule Default Value, in this schedule only.
+- **Formula** and **Group Under** become each family's Family Default Formula or Group Under.
+  Revit keeps these in the family, so they change the family in every schedule it's in.
+- **Instance or Type** (a drop-down) sets each family's own Instance or Type the same way.
+
+**Instance or Type:** each family can make a parameter Instance or Type, whatever the parameter's
+own setting. Set it in the family window, or in a schedule on the family's row or the Apply to
+All Families row; both set the family itself, so every schedule it's in uses it. Blank uses the
+parameter's. The RF Tools export (`.rfps`) uses each family's own Instance or Type, Default
+Value, Formula and Group Under, and the CSV keeps them on the family's link rows.
+
+Each cell shows the shared value, **(Varies)** when the families differ, or blank when none is
+set. Leaving a (Varies) cell unchanged changes nothing.
 
 **Where else to override:** after you change a Family or Schedule Default Value, a prompt asks
 where else it should go.

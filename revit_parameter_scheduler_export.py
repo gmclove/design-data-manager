@@ -91,6 +91,11 @@ def generate_rfps_content(
                 f"Parameter link references unknown parameter '{parameter_name}'."
             )
 
+        def own(column):
+            """The family's own setting for this parameter, else the parameter's."""
+            value = link.get(column)
+            return parameter.get(column) if _text(value) == "" else value
+
         dtype_name = _text(parameter.get("dtype"))
         data_type = _DATA_TYPE_EXPORT_NAMES.get(dtype_name)
         if data_type is None:
@@ -109,15 +114,15 @@ def generate_rfps_content(
                 "Visible": "1",
                 "InstanceOrType": (
                     "Instance"
-                    if _is_instance(parameter.get("instance_param", True))
+                    if _is_instance(own("instance_param") if _text(own("instance_param")) else True)
                     else "Type"
                 ),
-                "GroupUnder": _text(parameter.get("group_under")),
+                "GroupUnder": _text(own("group_under")),
                 "Source": f"./{shared_parameter_file_name}",
                 "ParamToReplace": "",
                 "MapToElecConnector": "0",
-                "Value": _text(parameter.get("default_value")),
-                "Formula": _text(parameter.get("formula")),
+                "Value": _text(own("default_value")),
+                "Formula": _text(own("formula")),
                 "SortOrder": "",
                 "ToolTip": "",
                 "UserModifiable": "1",

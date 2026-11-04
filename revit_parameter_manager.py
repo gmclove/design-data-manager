@@ -675,6 +675,50 @@ class Schedule(object):
 		self.refresh_params()
 		self.validate()
 
+	def add_columns(self, param_names, after=None):
+		"""Add catalog parameters as columns, after column ``after`` or at the end.
+		Columns already in the schedule are left where they are."""
+		current = [param.name for param in self.params]
+		added = [name for name in dict.fromkeys(param_names) if name not in current]
+		for name in added:
+			if self.catalog is None or self.catalog.get_param(name) is None:
+				raise ValueError("Unknown parameter '{}' for schedule '{}'.".format(name, self.name))
+		position = current.index(after) + 1 if after in current else len(current)
+		self.set_field_names(current[:position] + added + current[position:])
+
+	def move_columns(self, param_names, step):
+		"""Move columns one place left (``step`` -1) or right (+1), keeping them in order.
+
+		Returns ``False`` when they're already at that end. Raises ``ValueError`` if the
+		move would split a header group (moving every column of a group together is fine).
+		"""
+		order = [param.name for param in self.params]
+		moving = set(param_names) & set(order)
+		indices = [index for index, name in enumerate(order) if name in moving]
+		if not indices or (step < 0 and indices[0] == 0) or (step > 0 and indices[-1] == len(order) - 1):
+			return False
+		for index in (indices if step < 0 else reversed(indices)):
+			if order[index + step] not in moving:
+				order[index], order[index + step] = order[index + step], order[index]
+		for group in self.header_groups:
+			columns = sorted(order.index(name) for name in group['parameter_names'])
+			if columns[-1] - columns[0] + 1 != len(columns):
+				raise ValueError("That would split header group '{}'. Select all of its columns to move it, "
+								 "or remove the group first.".format(group['caption']))
+		for group in self.header_groups:
+			group['parameter_names'].sort(key=order.index)
+		self.set_field_names(order)
+		return True
+
+	def remove_columns(self, param_names):
+		"""Take columns out of the schedule, with their settings and Schedule Default Values."""
+		if self.field_names is None:
+			# Columns from the families: fix the rest so the removed ones stay out.
+			self.field_names = [param.name for param in self.params]
+		for name in param_names:
+			self._param_removed(name)
+		self.validate()
+
 	def set_field_hidden(self, param_name, hidden):
 		"""Hide (or show) a column in the finished Revit schedule."""
 		if param_name not in {param.name for param in self.params}:

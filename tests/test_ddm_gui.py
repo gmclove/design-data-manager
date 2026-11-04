@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 import ddm_gui as gui_module
+from revit_parameter_scheduler_export import generate_rfps_content
 from config.app_paths import (
     DATA_DIR,
     DEMO_DATA_PATH,
@@ -928,10 +929,10 @@ def test_schedule_table_shows_each_level_and_where_values_come_from(monkeypatch)
 
     rows = gui._schedule_table_rows(gui.catalog.get_schedule("S1"))
 
-    assert [row["section"] for row in rows if row["section"]] == ["Parameter", "All Families", "F1", "F2", "F3"]
+    assert [row["section"] for row in rows if row["section"]] == ["Parameter", "Apply to All Families", "F1", "F2", "F3"]
     assert cells(rows, "Name", "Parameter") == [("Width", "set", False)]
     assert cells(rows, "Default Value", "Parameter") == [("1", "set", False)]
-    assert cells(rows, "Default Value", "All Families") == [("(Varies)", "inherited", True)]
+    assert cells(rows, "Default Value", "Apply to All Families") == [("(Varies)", "inherited", True)]
     assert cells(rows, "Default Value", "F1") == [("5", "inherited", True)]
     assert cells(rows, "Default Value", "F2") == [("9", "set", True)]
     assert cells(rows, "Default Value", "F3") == [("1", "inherited", True)]
@@ -946,7 +947,7 @@ def test_all_families_row_sets_every_familys_schedule_value_at_once(monkeypatch)
     monkeypatch.setattr(gui, "_ask_override_scope", answering({}, asked))
     schedule = gui.catalog.get_schedule("S1")
 
-    assert cells(gui._schedule_table_rows(schedule), "Default Value", "All Families") == [("", "inherited", True)]
+    assert cells(gui._schedule_table_rows(schedule), "Default Value", "Apply to All Families") == [("", "inherited", True)]
 
     assert gui._override_all_families("S1", "Width", "7") is True
 
@@ -954,16 +955,113 @@ def test_all_families_row_sets_every_familys_schedule_value_at_once(monkeypatch)
     for family in ("F1", "F2", "F3"):
         assert gui.catalog.resolved_value((family, "S1"), "Width") == "7"
     assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "1"
-    assert cells(gui._schedule_table_rows(schedule), "Default Value", "All Families") == [("7", "set", True)]
+    assert cells(gui._schedule_table_rows(schedule), "Default Value", "Apply to All Families") == [("7", "set", True)]
 
     gui._override_value(("F2", "S1"), "Width", "9")
-    assert cells(gui._schedule_table_rows(schedule), "Default Value", "All Families") == [("(Varies)", "inherited", True)]
+    assert cells(gui._schedule_table_rows(schedule), "Default Value", "Apply to All Families") == [("(Varies)", "inherited", True)]
 
     gui._override_all_families("S1", "Width", "")
     assert schedule.family_overrides == {}
 
     heading, _list_label, _parameter = gui._override_questions("Width", "7", ("All Families", "S1"))
     assert heading == "Override Schedule Default Value\nS1: All Families\nWidth = 7"
+
+
+def test_all_families_formula_and_group_under_set_each_familys_family_default(monkeypatch):
+    gui = three_family_gui()
+    asked = []
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({}, asked))
+    schedule = gui.catalog.get_schedule("S1")
+    rows = gui._schedule_table_rows(schedule)
+    assert [row["label"] for row in rows if row.get("all_families")] == [
+        "Default Value", "Formula", "Group Under", "Instance or Type",
+    ]
+    assert cells(rows, "Formula", "Apply to All Families") == [("", "inherited", True)]
+
+    assert gui._override_all_families("S1", "Width", "Height * 2", "formula") is True
+    assert asked == [("Width", "Height * 2", ("All Families", "S1"), [], True)]
+    # It's each family's own formula, so F1 and F2 have it in S2 too; nothing is schedule-level.
+    for family in ("F1", "F2", "F3"):
+        assert gui.catalog.get_family(family).overrides["Width"]["formula"] == "Height * 2"
+    assert schedule.family_overrides == {}
+    rows = gui._schedule_table_rows(schedule)
+    assert cells(rows, "Formula", "Apply to All Families") == [("Height * 2", "set", True)]
+    assert cells(rows, "Formula", "F1") == [("Height * 2", "inherited", False)]
+    assert cells(gui._schedule_table_rows(gui.catalog.get_schedule("S2")), "Formula", "F2") == [
+        ("Height * 2", "inherited", False)]
+
+    gui._override_value(("F2", None), "Width", "Dimensions", "group_under")
+    gui._override_all_families("S1", "Width", "Dimensions", "group_under")
+    assert cells(gui._schedule_table_rows(schedule), "Group Under", "Apply to All Families") == [("Dimensions", "set", True)]
+    gui._override_value(("F3", None), "Width", "Data", "group_under")
+    assert cells(gui._schedule_table_rows(schedule), "Group Under", "Apply to All Families") == [("(Varies)", "inherited", True)]
+
+    gui._override_all_families("S1", "Width", "", "formula")
+    assert all("formula" not in gui.catalog.get_family(f).overrides.get("Width", {}) for f in ("F1", "F2", "F3"))
+
+    heading, _list_label, parameter = gui._override_questions("Width", "Height * 2", ("All Families", "S1"), "formula")
+    assert heading == (
+        "Override Family Default Formula\nEvery Family in S1 (in Every Schedule They're In)\nWidth = Height * 2"
+    )
+    assert parameter == "Override Parameter Default Formula?\nWidth = Height * 2"
+
+
+def test_instance_or_type_is_set_per_family_from_the_schedule_and_reaches_the_exports(tmp_path, monkeypatch):
+    gui = three_family_gui()
+    asked = []
+    monkeypatch.setattr(gui, "_ask_override_scope", answering({}, asked))
+    schedule = gui.catalog.get_schedule("S1")
+    rows = gui._schedule_table_rows(schedule)
+    # The parameter is Instance; each family inherits it, and can change it from the schedule.
+    assert cells(rows, "Instance or Type", "Parameter") == [("Instance", "set", False)]
+    assert cells(rows, "Instance or Type", "F1") == [("Instance", "inherited", True)]
+
+    # F1's row sets F1 itself (every schedule it's in), not just this schedule.
+    row = next(i for i, r in enumerate(rows) if r.get("family") == "F1" and r["attribute"] == "instance_param")
+    table = SimpleNamespace(rows=rows, parameter_names=["Width"], winfo_toplevel=lambda: None)
+    edits = {}
+
+    def start_cell_edit(row_index, column_index, value, on_commit, placeholder="", choices=None, on_tab=None):
+        edits.update(value=value, choices=choices, placeholder=placeholder)
+        on_commit("Type")
+
+    table.start_cell_edit = start_cell_edit
+    table.set_rows = lambda new_rows: None
+    gui._edit_table_cell(table, lambda: gui._schedule_table_rows(schedule), "S1", row, 0)
+    assert edits == {"value": "", "choices": ["Instance", "Type"], "placeholder": "Blank Uses Parameter Instance or Type"}
+    assert gui.catalog.get_family("F1").overrides["Width"] == {"instance_param": False}
+    assert schedule.family_overrides == {}
+    rows = gui._schedule_table_rows(schedule)
+    assert cells(rows, "Instance or Type", "F1") == [("Type", "set", True)]
+    assert cells(rows, "Instance or Type", "Apply to All Families") == [("(Varies)", "inherited", True)]
+    assert asked[-1] == ("Width", False, ("F1", None), [], True)
+    heading, _list, _parameter = gui._override_questions("Width", False, ("F1", None), "instance_param")
+    assert heading == "Override Family Instance or Type\nF1\nWidth = Type"
+
+    # Apply to All Families sets every family; clearing doesn't offer to clear the parameter's.
+    gui._override_all_families("S1", "Width", "Type", "instance_param")
+    assert cells(gui._schedule_table_rows(schedule), "Instance or Type", "Apply to All Families") == [
+        ("Type", "set", True)]
+    asked.clear()
+    gui._override_all_families("S1", "Width", "", "instance_param")
+    assert asked == [] and all(not gui.catalog.get_family(f).overrides for f in ("F1", "F2", "F3"))
+    with pytest.raises(ValueError, match="Instance or Type must be"):
+        gui._override_value(("F1", None), "Width", "Sometimes", "instance_param")
+
+    # A family's own settings survive the CSV and reach the RF Tools export.
+    gui._override_value(("F2", None), "Width", "Type", "instance_param")
+    gui._override_value(("F2", None), "Width", "Width * 2", "formula")
+    rfps = generate_rfps_content(gui.families_df, gui.family_param_links_df, gui.params_df)
+    lines = {line.split("\t")[0]: line.split("\t") for line in rfps.splitlines()[1:]}
+    header = rfps.splitlines()[0].split("\t")
+    f1, f2 = lines["F1"], lines["F2"]
+    assert (f1[header.index("InstanceOrType")], f2[header.index("InstanceOrType")]) == ("Instance", "Type")
+    assert (f1[header.index("Formula")], f2[header.index("Formula")]) == ("", "Width * 2")
+    gui.checkpoint_path = tmp_path / "database.ddm.json"
+    gui.save_checkpoint()
+    loaded = make_test_gui()
+    loaded.load_checkpoint(str(tmp_path / "database.ddm.csv"))
+    assert loaded.catalog.get_family("F2").overrides["Width"] == {"instance_param": False, "formula": "Width * 2"}
 
 
 def test_all_families_row_can_also_set_the_parameter_default_or_cancel(monkeypatch):
@@ -1486,6 +1584,62 @@ def test_family_list_edits_in_place_on_one_click_and_opens_window_on_two(tmp_pat
         root.destroy()
 
 
+def test_search_filters_each_main_tab_and_edits_reach_the_right_item(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.geometry("1200x800")
+    try:
+        gui = DDMGUI(root)
+        root.update()
+        assert set(gui._search_vars) == {"params", "families", "groups"}
+
+        # Search for the last family by name: only it shows, and its row edits that family.
+        fam = gui.catalog.families[-1]
+        gui._search_vars["families"].set(fam.name.upper())
+        gui.notebook.select(gui.family_tab)
+        root.update()
+        tree = gui.family_tree
+        assert [tree.item(row, "values")[0] for row in tree.get_children()] == [fam.name]
+        assert gui._search_counts["families"].cget("text") == f"Showing 1 of {len(gui.catalog.families)}"
+        column = gui._get_table_columns("families").index("description")
+        gui._start_tree_cell_edit(tree, "families", tree.get_children()[0], column)
+        editor, finish = gui._tree_cell_editor
+        editor.delete(0, tk.END)
+        editor.insert(0, "Found by search")
+        finish(True)
+        assert fam.description == "Found by search"
+        # The search stays applied after the edit re-renders the table.
+        assert len(tree.get_children()) == 1
+
+        # Every word must match, in any column; clearing shows everything again.
+        gui._search_vars["families"].set(f"{fam.name} no-such-word")
+        assert tree.get_children() == ()
+        assert gui._search_counts["families"].cget("text") == f"Showing 0 of {len(gui.catalog.families)}"
+        gui._search_vars["families"].set("")
+        assert len(tree.get_children()) == len(gui.catalog.families)
+        assert gui._search_counts["families"].cget("text") == ""
+
+        param = gui.catalog.params[-1]
+        gui._search_vars["params"].set(param.name)
+        assert param.name in [gui.param_tree.item(row, "values")[0] for row in gui.param_tree.get_children()]
+        assert len(gui.param_tree.get_children()) < len(gui.catalog.params)
+
+        # A filtered schedule row opens that schedule's window.
+        schedule = gui.catalog.schedules[-1]
+        gui._search_vars["groups"].set(schedule.name)
+        gui.notebook.select(gui.schedules_tab)
+        root.update()
+        row = gui.group_tree.get_children()[0]
+        assert int(row) == len(gui.catalog.schedules) - 1
+        _x, y, _width, height = gui.group_tree.bbox(row)
+        opened = []
+        monkeypatch.setattr(gui, "_open_detail_window", lambda kind, name: opened.append((kind, name)))
+        gui._open_selected_schedule_window(SimpleNamespace(x=5, y=y + height // 2))
+        assert opened == [("schedule", schedule.name)]
+    finally:
+        root.destroy()
+
+
 def test_parameter_list_edits_in_place_on_one_click_and_pops_up_on_two(tmp_path, monkeypatch):
     monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
     root = tk.Tk()
@@ -1797,6 +1951,224 @@ def test_schedule_settings_box_saves_filter_itemize_and_view_template(tmp_path, 
         filter_entry.insert(0, schedule.name)
         box.save()
         assert schedule.filter_value is None
+    finally:
+        root.destroy()
+
+
+def schedule_window_parts(root, schedule):
+    """The open schedule window's table and its Add/Remove buttons bar."""
+    form = find_window(root, f"Schedule Details: {schedule.name}")
+    table = next(w for w in descendants(form) if isinstance(w, gui_module.OverrideTable))
+    bar = next(w for w in descendants(form) if hasattr(w, "remove_families"))
+    return table, bar
+
+
+def click(table, x, y, state=0):
+    table._on_mouse_down(SimpleNamespace(x=x, y=y, state=state))
+
+
+def test_schedule_window_selects_and_removes_families_and_parameters(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = next(
+            schedule for schedule in gui.catalog.schedules if len(schedule.fams) >= 2 and len(schedule.params) >= 3
+        )
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        table, bar = schedule_window_parts(root, schedule)
+        buttons = [w.cget("text") for w in descendants(bar) if isinstance(w, ttk.Button)]
+        assert buttons == [
+            "Add Parameter...", "Remove Parameter", "◀ Move Left", "Move Right ▶",
+            "Add Family...", "Remove Family",
+        ]
+
+        # Clicking a family's name on the left selects it; Ctrl-click adds another.
+        def family_y(name):
+            row = next(i for i, row in enumerate(table.rows) if row.get("family") == name)
+            return table.body_top + row * table.row_height + table.row_height // 2
+
+        first, second = schedule.fams[0].name, schedule.fams[1].name
+        click(table, 20, family_y(first))
+        click(table, 150, family_y(second), state=0x0004)
+        assert table.get_selected_family_names() == [first, second]
+
+        # Selecting a column clears the family selection; a Name cell selects its column too.
+        name_row = next(i for i, row in enumerate(table.rows) if row.get("selects_column"))
+        names = [param.name for param in schedule.params]
+        click(table, table.column_offsets[1] + 5, table.body_top + name_row * table.row_height + 5)
+        click(table, table.column_offsets[2] + 5, table.header_top + 5, state=0x0004)
+        assert table.get_selected_parameter_names() == names[1:3]
+        assert table.get_selected_family_names() == []
+
+        # Saying no to the confirmation keeps the columns; yes removes them and reopens the window.
+        monkeypatch.setattr(gui_module.messagebox, "askyesno", lambda *_args, **_kwargs: False)
+        bar.remove_parameters()
+        assert [param.name for param in schedule.params] == names
+        monkeypatch.setattr(gui_module.messagebox, "askyesno", lambda *_args, **_kwargs: True)
+        bar.remove_parameters()
+        root.update()
+        assert [param.name for param in schedule.params] == names[:1] + names[3:]
+
+        table, bar = schedule_window_parts(root, schedule)
+        fam = schedule.fams[0]
+        column = schedule.family_param_names(fam)[0]
+        schedule.override_family_param(fam.name, column, value="Gone")
+        click(table, 20, family_y(fam.name))
+        bar.remove_families()
+        root.update()
+        assert schedule.get_family(fam.name) is None
+        assert fam.name not in schedule.family_overrides
+
+        # Nothing selected: the Remove buttons say what to select instead.
+        table, bar = schedule_window_parts(root, schedule)
+        shown = []
+        monkeypatch.setattr(gui_module.messagebox, "showinfo", lambda title, message, **_kwargs: shown.append(title))
+        bar.remove_families()
+        bar.remove_parameters()
+        assert shown == ["Remove Families", "Remove Parameters"]
+    finally:
+        root.destroy()
+
+
+def test_schedule_window_moves_selected_columns_and_keeps_them_selected(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = next(schedule for schedule in gui.catalog.schedules if len(schedule.params) >= 3)
+        names = [param.name for param in schedule.params]
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        table, bar = schedule_window_parts(root, schedule)
+
+        click(table, table.column_offsets[0] + 5, table.header_top + 5)
+        bar.move(1)
+        root.update()
+        assert [param.name for param in schedule.params] == [names[1], names[0]] + names[2:]
+        # The window reopens with the moved column still selected, so the arrows can be clicked again.
+        table, bar = schedule_window_parts(root, schedule)
+        assert table.get_selected_parameter_names() == [names[0]]
+        bar.move(1)
+        assert [param.name for param in schedule.params][2] == names[0]
+        for _ in range(2):
+            _table, bar = schedule_window_parts(root, schedule)
+            bar.move(-1)
+        root.update()
+        assert [param.name for param in schedule.params] == names
+
+        # Already at the left end: nothing changes. A move that would split a header group is refused.
+        table, bar = schedule_window_parts(root, schedule)
+        bar.move(-1)
+        assert [param.name for param in schedule.params] == names
+        schedule.add_header_group("Pair", names[1:3])
+        warnings = []
+        monkeypatch.setattr(gui_module.messagebox, "showwarning", lambda title, message, **_kw: warnings.append(message))
+        bar.move(1)
+        assert [param.name for param in schedule.params] == names
+        assert warnings and "split header group 'Pair'" in warnings[0]
+    finally:
+        root.destroy()
+
+
+def test_schedule_window_adds_parameters_after_the_selected_column_and_adds_families(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = gui.catalog.schedules[0]
+        names = [param.name for param in schedule.params]
+        new_param = next(param.name for param in gui.catalog.params if param.name not in names)
+        unlinked = [fam for fam in gui.catalog.families if fam not in schedule.fams]
+        assert unlinked, "the demo needs a family outside the first schedule"
+        before = [fam.name for fam in schedule.fams]
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        table, bar = schedule_window_parts(root, schedule)
+
+        # The parameter picker lists only parameters not yet columns; it adds after the selection.
+        click(table, table.column_offsets[0] + 5, table.header_top + 5)
+        picker = bar.add_parameters()
+        assert picker.title() == f"Add Parameters to {schedule.name}"
+        assert new_param in picker.listbox.get(0, "end")
+        assert not set(names) & set(picker.listbox.get(0, "end"))
+        picker.search_var.set(new_param)
+        picker.listbox.selection_set(list(picker.listbox.get(0, "end")).index(new_param))
+        picker.add()
+        root.update()
+        assert [param.name for param in schedule.params] == names[:1] + [new_param] + names[1:]
+
+        # The family picker lists only unlinked families, and searching narrows it.
+        table, bar = schedule_window_parts(root, schedule)
+        picker = bar.add_families()
+        assert list(picker.listbox.get(0, "end")) == [fam.name for fam in unlinked]
+        target = unlinked[-1]
+        picker.search_var.set(target.name.upper())
+        picker.listbox.selection_set(list(picker.listbox.get(0, "end")).index(target.name))
+        picker.add()
+        root.update()
+        assert [fam.name for fam in schedule.fams] == before + [target.name]
+        assert gui.group_tree.item(gui.group_tree.get_children()[0], "values")[1] == str(len(before) + 1)
+        table, _bar = schedule_window_parts(root, schedule)
+        assert target.name in table._family_names()
+    finally:
+        root.destroy()
+
+
+def test_schedule_family_links_round_trip_through_csv(tmp_path):
+    gui = make_test_gui()
+    schedule = gui.catalog.schedules[0]
+    extra = next(fam for fam in gui.catalog.families if fam not in schedule.fams)
+    gui._link_schedule_families(schedule.name, [extra.name])
+    gui.checkpoint_path = tmp_path / "database.ddm.json"
+    gui.save_checkpoint()
+
+    loaded = make_test_gui()
+    loaded.load_checkpoint(str(tmp_path / "database.ddm.csv"))
+    assert extra.name in [fam.name for fam in loaded.catalog.get_schedule(schedule.name).fams]
+
+
+def test_schedule_window_title_renames_the_schedule(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule, other = gui.catalog.schedules[:2]
+        old_name = schedule.name
+        gui._open_detail_window("schedule", old_name)
+        root.update()
+
+        def name_entry(name):
+            form = find_window(root, f"Schedule Details: {name}")
+            return next(w for w in descendants(form) if hasattr(w, "rename"))
+
+        entry = name_entry(old_name)
+        assert entry.get() == old_name
+
+        # A taken or blank name is refused and the title goes back.
+        warnings = []
+        monkeypatch.setattr(gui_module.messagebox, "showwarning", lambda title, message, **_kw: warnings.append(message))
+        for bad in (other.name, "   "):
+            entry.delete(0, tk.END)
+            entry.insert(0, bad)
+            entry.rename()
+            assert schedule.name == old_name and entry.get() == old_name
+        assert warnings == [f"Schedule name '{other.name}' already exists.", "Schedule name is required."]
+
+        # A new name renames it, updates the Schedules list and reopens the window under it.
+        entry.delete(0, tk.END)
+        entry.insert(0, "  Renamed Schedule ")
+        entry.rename()
+        root.update()
+        assert schedule.name == "Renamed Schedule"
+        assert gui.group_tree.item(gui.group_tree.get_children()[0], "values")[0] == "Renamed Schedule"
+        assert name_entry("Renamed Schedule").get() == "Renamed Schedule"
+        assert schedule.resolved_filter_value == "Renamed Schedule"  # a blank filter follows the name
     finally:
         root.destroy()
 
