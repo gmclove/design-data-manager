@@ -4,6 +4,7 @@ openpyxl = pytest.importorskip("openpyxl")
 from openpyxl.styles import Border, Font, Side  # noqa: E402
 from openpyxl.worksheet.table import Table  # noqa: E402
 
+import excel_import  # noqa: E402
 from excel_import import import_workbook  # noqa: E402
 
 THIN = Side(style="thin")
@@ -117,6 +118,51 @@ def test_parameters_import_with_guids_groups_values_and_formulas(imported):
     assert (tag.group_under, tag.instance_param) == (None, False)  # "Other" is Revit's no-group
     assert catalog.get_param("IPS_Area").formula == "IPS_Flow_CFM * 2"  # the Static formula
     assert any("'IPS_Area' has different Static and Dynamic formulas" in issue for issue in imported.issues)
+
+
+def test_parameter_name_editor_terms_import_with_the_parameters(tmp_path):
+    path = tmp_path / "master.xlsx"
+    make_workbook(path)
+    wb = openpyxl.load_workbook(path)
+    sheet = wb["Parameters"]
+    # The real sheet's headings, including the stray space on the first.
+    headings = ("Parameter Parent Category ", "Parameter Child Category", "Parameter Descriptor",
+                "Parameter Clarifier", "Parameter Units")
+    for column, heading in enumerate(headings, start=5):
+        sheet.cell(2, column).value = heading
+    rows = {3: ("Flow", None, None, None, "CFM"), 4: ("Tag", None, None, None, None),
+            5: ("No", "te", None, None, None), 6: ("Area", None, None, None, None)}
+    for row, terms in rows.items():
+        for column, term in enumerate(terms, start=5):
+            sheet.cell(row, column).value = term
+    wb.save(path)
+
+    result = import_workbook(path)
+
+    flow = result.catalog.get_param("IPS_Flow_CFM")
+    assert flow.has_name_terms and flow.name_terms["units"] == "CFM"
+    assert result.catalog.get_param("IPS_Tag").has_name_terms
+    note = result.catalog.get_param("IPS_Note")  # No_te builds another name, so its terms stay out
+    assert not note.has_name_terms
+    assert "Parameters: 'IPS_Note' doesn't match its Parameter Name Editor terms; terms left out." in result.issues
+
+
+def test_the_workbook_stray_space_is_on_the_list_of_renames():
+    assert excel_import.PARAMETER_RENAMES["IPS_SPACE_AirReq_DuctLeak _PRCNT"] == "IPS_SPACE_AirReq_DuctLeak_PRCNT"
+
+
+def test_wrong_parameter_names_are_corrected_on_import_keeping_the_guid(tmp_path, monkeypatch):
+    monkeypatch.setattr(excel_import, "PARAMETER_RENAMES", {"IPS_Tag": "IPS_Label"})
+    path = tmp_path / "master.xlsx"
+    make_workbook(path)
+
+    result = import_workbook(path)
+
+    assert result.catalog.get_param("IPS_Tag") is None
+    param = result.catalog.get_param("IPS_Label")
+    assert param.guid == "22222222-2222-2222-2222-222222222222"
+    assert result.catalog.get_param("IPS_Note").formula == "IPS_Label"  # references follow
+    assert "Parameters: renamed 'IPS_Tag' to 'IPS_Label'." in result.corrections
 
 
 def test_families_import_with_client_and_country_codes(imported):

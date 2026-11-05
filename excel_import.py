@@ -163,6 +163,73 @@ def _import_parameters(wb, catalog, result):
         result.issues.append(
             f"Parameters: '{name}' has different Static and Dynamic formulas; imported the Static one."
         )
+    result.issues.extend(_read_name_terms(ws, catalog)[1])
+
+
+# The Parameter Name Editor columns on the Parameters sheet, and the name term each one holds.
+NAME_TERM_COLUMNS = {
+    "Parameter Parent Category": "parent_category",
+    "Parameter Child Category": "child_category",
+    "Parameter Descriptor": "descriptor",
+    "Parameter Clarifier": "clarifier",
+    "Parameter Units": "units",
+}
+
+
+# Parameter names the workbook has wrong (chat/workbook-fixes.md). The GUID stays: same parameter.
+PARAMETER_RENAMES = {"IPS_SPACE_AirReq_DuctLeak _PRCNT": "IPS_SPACE_AirReq_DuctLeak_PRCNT"}
+
+
+def _apply_parameter_renames(catalog, result):
+    """Correct ``PARAMETER_RENAMES``, along with the terms and every reference to the name."""
+    for old, new in PARAMETER_RENAMES.items():
+        param = catalog.get_param(old)
+        if param is None or catalog.get_param(new) is not None:
+            continue
+        terms = {term: value.strip() for term, value in param.name_terms.items()}
+        catalog.rename_param(old, new, keep_guid=True)
+        param.set_name_terms(terms)
+        result.corrections.append(f"Parameters: renamed '{old}' to '{new}'.")
+
+
+def _term_text(value):
+    """A name term's cell, spaces and all: the workbook's names keep them."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value)
+
+
+def _read_name_terms(ws, catalog):
+    """Record the Parameter Name Editor's terms on the catalog's parameters, matched by name.
+
+    Nothing is renamed. Returns ``(number recorded, [problem, ...])``.
+    """
+    header_row, columns = _header_columns(ws, ("Parameter Name",))
+    if not all(header in columns for header in NAME_TERM_COLUMNS):
+        return 0, []
+    recorded, problems = 0, []
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        param = catalog.get_param(_text(row[columns["Parameter Name"] - 1]))
+        if param is None:
+            continue
+        terms = {term: _term_text(row[columns[header] - 1]) for header, term in NAME_TERM_COLUMNS.items()}
+        if param.set_name_terms(terms):
+            recorded += 1
+        else:
+            problems.append(f"Parameters: '{param.name}' doesn't match its Parameter Name Editor terms; terms left out.")
+    return recorded, problems
+
+
+def read_name_terms(path, catalog):
+    """Record the workbook's name terms on an existing catalog, changing nothing else.
+
+    Returns ``(number recorded, [problem, ...])``.
+    """
+    import openpyxl  # only needed for imports, so the app runs without it
+
+    return _read_name_terms(openpyxl.load_workbook(path, data_only=True)["Parameters"], catalog)
 
 
 # --- families -----------------------------------------------------------------
@@ -506,6 +573,7 @@ def import_workbook(path):
     _import_parameters(wb, catalog, result)
     _import_families(wb, catalog, result)
     _import_schedules(wb, catalog, result)
+    _apply_parameter_renames(catalog, result)
     catalog.validate()
 
     columns = sum(len(schedule.params) for schedule in catalog.schedules)

@@ -125,3 +125,17 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
 - **"Hidden Parameters" captions mark Hidden Columns**, not header groups.
 - **Only sheets after Backstage are schedules** (the AHU sheets before it aren't imported).
 - Formulas: Static over Dynamic when both exist (my default; differences are reported).
+
+## Parameter names (user, 2026-11-05)
+- **The scheme is the workbook's Parameter Name Editor,** and it must not change any existing name
+  (user). Names it can't reproduce get sorted through one by one; there is no rename-all.
+- **The scheme is fixed, not a format like families'** (my call). Per-term prefixes can't express
+  it: Descriptor and Clarifier share one separator, so a Clarifier alone still needs one.
+- **Terms are kept verbatim** (underscores and spaces), since the names depend on them.
+- **The stray space in `IPS_SPACE_AirReq_DuctLeak _PRCNT` was removed** (user), keeping the GUID
+  (my call: the same parameter, and Revit links hold). This is the exception to the default of a
+  new GUID on rename.
+- **Recorded terms only count while they build the current name.** A rename from anywhere else (a
+  schedule window's Name cell) outdates them, and the builder shows a guess that rebuilds the name.
+- **Parent Category, Child Category and Units are dropdowns of the values in use;** typing adds a
+  new one, with no separate list to maintain (user chose dropdowns; typing is my call).

@@ -3,9 +3,9 @@
 Next steps, open questions and known issues. Tick items as they're done and move the details to
 [changelog.md](changelog.md).
 
-The original living plan is a claude.ai doc: https://claude.ai/artifact/EVpeSRoyvJHmLp6cW37dtZ.
-Its checklist hasn't been copied here yet (the second machine can't open it). Next session on the
-first machine: copy its open items into this file, then treat this file as the plan.
+This file is the plan. The original claude.ai doc
+(https://claude.ai/artifact/EVpeSRoyvJHmLp6cW37dtZ, last updated 2026-11-01) is now history: its
+open items were copied below on 2026-11-05 and checked against the code.
 
 ## Top priority: a working Revit schedule macro (user, 2026-11-02)
 Goal: Save in the GUI, run `CreateSchedulesFromDatabase` in Revit, and get the schedules the
@@ -37,7 +37,8 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
       until then: header group row index (`GroupHeaders(0, ...)`, nested groups), whether
       `ClearFields` drops old header groups, multi-category schedulable fields for shared
       parameters, and `IPS_GROUP_Schedule_Name` being schedulable in each category.
-- [ ] CSV saves lose column order (fields are sorted on load); JSON keeps it.
+- [x] CSV saves lose column order: no longer true. Checked 2026-11-05: reversing a demo schedule's
+      columns with `set_field_names` survives a CSV save and reload.
 
 ## Beta (0.1.0, 2026-11-03)
 - [x] Excel master workbook imported; standalone .exe built (`dist/DesignDataManager.exe`).
@@ -48,27 +49,49 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [x] Macro install/build works on any machine (user picks their module; .NET retarget).
 
 ## Next steps
-- [ ] Copy the open items from the claude.ai plan doc into this file.
+- [x] Copy the open items from the claude.ai plan doc into this file.
 - [x] Make the model the GUI's source of truth in `ddm_gui.py` (branch `gui-on-catalog`).
 - [x] Switch `ddm_gui.py` saves to `Catalog.save` / `Catalog.load` (versioned JSON).
 - [x] Linking by GUID instead of by name: no longer needed. In the catalog, families and
       schedules hold the parameter objects themselves, and names are only written out at save
       time, so a rename can't leave a stale reference.
 - [ ] Remove a parameter from a family in the GUI (adding works from the schedule table).
-- [ ] Add and remove parameters, families and schedules from the GUI (today the GUI only edits
-      what a loaded file contains), and pick a schedule's families and columns.
+- [x] Add parameters from the GUI (Parameter Name Builder).
+- [ ] Remove parameters; add and remove families and schedules from the GUI.
 - [x] Override Formula and Group Under (family and parameter level) in the override tables.
 
+## From the claude.ai plan (medium and long term)
+Already done since that plan: CSV and Excel import, shared parameter file export, main-tab search,
+unsaved-changes prompts.
+- [ ] Working Quickbase sync: correct auth, native upsert via `mergeFieldId`, table and field IDs
+      from config, a dry-run mode, tests against a mocked HTTP layer. Still wrong in
+      `quickbase_integration.py`: the token goes in a `QB-USER-TOKEN` header instead of
+      `Authorization` (which is only set when there's an app token), `name` maps to reserved field
+      3, and `upsert_record` reads `record.get("id")`.
+- [ ] "Sync to Quickbase" sends nothing, and now maps nothing either: `sync_to_quickbase` passes
+      row dicts to mappers that use `getattr`, so every value comes out empty. The doc listed this
+      as partly fixed (mapping model objects); the current code is back to dicts.
+- [ ] GUI: undo, inline error highlighting. (Add/delete is under Next steps.)
+- [ ] Richer validation: units and data types in formulas (Length × Length = Area), circular
+      references, naming conventions such as the `IPS_` prefix.
+- [ ] Recheck: demo data linking families to parameters that don't exist (`RValue`, `FinishCode`).
+- [ ] Long term: push parameters into families and audit families against the catalog from Revit
+      (pyRevit or an add-in); real storage (SQLite, or Quickbase as system of record) with change
+      history and multi-user editing; a web UI instead of Tkinter if other people will use it.
+
 ## Open questions
+- Who uses this, and is Quickbase the system of record or a mirror? Decides storage and sync
+  priority. (From the claude.ai plan, unanswered.)
 - Changing a parameter's data type silently assigns a new GUID (model behaviour, since Revit
   ties a shared parameter's GUID to its type). Should the GUI warn first, like it does for a
   rename?
 
 ## Known issues
-- `tests/test_ddm_gui.py::test_main_tab_table_headings_wrap_after_column_resize` fails (heading
-  padding assertion). Pre-existing on `dev`.
 - On the second machine, Tk sometimes fails to start inside tests ("Can't find a usable
-  tk.tcl", "couldn't read file ... auto.tcl: no such file" for a file that exists), so a
-  different GUI test can fail on any given run. Rerunning passes. Suspected cause: the `.conda`
-  environment sits inside the OneDrive folder, and OneDrive sync makes reads fail now and then.
-  Worth trying an environment outside OneDrive.
+  tk.tcl", "couldn't read file ... panedwindow.tcl: no such file" for a file that exists), so a
+  different GUI test can fail on any given run. Rerunning passes. OneDrive is not the (only) cause:
+  it still happened on 2026-11-05 with the repo and `.conda` in `C:\Users\glove\gits`. Not yet
+  tested: security software (CrowdStrike Falcon and Defender both run here) briefly blocking file
+  opens. Creating Tk 180 times in a row didn't trigger it, so it isn't rapid startup alone. Only
+  seen in test runs, not in the app. `tests/conftest.py` retries Tk's startup to work around it;
+  the cause is still unknown.

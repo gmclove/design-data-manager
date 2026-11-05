@@ -2,6 +2,46 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-05: Parameter Name Builder
+- The master workbook's Parameter Name Editor as five terms on `Param`: `IPS_` + Parent Category
+  `_` Child Category `_` Descriptor + Clarifier `_` Units (`build_param_name`). Saved in JSON
+  (`name_terms`, version unchanged) and CSV; Import Excel reads them.
+- One click on a Name on the Parameters tab opens the builder; **Add Parameter...** opens it to add
+  a parameter. Dropdowns for Parent Category, Child Category and Units; 30 character warning.
+- Recorded the terms in the working database (`excel_import.read_name_terms`, one-time): 1,242
+  from the workbook, and the user confirmed the guesses for the 3 parameters it doesn't have. Names
+  and GUIDs unchanged, checked by comparing the saved JSON and CSV with the old data; backups are
+  `database.before-name-terms.ddm.*` in `ddm-data`.
+- Renamed `IPS_SPACE_AirReq_DuctLeak _PRCNT` to `IPS_SPACE_AirReq_DuctLeak_PRCNT` (stray space),
+  keeping its GUID; Import Excel corrects it too (`PARAMETER_RENAMES`). Backups are
+  `database.before-ductleak-fix.ddm.*`. The `.txt`, `.rfps` and `.cs` in `ddm-data` still have the
+  old name until the next Save in the GUI.
+
+## 2026-11-05: Plan consolidated; heading test fixed
+- Copied the claude.ai plan's open items into `plan.md`, checked against the code. `plan.md` is now
+  the only plan.
+- `test_main_tab_table_headings_wrap_after_column_resize` fixed; the app was right. Bottom padding
+  has to grow for wrapped headings (at 2 px the first row sits under a 5-line heading), and the
+  test's 800 px window squeezed the third of its stacked tables.
+
+## 2026-11-05: Repo off OneDrive; database folder setting
+- `config/app_paths.py`: `USER_SETTINGS_PATH` moved here; `DATA_DIR` follows the user's
+  `database_folder` setting when set. The repo moved to `C:\Users\glove\gits`, the database to
+  OneDrive `_PARAMETERS\ddm-data`.
+
+## 2026-11-04: Schedule window: one-click editing, bold used values, Add All Parameters
+- `OverrideTable(edit_on_click=True)` in the schedule window: one click edits any editable cell
+  (a Name click also selects the column); every value cell is white.
+- A family's Default Formula / Group Under are editable from a schedule (set the family's own).
+- Bold marks the value the schedule uses (`_value_source`: schedule / family / parameter).
+- "Add All Parameters" button under each family name (while it lacks a column); section label
+  column is 150 px.
+
+## 2026-11-04: Default terms in labels
+- Parameters tab: Default Header, Default Column Width (in), Default Group Under, Default Formula,
+  Instance or Type (shown and edited as Instance / Type; `parse_bool` also reads instance / type).
+- Override table rows: Default Formula, Default Group Under (label column 140 px).
+
 ## 2026-11-04: Unsaved changes warning
 - Close, Load and Import Excel... offer Save / Discard / Cancel when the catalog differs from the
   last load or save (a JSON snapshot of `Catalog.to_dict()`; ~20 ms on the master database).

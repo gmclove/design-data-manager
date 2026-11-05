@@ -62,6 +62,63 @@ DEFAULT_FAMILY_NAME_FORMAT = (
 	{'term': 'category_2', 'use': False, 'prefix': '_', 'suffix': ''},
 )
 
+# The master workbook's parameter naming: IPS_ + Parent Category _ Child Category
+# _ Descriptor + Clarifier _ Units, leaving out blank terms. Nothing separates Descriptor from
+# Clarifier, and terms keep their own underscores and spaces (a Clarifier of "_TermUnit").
+PARAM_NAME_PREFIX = 'IPS_'
+PARAM_NAME_TERMS = (
+	('parent_category', 'Parent Category'),
+	('child_category', 'Child Category'),
+	('descriptor', 'Descriptor'),
+	('clarifier', 'Clarifier'),
+	('units', 'Units'),
+)
+# The workbook flags longer names: "LONG NAME DETECTED, CONSIDER SHORTENING".
+PARAM_NAME_LONG_LENGTH = 30
+
+
+def build_param_name(terms):
+	"""The parameter name for ``terms`` (``{term: text}``); ``''`` when every term is blank."""
+	get = lambda term: terms.get(term) or ''  # noqa: E731
+	parts = (
+		get('parent_category'), get('child_category'),
+		get('descriptor') + get('clarifier'), get('units'),
+	)
+	joined = '_'.join(part for part in parts if part)
+	return PARAM_NAME_PREFIX + joined if joined else ''
+
+
+def split_param_name(name, known_units=()):
+	"""A best guess at the terms that build ``name``, or ``None`` if none can.
+
+	Whatever it guesses always builds exactly ``name``. Units are the longest ending in
+	``known_units``, else a last part in capitals; a Clarifier is never guessed.
+	"""
+	if not name.startswith(PARAM_NAME_PREFIX) or name == PARAM_NAME_PREFIX:
+		return None
+	rest = name[len(PARAM_NAME_PREFIX):]
+	segments = rest.split('_')
+	if not segments[0] and len(segments) > 1:  # IPS__ARROW_End: the underscore is the Parent's
+		segments = ['_' + segments[1]] + segments[2:]
+	others = segments[1:]
+	units = ''
+	for index in range(len(others)):
+		ending = '_'.join(others[index:])
+		if ending in known_units or (index == len(others) - 1 and ending.isupper()):
+			units, others = ending, others[:index]
+			break
+	terms = {term: '' for term, _label in PARAM_NAME_TERMS}
+	terms.update(parent_category=segments[0], units=units)
+	if len(others) == 1:
+		terms['descriptor'] = others[0]
+	elif others:
+		terms.update(child_category=others[0], descriptor='_'.join(others[1:]))
+	if build_param_name(terms) != name:  # e.g. a double underscore mid-name
+		terms = {term: '' for term, _label in PARAM_NAME_TERMS}
+		terms['parent_category'] = rest
+	return terms
+
+
 GUID_CHANGE_WARNING = (
 	"Renaming parameter '{old_name}' to '{new_name}' will assign it a new GUID. "
 	"Any Revit labels that use this parameter will need to be remapped to the new "
@@ -126,6 +183,7 @@ class Param(object):
 		self.status = 'Ready'
 		self.validation_message = ''
 		self.catalog = None
+		self._name_terms = None
 		if catalog is not None:
 			catalog._register_param(self)
 
@@ -156,6 +214,31 @@ class Param(object):
 		if self.catalog is not None:
 			self.catalog._param_renamed(old_name, new_name)
 		return self
+
+	@property
+	def has_name_terms(self):
+		"""Whether terms that build the current name were recorded (a later rename outdates them)."""
+		return self._name_terms is not None and build_param_name(self._name_terms) == self._name
+
+	@property
+	def name_terms(self):
+		"""This parameter's name terms: as recorded, else a guess from its name, else all blank.
+
+		Unless they're all blank, they build exactly this parameter's name.
+		"""
+		if self.has_name_terms:
+			return dict(self._name_terms)
+		known_units = self.catalog.recorded_param_units() if self.catalog is not None else ()
+		guess = split_param_name(self._name, known_units)
+		return guess or {term: '' for term, _label in PARAM_NAME_TERMS}
+
+	def set_name_terms(self, terms):
+		"""Record ``terms`` if they build this parameter's name; never renames. Returns whether they did."""
+		cleaned = {term: terms.get(term) or '' for term, _label in PARAM_NAME_TERMS}
+		if build_param_name(cleaned) != self._name:
+			return False
+		self._name_terms = cleaned
+		return True
 
 	@property
 	def header_text(self):
@@ -296,7 +379,7 @@ class Param(object):
 		return result
 
 	def to_dict(self):
-		return {
+		data = {
 			'name': self.name,
 			'dtype': self.dtype,
 			'guid': self.guid,
@@ -307,10 +390,13 @@ class Param(object):
 			'header_text': self._header_text,
 			'grid_column_width': self.grid_column_width,
 		}
+		if self.has_name_terms:
+			data['name_terms'] = dict(self._name_terms)
+		return data
 
 	@classmethod
 	def from_dict(cls, data, catalog=None):
-		return cls(
+		param = cls(
 			data['name'],
 			data['dtype'],
 			guid=data.get('guid'),
@@ -322,6 +408,9 @@ class Param(object):
 			grid_column_width=data.get('grid_column_width', 1.0),
 			catalog=catalog,
 		)
+		if data.get('name_terms'):
+			param.set_name_terms(data['name_terms'])
+		return param
 
 
 # Templates for the parameters every family carries. Each family gets its own
@@ -1151,6 +1240,23 @@ class Catalog(object):
 
 	def add_param(self, name, dtype, **kwargs):
 		return Param(name, dtype, catalog=self, **kwargs)
+
+	def recorded_param_units(self):
+		"""Every Units term recorded on a parameter."""
+		return {
+			param._name_terms['units'] for param in self.params
+			if param._name_terms is not None and param._name_terms['units']
+		}
+
+	def param_term_values(self, term):
+		"""The values of name term ``term`` across the catalog's parameters, sorted for a dropdown."""
+		known_units = self.recorded_param_units()
+		values = set()
+		for param in self.params:
+			terms = param._name_terms if param.has_name_terms else split_param_name(param.name, known_units)
+			if terms and terms[term]:
+				values.add(terms[term])
+		return sorted(values, key=str.lower)
 
 	def add_family(self, name, param_names=(), **kwargs):
 		params = []

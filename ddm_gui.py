@@ -46,8 +46,8 @@ from ddm_tables import (
 )
 from excel_import import import_workbook
 from revit_parameter_manager import (
-    CODE_KINDS, CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, FAMILY_NAME_TERMS, SCHEDULE_FILTER_PARAM, Catalog,
-    Param, Schedule, guid_change_warning,
+    CODE_KINDS, CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, FAMILY_NAME_TERMS, PARAM_NAME_LONG_LENGTH,
+    PARAM_NAME_TERMS, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, build_param_name, guid_change_warning,
 )
 from revit_macro_module import (
     MACROS_ROOT, USER_SETTINGS_PATH, build_module, choose_module, chosen_module, find_macro_modules,
@@ -1317,6 +1317,8 @@ class DDMGUI:
         ttk.Button(bar, text="Clear", command=lambda: search_var.set("")).pack(side="left", padx=(6, 0))
         count = ttk.Label(bar, text="")
         count.pack(side="left", padx=(12, 0))
+        if table_name == "params":
+            ttk.Button(bar, text="Add Parameter...", command=self._open_param_name_builder).pack(side="right")
         self._search_vars[table_name] = search_var
         self._search_counts[table_name] = count
         search_var.trace_add("write", lambda *_args: self.render_tables())
@@ -1820,6 +1822,158 @@ class DDMGUI:
         window.parts, window.name_var, window.move = parts, name_var, move
         window.rename_this, window.rename_all = rename_this, rename_all
         return window
+
+    # --- parameter names --------------------------------------------------------
+
+    # Terms picked from the values already in use (or typed, to add a new one); the rest are typed.
+    _param_term_dropdowns = ("parent_category", "child_category", "units")
+
+    def _open_param_name_builder(self, row_index: Optional[int] = None):
+        """The Parameter Name Builder: a parameter's name from the master workbook's five terms.
+
+        With ``row_index`` it renames that parameter (or only records its terms, if the name
+        stays the same); without it, it adds a new parameter. A name that doesn't follow the
+        scheme stays as it is until a term or the New Name is changed.
+        """
+        param = None
+        if row_index is not None:
+            if not 0 <= row_index < len(self.catalog.params):
+                return None
+            param = self.catalog.params[row_index]
+
+        window = tk.Toplevel(self.root)
+        window.title("Parameter Name Builder")
+        window.transient(self.root)
+        window.grab_set()
+        window.geometry("640x480" if param is None else "640x380")
+
+        heading = "New Parameter" if param is None else f"Parameter: {param.name}"
+        ttk.Label(window, text=heading, style="Section.TLabel").pack(anchor="w", padx=12, pady=(10, 2))
+        ttk.Label(
+            window,
+            text="New Name = IPS_ + Parent Category _ Child Category _ Descriptor + Clarifier _ Units. "
+                 "A blank term is left out with its separator. Nothing separates Descriptor from Clarifier: "
+                 "start a Clarifier with _ to separate them.",
+            wraplength=610, justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        terms = {term: "" for term, _label in PARAM_NAME_TERMS} if param is None else param.name_terms
+        term_vars = {term: tk.StringVar(value=terms[term]) for term, _label in PARAM_NAME_TERMS}
+        name_var = tk.StringVar(value="" if param is None else param.name)
+        long_name = tk.StringVar()
+
+        fields = ttk.Frame(window)
+        fields.pack(fill="x", padx=12)
+        fields.columnconfigure(1, weight=1)
+        for row, (term, label) in enumerate(PARAM_NAME_TERMS):
+            ttk.Label(fields, text=f"{label} =").grid(row=row, column=0, sticky="w", pady=2)
+            if term in self._param_term_dropdowns:
+                entry = ttk.Combobox(fields, textvariable=term_vars[term], values=self.catalog.param_term_values(term))
+            else:
+                entry = ttk.Entry(fields, textvariable=term_vars[term])
+            entry.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=2)
+            if row == 0:
+                entry.focus_set()
+
+        def current_terms():
+            return {term: var.get() for term, var in term_vars.items()}
+
+        def rebuild_name(*_args):
+            name_var.set(build_param_name(current_terms()))
+
+        def check_length(*_args):
+            too_long = len(name_var.get()) > PARAM_NAME_LONG_LENGTH
+            long_name.set(f"Long Name Detected (Over {PARAM_NAME_LONG_LENGTH} Characters), Consider Shortening"
+                          if too_long else "")
+
+        for var in term_vars.values():
+            var.trace_add("write", rebuild_name)
+        name_var.trace_add("write", check_length)
+        check_length()
+
+        name_box = ttk.Frame(window)
+        name_box.pack(fill="x", padx=12, pady=(12, 2))
+        ttk.Label(name_box, text="New Name:", style="Section.TLabel").pack(side="left")
+        ttk.Entry(name_box, textvariable=name_var, font=("Segoe UI", 11)).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ttk.Label(window, textvariable=long_name, foreground="#b45309").pack(anchor="w", padx=12)
+        if param is not None and not param.has_name_terms:
+            note = ("Terms Guessed From The Name; Correct Them If Needed." if any(terms.values())
+                    else "This Name Doesn't Follow The Scheme.")
+            ttk.Label(window, text=note, foreground="#6b7280").pack(anchor="w", padx=12)
+
+        new_fields = {}
+        if param is None:
+            details = ttk.Frame(window)
+            details.pack(fill="x", padx=12, pady=(10, 0))
+            details.columnconfigure(1, weight=1)
+            choices = (
+                ("dtype", "Data Type", "Text", self._revit_dropdown_values("dtype")),
+                ("group_under", "Default Group Under", "", self._revit_dropdown_values("group_under")),
+                ("instance_param", "Instance or Type", "Instance", ["Instance", "Type"]),
+            )
+            for row, (field, label, default, values) in enumerate(choices):
+                new_fields[field] = tk.StringVar(value=default)
+                ttk.Label(details, text=f"{label} =").grid(row=row, column=0, sticky="w", pady=2)
+                ttk.Combobox(details, textvariable=new_fields[field], values=values, state="readonly").grid(
+                    row=row, column=1, sticky="ew", padx=(6, 0), pady=2)
+
+        def save():
+            new_name = cell_text(name_var.get())
+            try:
+                if param is None:
+                    added = self._add_param_from_builder(new_name, current_terms(), new_fields)
+                    window.destroy()
+                    self._show_new_param(added)
+                    return
+                old_name = param.name
+                self._rename_param(param, new_name)
+            except ValueError as exc:
+                messagebox.showerror("Invalid Name", str(exc), parent=window)
+                return
+            if param.name != new_name:
+                return  # the rename was cancelled at the GUID question
+            param.set_name_terms(current_terms())
+            self.validate_all()
+            if new_name != old_name:
+                self._append_message(f"Renamed parameter '{old_name}' to '{new_name}'.")
+            window.destroy()
+
+        buttons = ttk.Frame(window)
+        buttons.pack(fill="x", side="bottom", padx=12, pady=10)
+        ttk.Button(buttons, text="Add Parameter" if param is None else "Save", command=save,
+                   style="Action.TButton").pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="left")
+        # For tests.
+        window.term_vars, window.name_var, window.long_name, window.new_fields = term_vars, name_var, long_name, new_fields
+        window.save = save
+        return window
+
+    def _add_param_from_builder(self, name: str, terms: dict, fields: dict):
+        """Add the parameter the builder describes. Raises ``ValueError`` if the name can't be used."""
+        if not name:
+            raise ValueError("Parameter name is required.")
+        if self.catalog.get_param(name) is not None or name in COMMON_PARAM_NAMES:
+            raise ValueError(f"Parameter name '{name}' is already in use.")
+        param = self.catalog.add_param(
+            name,
+            fields["dtype"].get(),
+            group_under=fields["group_under"].get() or None,
+            instance_param=parse_bool(fields["instance_param"].get()),
+        )
+        param.set_name_terms(terms)
+        return param
+
+    def _show_new_param(self, param):
+        """Bring a just-added parameter into view: it could be hidden by the search."""
+        search_var = getattr(self, "_search_vars", {}).get("params")
+        if search_var is not None:
+            search_var.set("")
+        self.validate_all()
+        self._append_message(f"Added parameter '{param.name}'.")
+        row_id = str(self.catalog.params.index(param))
+        if self.param_tree is not None and self.param_tree.exists(row_id):
+            self.param_tree.selection_set(row_id)
+            self.param_tree.see(row_id)
 
     def _family_renames(self, name_format):
         """Families whose name differs from ``name_format``'s: ``([(old, new), ...], [reason, ...])``.
@@ -2841,6 +2995,10 @@ class DDMGUI:
                 self._open_family_name_builder(int(cell[0]))
             else:
                 self._start_tree_cell_edit(tree, table_name, *cell)
+            return
+        if self._get_table_columns("params")[cell[1]] == "name":
+            self._finish_tree_cell_edit(True)
+            self._open_param_name_builder(int(cell[0]))
             return
 
         def start():

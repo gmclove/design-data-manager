@@ -57,3 +57,9 @@ the parameter that usually carries its heading.
 
 - `IPS-US_CTRL` appears 5 times: identical Multi-Category Tags rows with no type, description or
   view, so the name never completed. Fix: remove it (an unfinished placeholder).
+
+## 5. Parameter names (2026-11-05)
+
+- `IPS_SPACE_AirReq_DuctLeak _PRCNT` has a stray space, from the Parameter Clarifier `Leak `. Fix:
+  renamed to `IPS_SPACE_AirReq_DuctLeak_PRCNT`, keeping its GUID. Import applies this
+  (`PARAMETER_RENAMES`) until the workbook is corrected.

@@ -244,6 +244,20 @@ every family with that client. Each code must be unique within its kind.
 Generic Annotation, ...), and blank for categories used in both (Multi-Category Tags). Several
 categories share a code; editing it on one family changes it for every family of that category.
 
+**Parameter Name Builder:** one click on a Name on the Parameters tab opens it, and **Add
+Parameter...** opens it to add a new one. It follows the master workbook's Parameter Name Editor:
+
+`IPS_` + Parent Category `_` Child Category `_` Descriptor + Clarifier `_` Units
+
+A blank term is left out with its separator. Nothing separates Descriptor from Clarifier, so a
+Clarifier like `_TermUnit` brings its own underscore. Parent Category, Child Category and Units
+list the values already in use, and typing adds a new one. Names over 30 characters get the
+workbook's long name warning. The **New Name** can be edited before saving.
+- Opening a parameter and saving changes nothing unless a term or the New Name changed. A changed
+  name asks about the GUID, as any parameter rename does. There's no rename-all.
+- A parameter without recorded terms shows a guess from its name, which always rebuilds that name.
+- A new parameter's Data Type, Default Group Under and Instance or Type are chosen in the builder.
+
 **Family Name Builder:** builds a family's name from its terms: Client Code, Country Code,
 Category 1 Code, Category 2 Code, Description, Category Code, and the Category 1 and Category 2
 names. Each term has **Use**, a **Prefix**, a **Suffix** and ▲▼ to reorder it. A used term adds

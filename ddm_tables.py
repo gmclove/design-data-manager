@@ -17,7 +17,9 @@ import pandas as pd
 
 from config.revit_dtype_definitions import get_dtype_row
 from config.revit_family_category_definitions import get_family_category_row
-from revit_parameter_manager import CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, Catalog, Param
+from revit_parameter_manager import (
+    CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, PARAM_NAME_TERMS, Catalog, Param,
+)
 from revit_shared_parameter_export import parameter_guid
 
 DEFAULT_GRID_COLUMN_WIDTH_IN = 1.0
@@ -26,6 +28,8 @@ PARAM_COLUMNS = [
     "name", "header_text", "grid_column_width", "dtype", "group_under", "formula",
     "instance_param", "default_value", "status", "validation_message", "guid",
 ]
+# Recorded name terms; blank on parameters without them. Saved, but not columns of the main table.
+PARAM_TERM_COLUMNS = [term for term, _label in PARAM_NAME_TERMS]
 FAMILY_COLUMNS = [
     "name", "client", "client_code", "country", "country_code", "category", "category_code",
     "category_1", "category_1_code", "category_2", "category_2_code", "description",
@@ -51,7 +55,7 @@ CSV_COLUMNS = [
     "header_text_override", "grid_column_width_override", "hidden", "override_entry",
     "schedule_filter", "itemize", "view_template", "caption",
     "parameter_names", "top_row", "bottom_row",
-]
+] + PARAM_TERM_COLUMNS
 _CSV_RECORD_TYPES = {
     "parameter": "params",
     "family": "families",
@@ -73,6 +77,11 @@ def text(value):
     except (TypeError, ValueError):
         pass
     return str(value).strip()
+
+
+def _raw_text(value):
+    """``value`` as text with its spaces kept; ``None`` and NaN become ``""``."""
+    return str(value) if text(value) else ""
 
 
 def parse_bool(value):
@@ -145,7 +154,7 @@ def _load_params(catalog, rows, issues):
         header_text = text(row.get("header_text"))
         value = text(row.get("default_value", row.get("value")))
 
-        catalog.add_param(
+        param = catalog.add_param(
             name,
             dtype,
             guid=parameter_guid(name, row.get("guid")),
@@ -156,6 +165,7 @@ def _load_params(catalog, rows, issues):
             header_text=None if header_text == name else header_text or None,
             grid_column_width=width,
         )
+        param.set_name_terms({term: _raw_text(row.get(term)) for term in PARAM_TERM_COLUMNS})
 
 
 def _load_families(catalog, family_rows, link_rows, issues):
@@ -354,10 +364,11 @@ def params_table(catalog):
                 "status": param.status,
                 "validation_message": param.validation_message,
                 "guid": param.guid,
+                **{term: param.name_terms[term] if param.has_name_terms else "" for term in PARAM_TERM_COLUMNS},
             }
             for param in catalog.params
         ],
-        columns=PARAM_COLUMNS,
+        columns=PARAM_COLUMNS + PARAM_TERM_COLUMNS,
     )
 
 
