@@ -59,8 +59,8 @@ _CSV_RECORD_TYPES = {
     "schedule_column": "columns",
     "schedule_entry": "entries",
 }
-_TRUE_TEXT = {"true", "1", "yes", "y"}
-_FALSE_TEXT = {"false", "0", "no", "n"}
+_TRUE_TEXT = {"true", "1", "yes", "y", "instance"}
+_FALSE_TEXT = {"false", "0", "no", "n", "type"}
 
 
 def text(value):
@@ -84,7 +84,7 @@ def parse_bool(value):
         return True
     if normalized in _FALSE_TEXT:
         return False
-    raise ValueError("Instance Param must be true or false.")
+    raise ValueError("Instance or Type must be Instance or Type (or true / false).")
 
 
 def parse_width(value):
@@ -135,7 +135,7 @@ def _load_params(catalog, rows, issues):
         try:
             instance_param = parse_bool(row.get("instance_param", True))
         except ValueError:
-            issues.append(f"Parameter '{name}': Instance Param must be true or false; loaded as true.")
+            issues.append(f"Parameter '{name}': Instance or Type must be Instance or Type; loaded as Instance.")
             instance_param = True
         try:
             width = parse_width(row.get("grid_column_width"))

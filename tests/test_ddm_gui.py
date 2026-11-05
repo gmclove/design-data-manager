@@ -1,4 +1,6 @@
+import json
 import pickle
+from pathlib import Path
 from types import SimpleNamespace
 import tkinter as tk
 from tkinter import ttk
@@ -6,6 +8,7 @@ from tkinter import ttk
 import pandas as pd
 import pytest
 
+import config.app_paths as app_paths
 import ddm_gui as gui_module
 from revit_parameter_scheduler_export import generate_rfps_content
 from config.app_paths import (
@@ -581,7 +584,7 @@ def test_loading_fixes_and_reports_invalid_records():
     gui = make_test_gui(params=params, families=families)
 
     issues = "\n".join(gui.load_issues)
-    assert f"Parameter '{first}': Instance Param must be true or false" in issues
+    assert f"Parameter '{first}': Instance or Type must be Instance or Type" in issues
     assert gui.catalog.get_param(first).instance_param is True
     assert f"Parameter '{second}': Grid column width must be a number in inches." in issues
     assert gui.catalog.get_param(second).grid_column_width == 1.0
@@ -692,13 +695,13 @@ def test_gui_rejects_invalid_width_and_defaults_blank_width():
     assert gui.params_df.at[0, "grid_column_width"] == 2.5
     gui._apply_cell_value("params", 0, "grid_column_width", "")
     assert gui.params_df.at[0, "grid_column_width"] == gui._default_grid_column_width_in == 1.0
-    assert DDMGUI._display_labels["grid_column_width"] == "Grid Column Width (in)"
+    assert DDMGUI._display_labels["grid_column_width"] == "Default Column Width (in)"
 
 
 def test_gui_rejects_invalid_boolean_and_validation_owned_fields():
     gui = make_test_gui()
 
-    with pytest.raises(ValueError, match="(?i)true or false"):
+    with pytest.raises(ValueError, match="Instance or Type must be Instance or Type"):
         gui._apply_cell_value("params", 0, "instance_param", "sometimes")
 
     for column_name in ("status", "validation_message"):
@@ -942,9 +945,27 @@ def test_schedule_table_shows_each_level_and_where_values_come_from(monkeypatch)
     assert cells(rows, "Default Value", "F1") == [("5", "inherited", True)]
     assert cells(rows, "Default Value", "F2") == [("9", "set", True)]
     assert cells(rows, "Default Value", "F3") == [("1", "inherited", True)]
-    # Formula and group under belong to the family: shown in a schedule, not editable there.
-    assert cells(rows, "Formula", "F3") == [("Height * 2", "inherited", False)]
-    assert cells(rows, "Group Under", "F3") == [("", "inherited", False)]
+    # Formula and group under belong to the family; in a schedule they set the family's own.
+    assert cells(rows, "Default Formula", "F3") == [("Height * 2", "set", True)]
+    assert cells(rows, "Default Group Under", "F3") == [("", "inherited", True)]
+
+    # Bold marks the value the schedule uses: F1's own (family) and F2's schedule value; F3 uses
+    # the parameter's, so the Parameter cell is bold too.
+    def bold(label, section):
+        current = None
+        for row in rows:
+            current = row["section"] or current
+            if row["label"] == label and current == section:
+                return [cell.get("bold", False) for cell in row["cells"]]
+
+    assert [bold("Default Value", section) for section in ("F1", "F2", "F3")] == [[True], [True], [False]]
+    assert bold("Default Value", "Parameter") == [True]
+    assert bold("Default Value", "Apply to All Families") == [False]
+    assert bold("Default Formula", "F3") == [True] and bold("Default Formula", "Parameter") == [True]
+    assert bold("Default Header", "Parameter") == [True]
+    gui._override_value(("F3", "S1"), "Width", "4")
+    rows = gui._schedule_table_rows(gui.catalog.get_schedule("S1"))
+    assert bold("Default Value", "Parameter") == [False]  # every family now sets its own
 
 
 def test_all_families_row_sets_every_familys_schedule_value_at_once(monkeypatch):
@@ -980,9 +1001,9 @@ def test_all_families_formula_and_group_under_set_each_familys_family_default(mo
     schedule = gui.catalog.get_schedule("S1")
     rows = gui._schedule_table_rows(schedule)
     assert [row["label"] for row in rows if row.get("all_families")] == [
-        "Default Value", "Formula", "Group Under", "Instance or Type",
+        "Default Value", "Default Formula", "Default Group Under", "Instance or Type",
     ]
-    assert cells(rows, "Formula", "Apply to All Families") == [("", "inherited", True)]
+    assert cells(rows, "Default Formula", "Apply to All Families") == [("", "inherited", True)]
 
     assert gui._override_all_families("S1", "Width", "Height * 2", "formula") is True
     assert asked == [("Width", "Height * 2", ("All Families", "S1"), [], True)]
@@ -991,16 +1012,16 @@ def test_all_families_formula_and_group_under_set_each_familys_family_default(mo
         assert gui.catalog.get_family(family).overrides["Width"]["formula"] == "Height * 2"
     assert schedule.family_overrides == {}
     rows = gui._schedule_table_rows(schedule)
-    assert cells(rows, "Formula", "Apply to All Families") == [("Height * 2", "set", True)]
-    assert cells(rows, "Formula", "F1") == [("Height * 2", "inherited", False)]
-    assert cells(gui._schedule_table_rows(gui.catalog.get_schedule("S2")), "Formula", "F2") == [
-        ("Height * 2", "inherited", False)]
+    assert cells(rows, "Default Formula", "Apply to All Families") == [("Height * 2", "set", True)]
+    assert cells(rows, "Default Formula", "F1") == [("Height * 2", "set", True)]
+    assert cells(gui._schedule_table_rows(gui.catalog.get_schedule("S2")), "Default Formula", "F2") == [
+        ("Height * 2", "set", True)]
 
     gui._override_value(("F2", None), "Width", "Dimensions", "group_under")
     gui._override_all_families("S1", "Width", "Dimensions", "group_under")
-    assert cells(gui._schedule_table_rows(schedule), "Group Under", "Apply to All Families") == [("Dimensions", "set", True)]
+    assert cells(gui._schedule_table_rows(schedule), "Default Group Under", "Apply to All Families") == [("Dimensions", "set", True)]
     gui._override_value(("F3", None), "Width", "Data", "group_under")
-    assert cells(gui._schedule_table_rows(schedule), "Group Under", "Apply to All Families") == [("(Varies)", "inherited", True)]
+    assert cells(gui._schedule_table_rows(schedule), "Default Group Under", "Apply to All Families") == [("(Varies)", "inherited", True)]
 
     gui._override_all_families("S1", "Width", "", "formula")
     assert all("formula" not in gui.catalog.get_family(f).overrides.get("Width", {}) for f in ("F1", "F2", "F3"))
@@ -1089,7 +1110,7 @@ def test_schedule_window_parameter_section_edits_the_parameter_itself(monkeypatc
     param = gui.catalog.get_param("Width")
     rows_builder = lambda: gui._schedule_table_rows(schedule)  # noqa: E731
     rows = rows_builder()
-    for label in ("Name", "Default Header", "Default Value", "Formula", "Group Under", "Instance or Type"):
+    for label in ("Name", "Default Header", "Default Value", "Default Formula", "Default Group Under", "Instance or Type"):
         assert cells(rows, label, "Parameter")[0][2] is True, label
     # The family window's Parameter section stays read-only.
     family_rows = gui._family_window_rows(gui.catalog.get_family("F1"))
@@ -1109,8 +1130,8 @@ def test_schedule_window_parameter_section_edits_the_parameter_itself(monkeypatc
     assert gui.catalog.resolved_value(("F1", "S2"), "Width") == "4"  # every schedule
     assert edit("Instance or Type", "Type")["choices"] == ["Instance", "Type"]
     assert param.instance_param is False
-    edit("Group Under", "Dimensions")
-    edit("Formula", "Height * 2")
+    edit("Default Group Under", "Dimensions")
+    edit("Default Formula", "Height * 2")
     assert (param.group_under, param.formula) == ("Dimensions", "Height * 2")
     assert changed == []  # the table refreshes in place
 
@@ -1159,8 +1180,8 @@ def test_family_table_edits_family_level_and_shades_missing_columns(monkeypatch)
 
     rows = gui._family_window_rows(gui.catalog.get_family("F1"))
 
-    assert cells(rows, "Group Under", "Parameter") == [("Dimensions", "set", False), ("", "set", False)]
-    assert cells(rows, "Group Under", "F1") == [("Dimensions", "inherited", True), ("Construction", "set", True)]
+    assert cells(rows, "Default Group Under", "Parameter") == [("Dimensions", "set", False), ("", "set", False)]
+    assert cells(rows, "Default Group Under", "F1") == [("Dimensions", "inherited", True), ("Construction", "set", True)]
     assert cells(rows, "Default Value", "F1") == [("1", "inherited", True), ("", "inherited", True)]
 
     schedule_rows = gui._schedule_table_rows(gui.catalog.add_schedule("S", ["F1"], field_names=["Width", "Ghost"]))
@@ -1448,7 +1469,7 @@ def test_schedule_header_text_wraps_at_underscores_and_camel_case():
 
 def test_main_tab_table_headings_wrap_after_column_resize():
     root = tk.Tk()
-    root.geometry("1200x800")
+    root.geometry("1200x1200")  # tall enough for all three tables, stacked here, once headings grow
     try:
         gui = DDMGUI.__new__(DDMGUI)
         gui.root = root
@@ -1499,7 +1520,11 @@ def test_main_tab_table_headings_wrap_after_column_resize():
             )
         )
         assert heading_padding[1] == 2
-        assert heading_padding[3] == 2
+        # The headings share one style, so the bottom padding makes room for the tallest heading's
+        # extra lines (ttk sizes a heading from its padding, not from its text).
+        tallest = max(tree._ddm_heading_line_count for tree in tables.values())
+        line_height = next(iter(tables.values()))._ddm_heading_font.metrics("linespace")
+        assert heading_padding[3] == 2 + (tallest - 1) * line_height
         for tree in tables.values():
             first_item = tree.get_children()[0]
             assert tree.bbox(first_item)[1] > original_row_y[tree]
@@ -1581,15 +1606,16 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
 
         assert cells(table.rows, "Default Value", "Family_A")[1] == ("Override Width", "set", True)
 
-        # Double-click Family_A's Width value, type a new one and save.
+        # One click on Family_A's Width value edits it; type a new one and save.
         monkeypatch.setattr(gui, "_ask_override_scope", answering({}))
         row_index = next(
             index for index, row in enumerate(table.rows)
             if row.get("family") == "Family_A" and row.get("attribute") == "value"
         )
-        table._on_double_click(SimpleNamespace(
+        table._on_mouse_down(SimpleNamespace(
             x=table.column_offsets[1] + 10,
             y=table.body_top + row_index * table.row_height + 5,
+            state=0,
         ))
         root.update()
         entry, finish = table._cell_editor
@@ -1602,6 +1628,30 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         assert table._cell_editor is None
         assert gui.catalog.resolved_value(("Family_A", "Schedule A"), "Width") == "3.5"
         assert cells(table.rows, "Default Value", "Family_A")[1] == ("3.5", "set", True)
+    finally:
+        root.destroy()
+
+
+def test_parameters_tab_labels_defaults_and_shows_instance_or_type(tmp_path, monkeypatch):
+    labels = {column: DDMGUI._display_labels[column] for column in ("header_text", "formula", "group_under", "instance_param")}
+    assert labels == {
+        "header_text": "Default Header", "formula": "Default Formula", "group_under": "Default Group Under",
+        "instance_param": "Instance or Type",
+    }
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        tree = gui.param_tree
+        column = gui._get_table_columns("params").index("instance_param")
+        shown = {tree.item(row, "values")[column] for row in tree.get_children()}
+        assert shown <= {"Instance", "Type"}
+        assert gui._revit_dropdown_values("instance_param") == ["Instance", "Type"]
+        gui._apply_cell_value("params", 0, "instance_param", "Type")
+        assert gui.catalog.params[0].instance_param is False
+        assert tree.item(tree.get_children()[0], "values")[column] == "Type"
+        assert gui.params_df["instance_param"].iloc[0] is False or gui.params_df["instance_param"].iloc[0] == False  # noqa: E712 - exports still get true / false
     finally:
         root.destroy()
 
@@ -1805,7 +1855,7 @@ def test_parameter_list_edits_in_place_on_one_click_and_pops_up_on_two(tmp_path,
         gui._on_tree_double_click(click, "params")
         assert gui._pending_tree_edit is None
         root.update()
-        find_window(root, "Edit Default Header Text")
+        find_window(root, "Edit Default Header")
         assert getattr(gui, "_tree_cell_editor", None) is None
     finally:
         root.destroy()
@@ -2011,10 +2061,23 @@ def test_unified_test_database_contains_seed_parameters_and_defaults():
     assert set(all_air_parameters["default_value"]) == {"-999"}
 
 
+def test_the_database_folder_setting_moves_the_working_database(tmp_path, monkeypatch):
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(app_paths, "USER_SETTINGS_PATH", settings)
+    assert app_paths._database_folder_setting() is None  # no settings file
+    settings.write_text('{"revit_macro_module": "x"}', encoding="utf-8")
+    assert app_paths._database_folder_setting() is None
+    settings.write_text(json.dumps({"database_folder": r"D:\Shared\ddm-data"}), encoding="utf-8")
+    assert app_paths._database_folder_setting() == Path(r"D:\Shared\ddm-data")
+    settings.write_text("not json", encoding="utf-8")
+    assert app_paths._database_folder_setting() is None
+
+
 def test_database_paths_are_configured_under_data_directory():
     assert DEMO_DATA_PATH.name == "demo_data.ddm.csv"
     assert TEST_DATABASE_CSV_PATH.name == "test_data.ddm.csv"
-    assert TEST_CHECKPOINT_PATH.parent == DATA_DIR / "test_data"
+    # Fixtures stay in the repo, wherever the working database lives.
+    assert TEST_CHECKPOINT_PATH.parent == DEMO_DATA_PATH.parent == app_paths.PROJECT_ROOT / "data" / "test_data"
     assert gui_module.DEFAULT_CHECKPOINT_PATH == DATA_DIR / "database.ddm.json"
     assert get_database_output_paths(gui_module.DEFAULT_CHECKPOINT_PATH) == {
         "checkpoint": DATA_DIR / "database.ddm.json",
@@ -2207,6 +2270,34 @@ def test_schedule_window_moves_selected_columns_and_keeps_them_selected(tmp_path
         bar.move(1)
         assert [param.name for param in schedule.params] == names
         assert warnings and "split header group 'Pair'" in warnings[0]
+    finally:
+        root.destroy()
+
+
+def test_add_all_parameters_button_gives_a_family_every_schedule_column(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = gui.catalog.schedules[0]
+        unlinked = next(fam for fam in gui.catalog.families if fam not in schedule.fams)
+        gui._link_schedule_families(schedule.name, [unlinked.name])
+        columns = [param.name for param in schedule.params if gui.catalog.get_param(param.name)]
+        missing = [name for name in columns if name not in {param.name for param in unlinked.params}]
+        assert missing, "the demo family should lack some of the schedule's columns"
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        table, _bar = schedule_window_parts(root, schedule)
+        first = next(row for row in table.rows if row.get("family") == unlinked.name)
+        assert first["family_action"] == "Add All Parameters"
+
+        left, top, right, bottom = table._family_action_boxes[unlinked.name]
+        click(table, (left + right) / 2, (top + bottom) / 2)
+        assert {name for name in columns} <= {param.name for param in unlinked.params}
+        first = next(row for row in table.rows if row.get("family") == unlinked.name)
+        assert "family_action" not in first  # nothing left to add
+        assert unlinked.name not in table._family_action_boxes
     finally:
         root.destroy()
 

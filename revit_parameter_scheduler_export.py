@@ -42,11 +42,11 @@ def _text(value):
 
 def _is_instance(value):
     normalized = _text(value).lower()
-    if normalized in {"true", "1", "yes", "y"}:
+    if normalized in {"true", "1", "yes", "y", "instance"}:
         return True
-    if normalized in {"false", "0", "no", "n"}:
+    if normalized in {"false", "0", "no", "n", "type"}:
         return False
-    raise ValueError(f"Instance Param must be true or false, got {value!r}.")
+    raise ValueError(f"Instance or Type must be Instance or Type, got {value!r}.")
 
 
 def generate_rfps_content(

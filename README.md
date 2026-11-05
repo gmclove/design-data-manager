@@ -31,6 +31,10 @@ directly, no activation needed:
 or activate it from an Anaconda Prompt with `conda activate .\.conda`. In VS Code, pick
 `.conda\python.exe` with **Python: Select Interpreter**.
 
+Keep the repo out of OneDrive (or any synced folder): syncing the 900 MB environment breaks
+Tkinter mid-run, and GitHub already backs up the code. This machine keeps it in
+`C:\Users\glove\gits\design-data-manager`.
+
 To create it on a new machine:
 
 ```bash
@@ -47,7 +51,14 @@ pytest                            # run the tests
 ```
 
 The GUI saves to `data/database.ddm.json` by default, with a readable CSV and the Revit export files
-alongside. Closing the window, **Load** and **Import Excel...** check for unsaved changes first and
+alongside. The working database isn't in git (the repo is public), so keep it somewhere backed up:
+set `database_folder` in `%APPDATA%\DesignDataManager\settings.json` to a OneDrive folder, e.g.
+
+```json
+{ "database_folder": "C:\\Users\\you\\OneDrive - IPS\\Documents\\_BIM\\_PARAMETERS\\ddm-data" }
+```
+
+and the app opens and saves its database there instead of `data/`. Closing the window, **Load** and **Import Excel...** check for unsaved changes first and
 offer **Save**, **Discard** or **Cancel**. Closing while the schedule macro is still building
 waits for the build to finish. CSV and older `.ddm.pkl` databases can still be loaded.
 On first launch, before anything is saved, it opens the demo database from `data/test_data/`.
@@ -269,24 +280,31 @@ Value, and a Family Default Value beats the Parameter Default Value. If you clea
 
 **What can be overridden:**
 - **Default Value:** at all three levels.
-- **Formula and Group Under:** at the Parameter and Family levels only. They describe the family,
-  so a schedule shows them read-only.
+- **Formula, Group Under and Instance or Type:** at the Parameter and Family levels only. They
+  describe the family, so in a schedule a family's row sets the family's own, which every schedule
+  it's in uses.
 
 **Reading the tables:**
 - **Black text:** set at this level.
 - **Gray text:** inherited from the level above.
-- **Shaded cell:** doesn't apply, because the family doesn't have that parameter. In a schedule,
-  an **Add Parameter to Family** button adds the missing parameter to the family.
+- **Bold text** (schedule window): the value the schedule ends up using. A family's cell is bold
+  when the schedule or the family sets its own value; the Parameter cell is bold when a family
+  falls back to the parameter's (or the schedule has no family with that column). The Default
+  Header is bold unless the schedule overrides the column's header.
+- **White cell:** editable. Shaded cells are labels.
+- **Shaded value cell:** doesn't apply, because the family doesn't have that parameter. In a
+  schedule, an **Add Parameter to Family** button adds the missing parameter to the family, and
+  **Add All Parameters** under the family's name adds every column it's missing at once.
 - **Default Header** (schedule window, Parameter section): the parameter's own header text, which
   a column uses unless the schedule overrides it (double-click the column header). Gray means
   the parameter has none, so the header is its name.
-- **Parameter section in the schedule window:** double-click a cell to edit the parameter itself
+- **Parameter section in the schedule window:** click a cell to edit the parameter itself
   (Name, Default Header, Default Value, Formula, Group Under, Instance or Type). It changes the
   parameter for every family and schedule, as editing it on the Parameters tab does; a rename
   asks about the GUID first. In the family window the section is read-only.
 
-To edit a cell, double-click it and type. Enter or clicking away saves, Tab moves to the next
-cell, and Escape cancels.
+To edit a cell, click it in the schedule window (double-click it in the family window) and type.
+Enter or clicking away saves, Tab moves to the next cell, and Escape cancels.
 
 **Apply to All Families rows:** in a schedule, these rows are a shortcut, not another level. They set
 every family in the schedule that has that column:

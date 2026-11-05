@@ -120,16 +120,15 @@ OVERRIDE_RULES = (
     )),
     ("What Can Be Overridden", (
         "Default Value: at all three levels.\n"
-        "Formula and Group Under: at the Parameter and Family levels only. They describe the family, "
-        "so a schedule shows each family's read-only; the Apply to All Families rows can still set them for "
-        "every family in the schedule (see below).\n"
-        "Instance or Type: at the Parameter and Family levels only, chosen from a drop-down. In a "
-        "schedule, a family's row and the Apply to All Families rows set the family's own Instance or "
-        "Type, which every schedule it's in uses. Blank uses the parameter's."
+        "Formula, Group Under and Instance or Type: at the Parameter and Family levels only. They "
+        "describe the family, so in a schedule a family's row (or the Apply to All Families rows) sets "
+        "the family's own, which every schedule it's in uses. Blank uses the parameter's."
     )),
     ("Reading the Tables", (
         "Black text: set at this level.\n"
         "Gray text: inherited from the level above.\n"
+        "Bold: in a schedule, the value the schedule ends up using (the family's own, or the "
+        "parameter's when a family doesn't set one).\n"
         "Shaded cell: doesn't apply, for example the family doesn't have that parameter. In a "
         "schedule, an \"Add Parameter to Family\" button adds the missing parameter to the family.\n"
         "Double-click a cell to edit it in place. Enter or clicking away saves, Tab moves to the "
@@ -175,6 +174,12 @@ class OverrideTable(tk.Canvas):
     that column; clicking a family's labels selects the family. Ctrl adds to the
     selection and Shift selects a range. Columns and families aren't selected together.
 
+    With ``edit_on_click`` one click on an editable cell edits it (``on_cell_double_click``
+    is then called on that click). A cell with ``"bold": True`` is drawn in bold.
+
+    A section's first row with ``"family_action": text`` gets a button with that text under
+    the section label; clicking it calls ``on_family_action(family)``.
+
     Body rows are dicts: ``{"section": str, "label": str, "cells": [cell, ...]}``,
     plus any keys the caller needs back. A cell is ``{"text": str, "state": ...,
     "editable": bool}`` where state is ``"set"`` (set at this level),
@@ -182,8 +187,8 @@ class OverrideTable(tk.Canvas):
     doesn't apply).
     """
 
-    section_width = 110
-    label_width = 110
+    section_width = 150
+    label_width = 140
     row_height = 24
     # Screen pixels per inch of Revit grid column width, and the narrowest readable column.
     pixels_per_inch = 72
@@ -191,7 +196,8 @@ class OverrideTable(tk.Canvas):
 
     def __init__(self, master, parameter_names, header_texts=None, groups=None, rows=None,
                  show_header=True, on_header_double_click=None, on_cell_double_click=None,
-                 grid_column_widths=None, on_cell_action=None, hidden_names=None, on_hidden_toggle=None):
+                 grid_column_widths=None, on_cell_action=None, hidden_names=None, on_hidden_toggle=None,
+                 edit_on_click=False, on_family_action=None):
         super().__init__(master, background="#ffffff", highlightthickness=0)
         self.parameter_names = list(parameter_names)
         self.header_texts = dict(header_texts or {})
@@ -206,6 +212,10 @@ class OverrideTable(tk.Canvas):
         self.on_header_double_click = on_header_double_click
         self.on_cell_double_click = on_cell_double_click
         self.on_cell_action = on_cell_action
+        self.edit_on_click = edit_on_click
+        self.on_family_action = on_family_action
+        # Each family's button under its name: {family: (left, top, right, bottom)}.
+        self._family_action_boxes = {}
         self.hidden_names = None if hidden_names is None else set(hidden_names)
         self.on_hidden_toggle = on_hidden_toggle
         self.column_width = 170
@@ -216,6 +226,7 @@ class OverrideTable(tk.Canvas):
         self.header_font = tkfont.Font(root=self, font=("Segoe UI", 10, "bold"))
         self.label_font = tkfont.Font(root=self, font=("Segoe UI", 9, "bold"))
         self.body_font = tkfont.Font(root=self, font=("Segoe UI", 9))
+        self.body_bold_font = tkfont.Font(root=self, font=("Segoe UI", 9, "bold"))
         self.header_top = 0
         self._cell_editor = None
         self.bind("<Button-1>", self._on_mouse_down)
@@ -429,6 +440,11 @@ class OverrideTable(tk.Canvas):
 
     def _on_mouse_down(self, event):
         self.finish_cell_edit(commit=True)
+        family_action = self._family_action_at(event)
+        if family_action is not None:
+            if self.on_family_action is not None:
+                self.on_family_action(family_action)
+            return
         action = self._action_at(event)
         if action is not None:
             if self.on_cell_action is not None:
@@ -444,21 +460,27 @@ class OverrideTable(tk.Canvas):
             self._select_family(family, event.state)
             return
         index = self._selectable_column_at(event)
-        if index is None:
-            return
-        self.selected_families = set()
-        if event.state & 0x0004:
-            if index in self.selected_indices:
-                self.selected_indices.remove(index)
+        if index is not None:
+            self.selected_families = set()
+            if event.state & 0x0004:
+                if index in self.selected_indices:
+                    self.selected_indices.remove(index)
+                else:
+                    self.selected_indices.add(index)
+                self.selection_anchor = index
+            elif event.state & 0x0001 and self.selection_anchor is not None:
+                self._select_range(self.selection_anchor, index)
             else:
-                self.selected_indices.add(index)
-            self.selection_anchor = index
-        elif event.state & 0x0001 and self.selection_anchor is not None:
-            self._select_range(self.selection_anchor, index)
-        else:
-            self.selection_anchor = index
-            self.selected_indices = {index}
-        self._draw_grid()
+                self.selection_anchor = index
+                self.selected_indices = {index}
+            self._draw_grid()
+            if event.state & 0x0005:
+                return  # Ctrl- and Shift-clicks only select
+        if not self.edit_on_click:
+            return
+        cell = self._cell_at(event)
+        if cell is not None and self.rows[cell[0]]["cells"][cell[1]].get("editable") and self.on_cell_double_click:
+            self.on_cell_double_click(*cell)
 
     def _select_family(self, family, state):
         self.selected_indices = set()
@@ -491,6 +513,8 @@ class OverrideTable(tk.Canvas):
             if self.on_header_double_click is not None:
                 self.on_header_double_click(self.parameter_names[index])
             return
+        if self.edit_on_click:
+            return  # the first click already started the edit
         cell = self._cell_at(event)
         if cell is not None and self.on_cell_double_click is not None:
             self.on_cell_double_click(*cell)
@@ -593,14 +617,19 @@ class OverrideTable(tk.Canvas):
 
     def _draw_body(self, right):
         section_start = 0
+        self._family_action_boxes = {}
         for row_index, row in enumerate(self.rows + [None]):
             starts_section = row is None or (row_index > 0 and row.get("section"))
             if starts_section and row_index > section_start:
                 # The section label spans every row since the last section started.
                 top = self.body_top + section_start * self.row_height
                 height = (row_index - section_start) * self.row_height
-                self._label_cell(0, top, self.section_width, height, self.rows[section_start].get("section", ""),
-                                 fill=self._label_fill(self.rows[section_start]))
+                first = self.rows[section_start]
+                if first.get("family_action"):
+                    self._draw_family_section(first, top, height)
+                else:
+                    self._label_cell(0, top, self.section_width, height, first.get("section", ""),
+                                     fill=self._label_fill(first))
                 self.create_line(0, top, right, top, fill="#374151", width=2)
                 section_start = row_index
             if row is None:
@@ -626,11 +655,23 @@ class OverrideTable(tk.Canvas):
                 self.create_rectangle(left, top, left + self.column_widths[index], top + self.row_height,
                                       fill=fill, outline="#c8d2ce")
                 if cell.get("text") and state != "none":
+                    font = self.body_bold_font if cell.get("bold") else self.body_font
                     self.create_text(
                         left + 6, top + self.row_height / 2,
-                        text=self._fit_text(cell["text"], self.column_widths[index] - 12), anchor="w",
-                        font=self.body_font, fill="#9ca3af" if state == "inherited" else "#111827",
+                        text=self._fit_text(cell["text"], self.column_widths[index] - 12, font), anchor="w",
+                        font=font, fill="#9ca3af" if state == "inherited" else "#111827",
                     )
+
+    def _draw_family_section(self, row, top, height):
+        """A family's section label: its name at the top and its button underneath."""
+        width = self.section_width
+        self.create_rectangle(0, top, width, top + height, fill=self._label_fill(row), outline="#c8d2ce")
+        self.create_text(6, top + 6, text=row.get("section", ""), anchor="nw", width=width - 10, font=self.label_font)
+        box = (6, top + height - 28, width - 6, top + height - 6)
+        self.create_rectangle(*box, fill="#dce9e4", outline="#7a9187")
+        self.create_text((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, text=row["family_action"],
+                         font=self.label_font)
+        self._family_action_boxes[row["family"]] = box
 
     def _label_fill(self, row, fill="#f1f5f3"):
         return "#dcefe7" if row.get("family") in self.selected_families else fill
@@ -680,18 +721,29 @@ class OverrideTable(tk.Canvas):
             return None
         return cell
 
+    def _family_action_at(self, event):
+        """The family whose button (under its name) is under the event, or ``None``."""
+        x, y = self.canvasx(event.x), self.canvasy(event.y)
+        return next(
+            (family for family, (left, top, right, bottom) in self._family_action_boxes.items()
+             if left <= x <= right and top <= y <= bottom),
+            None,
+        )
+
     def _on_motion(self, event):
         clickable = any(found is not None for found in (
+            self._family_action_at(event),
             self._action_at(event), self._hidden_toggle_at(event), self._family_at(event),
             self._selectable_column_at(event),
         ))
         self.configure(cursor="hand2" if clickable else "")
 
-    def _fit_text(self, text: str, max_width: int) -> str:
+    def _fit_text(self, text: str, max_width: int, font=None) -> str:
         """``text`` on one line, cut short with an ellipsis if it is wider than ``max_width``."""
-        if self.body_font.measure(text) <= max_width:
+        font = font or self.body_font
+        if font.measure(text) <= max_width:
             return text
-        while text and self.body_font.measure(text + "…") > max_width:
+        while text and font.measure(text + "…") > max_width:
             text = text[:-1]
         return text + "…"
 
@@ -773,14 +825,14 @@ class DDMGUI:
 
     _display_labels = {
         "name": "Name",
-        "header_text": "Default Header Text",
+        "header_text": "Default Header",
         "header_text_override": "Schedule Header Override",
-        "grid_column_width": "Grid Column Width (in)",
+        "grid_column_width": "Default Column Width (in)",
         "grid_column_width_override": "Schedule Width Override (in)",
         "dtype": "Data Type",
-        "group_under": "Group Under",
-        "formula": "Formula",
-        "instance_param": "Instance Param",
+        "group_under": "Default Group Under",
+        "formula": "Default Formula",
+        "instance_param": "Instance or Type",
         "default_value": "Default Value",
         "status": "Status",
         "validation_message": "Validation Message",
@@ -1334,6 +1386,8 @@ class DDMGUI:
             return sorted({str(value) for value in REVIT_PROPERTY_PALLET_TABLE["Property Palette Display Name"].dropna().tolist()})
         if column_name == "category":
             return sorted({str(value) for value in REVIT_FAMILY_CATEGORY_TABLE["Category"].dropna().tolist()})
+        if column_name == "instance_param":
+            return ["Instance", "Type"]
         return None
 
     def _on_tree_double_click(self, event, table_name: str):
@@ -1419,8 +1473,11 @@ class DDMGUI:
         entry.bind("<FocusOut>", lambda _event: commit_edit())
 
     def render_tables(self):
+        params = self.params_df
+        # Shown as on the schedule window: Instance or Type, not true / false.
+        params["instance_param"] = params["instance_param"].map(lambda value: self._attribute_text("instance_param", value))
         tables = (
-            ("params", self.param_tree, self.params_df, self._get_table_columns("params")),
+            ("params", self.param_tree, params, self._get_table_columns("params")),
             ("families", self.family_tree, self.families_df, self._get_table_columns("families")),
             ("groups", self.group_tree, self._build_schedule_summary_df(), self._schedule_summary_columns),
         )
@@ -1793,12 +1850,12 @@ class DDMGUI:
     # What can be overridden, in table order, with its style-guide term and row label.
     _override_attributes = (
         ("value", "Default Value", "Default Value"),
-        ("formula", "Default Formula", "Formula"),
-        ("group_under", "Default Group Under", "Group Under"),
+        ("formula", "Default Formula", "Default Formula"),
+        ("group_under", "Default Group Under", "Default Group Under"),
         ("instance_param", "Instance or Type", "Instance or Type"),
     )
     # Belong to the family, yet editable on a schedule's family rows (where they set the family).
-    _family_level_attributes = ("instance_param",)
+    _family_level_attributes = ("formula", "group_under", "instance_param")
 
     @staticmethod
     def _attribute_text(attribute: str, value):
@@ -2115,7 +2172,23 @@ class DDMGUI:
                 "family": fam.name,
                 "attribute": attribute,
             })
+        if schedule is not None and any(cell.get("action") for cell in rows[0]["cells"]):
+            rows[0]["family_action"] = "Add All Parameters"
         return rows
+
+    def _add_all_parameters_to_family(self, table: "OverrideTable", rows_builder, family_name: str):
+        """The "Add All Parameters" button: give the family every schedule column it lacks."""
+        fam = self.catalog.get_family(family_name)
+        have = {param.name for param in fam.params}
+        missing = [
+            self.catalog.get_param(name) for name in table.parameter_names
+            if name not in have and self.catalog.get_param(name) is not None
+        ]
+        for param in missing:
+            fam.add_param(param)
+        self.validate_all()
+        self._append_message(f"Added {len(missing)} parameter(s) to family '{family_name}'.")
+        table.set_rows(rows_builder())
 
     def _all_families_rows(self, schedule, parameter_names: Sequence[str]) -> List[dict]:
         """The Apply to All Families rows: shortcuts that set every family in the schedule at once.
@@ -2190,7 +2263,47 @@ class DDMGUI:
         rows.extend(self._all_families_rows(schedule, parameter_names))
         for fam in schedule.fams:
             rows.extend(self._family_table_rows(fam, parameter_names, schedule))
+        self._mark_used_values(schedule, parameter_names, rows)
         return rows
+
+    @staticmethod
+    def _value_source(schedule, fam, param_name: str, attribute: str) -> str:
+        """Where the value ``fam`` gets in ``schedule`` comes from: "schedule", "family" or "parameter"."""
+        if attribute == "value":
+            if param_name == SCHEDULE_FILTER_PARAM:
+                return "schedule"  # the schedule filter sets it
+            if "value" in schedule.family_overrides.get(fam.name, {}).get(param_name, {}):
+                return "schedule"
+        return "family" if attribute in fam.overrides.get(param_name, {}) else "parameter"
+
+    def _mark_used_values(self, schedule, parameter_names: Sequence[str], rows: List[dict]):
+        """Bold the cells holding the values the schedule ends up using.
+
+        A family's cell is bold when the schedule or the family sets its own value; the
+        Parameter cell when a family falls back to the parameter's (or no family has the
+        column). The Default Header is bold unless the schedule overrides the header.
+        """
+        families_with = {
+            name: [fam for fam in schedule.fams if name in schedule.family_param_names(fam)]
+            for name in parameter_names
+        }
+        for row in rows:
+            field = row.get("param_field")
+            for index, cell in enumerate(row["cells"]):
+                name = parameter_names[index]
+                if cell["state"] == "none":
+                    continue
+                if field == "header_text":
+                    cell["bold"] = name not in schedule.header_text_overrides
+                elif field and field != "name":
+                    attribute = next(a for a, f in self._parameter_row_fields.items() if f == field)
+                    families = families_with[name]
+                    cell["bold"] = not families or any(
+                        self._value_source(schedule, fam, name, attribute) == "parameter" for fam in families
+                    )
+                elif row.get("family") and not row.get("all_families"):
+                    fam = self.catalog.get_family(row["family"])
+                    cell["bold"] = self._value_source(schedule, fam, name, row["attribute"]) != "parameter"
 
     def _family_window_rows(self, fam) -> List[dict]:
         parameter_names = [param.name for param in fam.custom_params]
@@ -2953,8 +3066,8 @@ class DDMGUI:
 
         table_box = ttk.LabelFrame(
             form,
-            text="Schedule Default Values (double-click a value to edit it, a header for column settings; "
-                 "click headers or family names to select them)",
+            text="Schedule Default Values (click a value to edit it; bold is the value the schedule uses; "
+                 "double-click a header for column settings; click headers or family names to select them)",
             padding=8,
         )
         table_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
@@ -3043,6 +3156,7 @@ class DDMGUI:
             on_header_double_click=edit_schedule_header,
             hidden_names=schedule.hidden_field_names,
             on_hidden_toggle=toggle_hidden,
+            edit_on_click=True,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
                 table, rows_builder, selected_name, row_index, column_index,
                 on_columns_changed=lambda: reopen(table.get_selected_parameter_names()),
@@ -3050,6 +3164,7 @@ class DDMGUI:
             on_cell_action=lambda row_index, column_index: self._add_parameter_from_table(
                 table, rows_builder, row_index, column_index
             ),
+            on_family_action=lambda family_name: self._add_all_parameters_to_family(table, rows_builder, family_name),
             grid_column_widths=[
                 self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
             ],

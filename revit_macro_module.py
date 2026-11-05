@@ -17,8 +17,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from config.app_paths import USER_SETTINGS_PATH
+
 MACROS_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Autodesk" / "Revit" / "Macros"
-USER_SETTINGS_PATH = Path(os.environ.get("APPDATA", Path.home())) / "DesignDataManager" / "settings.json"
 DOTNET_DOWNLOAD_URL = "https://dotnet.microsoft.com/download"
 _SETTING = "revit_macro_module"
 

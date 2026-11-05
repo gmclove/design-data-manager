@@ -1,5 +1,7 @@
 """Default filesystem paths used by the application."""
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -10,7 +12,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # working data lives in a "data" folder next to the .exe.
 FROZEN = getattr(sys, "frozen", False)
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
-DATA_DIR = Path(sys.executable).resolve().parent / "data" if FROZEN else PROJECT_ROOT / "data"
+# Each user's settings: their Revit macro module, and where their working database lives.
+USER_SETTINGS_PATH = Path(os.environ.get("APPDATA", Path.home())) / "DesignDataManager" / "settings.json"
+
+
+def _database_folder_setting():
+    """The ``database_folder`` in the user's settings (e.g. a OneDrive folder), or ``None``."""
+    try:
+        folder = json.loads(USER_SETTINGS_PATH.read_text(encoding="utf-8")).get("database_folder")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return Path(folder) if folder else None
+
+
+# Working databases: the database_folder setting if there is one, else a "data" folder in the
+# project (next to the .exe when packaged).
+DATA_DIR = _database_folder_setting() or (
+    Path(sys.executable).resolve().parent / "data" if FROZEN else PROJECT_ROOT / "data"
+)
 TEST_DATA_DIR = PROJECT_ROOT / "data" / "test_data"
 
 DEMO_DATA_PATH = TEST_DATA_DIR / "demo_data.ddm.csv"
