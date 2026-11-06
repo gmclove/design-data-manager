@@ -73,6 +73,9 @@ unsaved-changes prompts.
       row dicts to mappers that use `getattr`, so every value comes out empty. The doc listed this
       as partly fixed (mapping model objects); the current code is back to dicts.
 - [ ] GUI: undo, inline error highlighting. (Add/delete is under Next steps.)
+- [ ] Possible future development (user, 2026-11-05, not needed for now): a stored table view
+      template, editable per user, that also remembers sort order and dragged column widths. Today
+      the defaults are `DEFAULT_TABLE_VIEW` in `table_view.py`, and nothing carries over a restart.
 - [ ] Richer validation: units and data types in formulas (Length × Length = Area), circular
       references, naming conventions such as the `IPS_` prefix.
 - [ ] Recheck: demo data linking families to parameters that don't exist (`RValue`, `FinishCode`).

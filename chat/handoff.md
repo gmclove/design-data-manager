@@ -55,4 +55,6 @@ folder works.
   Moving off OneDrive didn't cure it (see [plan.md](plan.md)).
 - Schedule tracking within a project added (uncommitted): see [changelog.md](changelog.md). The
   rename prompt's four options are my reading of the user's request; confirm them.
+- Tables share `DEFAULT_TABLE_VIEW` in `table_view.py`. Storing a template is possible future work
+  (see [plan.md](plan.md)).
 - Top priority is still the real Revit run of the schedule macro, which needs the user.

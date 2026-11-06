@@ -56,6 +56,16 @@ from revit_macro_module import (
     MACROS_ROOT, USER_SETTINGS_PATH, build_module, choose_module, chosen_module, find_macro_modules,
 )
 from revit_schedule_macro_generator import generate_schedule_macro_source, install_macro
+from table_view import (
+    DEFAULT_TABLE_VIEW,
+    ColumnResizer,
+    apply_table_style,
+    fitted_width,
+    next_sort,
+    sort_mark,
+    sorted_rows,
+    tree_body_font,
+)
 from revit_parameter_scheduler_export import generate_rfps_content
 from revit_shared_parameter_export import generate_shared_parameter_content
 
@@ -226,7 +236,7 @@ class OverrideTable(tk.Canvas):
         self.column_offsets = []
         self.group_row_height = 30
         self.header_height = 58 if show_header else 0
-        self.header_font = tkfont.Font(root=self, font=("Segoe UI", 10, "bold"))
+        self.header_font = tkfont.Font(root=self, font=DEFAULT_TABLE_VIEW.heading_font)
         self.label_font = tkfont.Font(root=self, font=("Segoe UI", 9, "bold"))
         self.body_font = tkfont.Font(root=self, font=("Segoe UI", 9))
         self.body_bold_font = tkfont.Font(root=self, font=("Segoe UI", 9, "bold"))
@@ -865,6 +875,7 @@ class DDMGUI:
         style.configure("Section.TLabel", font=("Segoe UI", 11, "bold"), foreground="#374151")
         style.configure("Action.TButton", font=("Segoe UI", 10, "bold"))
         style.configure("Status.TLabel", font=("Segoe UI", 10, "bold"))
+        apply_table_style(self.root)
 
         self.catalog = Catalog()
         self.load_issues: List[str] = []
@@ -1307,6 +1318,11 @@ class DDMGUI:
             lambda event, table=tree: self._schedule_table_heading_wrap(table, event),
             add="+",
         )
+        tree._ddm_sort = None
+        for col in columns:
+            tree.heading(col, command=lambda table=tree, column=col: self._sort_table(table, column))
+        # Last, so the handlers above still run before it ends a drag's default handling.
+        tree._ddm_resizer = ColumnResizer(tree)
         self._update_table_heading_wrap(tree)
 
         frame.grid_rowconfigure(0, weight=1)
@@ -1348,8 +1364,8 @@ class DDMGUI:
             return
         max_line_count = 1
         for column in columns:
-            label = self._humanize_column_name(column)
-            width = max(1, int(tree.column(column, "width")) - 16)
+            label = self._humanize_column_name(column) + sort_mark(getattr(tree, "_ddm_sort", None), column)
+            width = max(1, int(tree.column(column, "width")) - DEFAULT_TABLE_VIEW.heading_margin)
             lines = _wrap_text_segment(label, width, font)
             max_line_count = max(max_line_count, len(lines))
             wrapped_label = "\n".join(lines)
@@ -1498,6 +1514,25 @@ class DDMGUI:
             count = getattr(self, "_search_counts", {}).get(table_name)
             if count is not None:
                 count.configure(text=f"Showing {shown} of {len(df)}" if self._search_text(table_name).strip() else "")
+            self._fit_table_columns(tree, df, columns)
+
+    def _fit_table_columns(self, tree, df, columns):
+        """Size columns to their entries, once per database: after that, a dragged width stays."""
+        if tree is None or getattr(tree, "_ddm_fitted_catalog", None) is self.catalog:
+            return
+        tree._ddm_fitted_catalog = self.catalog
+        body_font = tree_body_font(tree)
+        for column in columns:
+            entries = df[column].tolist() if column in df.columns else []
+            label = self._humanize_column_name(column)
+            tree.column(column, width=fitted_width(entries, label, body_font, tree._ddm_heading_font))
+        self._update_table_heading_wrap(tree)
+
+    def _sort_table(self, tree, column):
+        """A click on a column's header: sort by it, the other way, then back to the table's own order."""
+        tree._ddm_sort = next_sort(tree._ddm_sort, column)
+        self.render_tables()
+        self._update_table_heading_wrap(tree)
 
     @staticmethod
     def _render_tree(tree: ttk.Treeview, df: pd.DataFrame, columns: Sequence[str], search: str = "") -> int:
@@ -1512,14 +1547,19 @@ class DDMGUI:
             tree.delete(row)
 
         words = search.casefold().split()
-        shown = 0
+        rows = []
         for position, (_, row) in enumerate(df.iterrows()):
             values = ["" if value is None else value for value in (row.get(col, "") for col in columns)]
             text = " ".join(str(value) for value in values).casefold()
             if all(word in text for word in words):
-                tree.insert("", "end", iid=str(position), values=values)
-                shown += 1
-        return shown
+                rows.append((position, values))
+        sort = getattr(tree, "_ddm_sort", None)
+        if sort is not None and sort[0] in columns:
+            index = list(columns).index(sort[0])
+            rows = sorted_rows(rows, lambda item: item[1][index], descending=sort[1])
+        for position, values in rows:
+            tree.insert("", "end", iid=str(position), values=values)
+        return len(rows)
 
     # --- validation -------------------------------------------------------------
 

@@ -153,3 +153,11 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   projects, and the macro can't write back to it. One `DataStorage` element holds the whole map.
 - **Records for schedules no longer in the database don't block a name match** (my call), so
   re-importing the workbook, which makes new GUIDs, takes over the same Revit schedules by name.
+
+## Table view template (user, 2026-11-05)
+- **One set of defaults in code, `DEFAULT_TABLE_VIEW`; nothing is stored** (user). A saved template is
+  possible future work (see plan.md). Sort and dragged widths are not remembered between runs.
+- **The schedule window's grid takes the heading font only** (my call): a click on its headers selects
+  the column, its order is the Revit column order, and its widths are the Revit widths.
+- **Columns fit once per database** (my call), so an edit or validation never undoes a dragged width.
+- **A third header click returns to the table's own order** (my call), since that order is otherwise lost.

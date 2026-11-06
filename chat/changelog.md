@@ -2,6 +2,13 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-05: Shared table view template
+- `table_view.py`: `DEFAULT_TABLE_VIEW` holds the settings for all tables. Bigger heading font,
+  click a header to sort (ascending, descending, back to the table's order), columns fitted to their
+  longest entry with a cap when a database loads, and dragging an edge changes that column only.
+- The schedule window's grid takes the heading font only.
+- Headings leave more room: with under about 20 px spare, Tk draws only a heading's first line.
+
 ## 2026-11-05: Create GitHub Ticket button
 - On the main toolbar. Opens the repo's new issue page with the app version filled in.
 

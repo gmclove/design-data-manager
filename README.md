@@ -67,6 +67,16 @@ Each main tab (Parameters, Families, Schedules) has a **Search** box above its l
 only if it contains every word typed, in any column; case doesn't matter. Escape or **Clear** shows
 every row again. Editing works the same on a filtered list.
 
+Tables share one view template, `DEFAULT_TABLE_VIEW` in `table_view.py`. On the main tabs:
+- **Click a column header to sort** by it: ascending, descending, then back to the table's own
+  order. Numbers sort by value, and blanks go last.
+- **Columns fit their longest entry,** up to a cap, when a database loads.
+- **Drag a column's edge to resize that column only;** the others keep their width, and the table
+  scrolls sideways if needed.
+
+The schedule window's grid takes the template's heading font only. A click on its headers selects
+the column, and its column order and widths are the Revit schedule's.
+
 ## Standalone .exe (Beta)
 
 `dist/DesignDataManager.exe` runs without Python or conda. Copy it into its own folder and
