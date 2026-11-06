@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 APP_VERSION = "0.1.0 Beta"
+NEW_ISSUE_URL = "https://github.com/gmclove/design-data-manager/issues/new"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Packaged as a standalone .exe (PyInstaller), bundled files unpack to a temporary folder and

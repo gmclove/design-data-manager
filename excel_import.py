@@ -23,7 +23,7 @@ in the report.
 from collections import Counter
 from dataclasses import dataclass, field
 
-from revit_parameter_manager import Catalog
+from revit_parameter_manager import Catalog, upgrade_name_terms
 from revit_shared_parameter_export import parameter_guid
 
 SCHEDULES_AFTER_SHEET = "Backstage"
@@ -215,7 +215,7 @@ def _read_name_terms(ws, catalog):
         if param is None:
             continue
         terms = {term: _term_text(row[columns[header] - 1]) for header, term in NAME_TERM_COLUMNS.items()}
-        if param.set_name_terms(terms):
+        if param.set_name_terms(upgrade_name_terms(terms)):
             recorded += 1
         else:
             problems.append(f"Parameters: '{param.name}' doesn't match its Parameter Name Editor terms; terms left out.")

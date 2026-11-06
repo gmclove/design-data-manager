@@ -129,13 +129,27 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
 ## Parameter names (user, 2026-11-05)
 - **The scheme is the workbook's Parameter Name Editor,** and it must not change any existing name
   (user). Names it can't reproduce get sorted through one by one; there is no rename-all.
-- **The scheme is fixed, not a format like families'** (my call). Per-term prefixes can't express
-  it: Descriptor and Clarifier share one separator, so a Clarifier alone still needs one.
+- **Superseded: the scheme is fixed, not a format like families'.** The user wants the two windows
+  very similar, so parameters have a shared format too. It reproduces every name once `IPS` is a
+  term (Company Code) and a Clarifier with no Descriptor is stored as the Descriptor.
+- **No rename-all for parameters,** unlike families (the user's rule that names get sorted through
+  one by one, and each rename touches a GUID). Changing the format renames nothing by itself.
+- **A parameter's Values are edited in its builder;** a family's come from its table columns.
 - **Terms are kept verbatim** (underscores and spaces), since the names depend on them.
 - **The stray space in `IPS_SPACE_AirReq_DuctLeak _PRCNT` was removed** (user), keeping the GUID
   (my call: the same parameter, and Revit links hold). This is the exception to the default of a
   new GUID on rename.
-- **Recorded terms only count while they build the current name.** A rename from anywhere else (a
-  schedule window's Name cell) outdates them, and the builder shows a guess that rebuilds the name.
+- **A rename clears a parameter's recorded terms,** so a rename from anywhere else (a schedule
+  window's Name cell) leaves no stale terms; the builder then shows a guess from the new name.
 - **Parent Category, Child Category and Units are dropdowns of the values in use;** typing adds a
   new one, with no separate list to maintain (user chose dropdowns; typing is my call).
+
+## Schedule tracking (user, 2026-11-05)
+- **Track within one project first** (user), by Revit `UniqueId`. Tracking across projects is not
+  built.
+- **A changed name prompts the user** (user). The four options are my reading: the user asked for
+  "the options" without listing them. Keep Revit Name isn't remembered, so it asks again next run.
+- **The record lives in the project, not the database** (my call): the database is shared across
+  projects, and the macro can't write back to it. One `DataStorage` element holds the whole map.
+- **Records for schedules no longer in the database don't block a name match** (my call), so
+  re-importing the workbook, which makes new GUIDs, takes over the same Revit schedules by name.

@@ -2820,3 +2820,17 @@ def test_save_without_any_macro_module_says_how_to_make_one(tmp_path, monkeypatc
 
     assert "namespace RevitMacros" in (tmp_path / "database.cs").read_text(encoding="utf-8")
     assert any("No Revit 2025 (or later) application macro module was found" in message for message in messages)
+
+
+def test_create_github_ticket_opens_a_new_issue_with_the_app_version(monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui_module.webbrowser, "open", lambda url: opened.append(url) or True)
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        gui.open_new_ticket()
+    finally:
+        root.destroy()
+    assert len(opened) == 1
+    assert opened[0].startswith("https://github.com/gmclove/design-data-manager/issues/new?body=App+Version")

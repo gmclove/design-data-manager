@@ -3,6 +3,8 @@ import os
 import pickle
 import threading
 import tkinter.font as tkfont
+import urllib.parse
+import webbrowser
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -17,6 +19,7 @@ from config.app_paths import (
     APP_VERSION,
     DEFAULT_CHECKPOINT_PATH,
     FROZEN,
+    NEW_ISSUE_URL,
     STARTER_DATABASE_PATH,
     get_database_output_paths,
 )
@@ -46,7 +49,7 @@ from ddm_tables import (
 )
 from excel_import import import_workbook
 from revit_parameter_manager import (
-    CODE_KINDS, CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, FAMILY_NAME_TERMS, PARAM_NAME_LONG_LENGTH,
+    CODE_KINDS, CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, FAMILY_NAME_TERMS, PARAM_NAME_COMPANY, PARAM_NAME_LONG_LENGTH,
     PARAM_NAME_TERMS, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, build_param_name, guid_change_warning,
 )
 from revit_macro_module import (
@@ -930,6 +933,7 @@ class DDMGUI:
         ttk.Button(
             toolbar, text="Revit Macro Settings", command=self.open_macro_settings, style="Action.TButton",
         ).pack(side="left")
+        ttk.Button(toolbar, text="Create GitHub Ticket", command=self.open_new_ticket).pack(side="right")
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
@@ -1225,6 +1229,12 @@ class DDMGUI:
 
     def _get_table_columns(self, table_name: str):
         return DDMGUI._table_columns[table_name]
+
+    def open_new_ticket(self):
+        """Open a new GitHub issue in the browser, with the app version filled in."""
+        url = NEW_ISSUE_URL + "?" + urllib.parse.urlencode({"body": f"App Version: {APP_VERSION}\n\n"})
+        if not webbrowser.open(url):
+            messagebox.showinfo("Create GitHub Ticket", f"Couldn't open a browser. Create the ticket here:\n{NEW_ISSUE_URL}")
 
     def _build_schedule_summary_df(self) -> pd.DataFrame:
         return pd.DataFrame(
@@ -1684,7 +1694,51 @@ class DDMGUI:
         dialog.wait_window()
         return result["name"]
 
-    # --- family names -----------------------------------------------------------
+    # --- family and parameter names ---------------------------------------------
+
+    def _build_name_terms_table(self, parent, parts, labels, value_heading, value_widget, on_change):
+        """The Use / Term / Value / Prefix / Suffix / Order table both name builders share.
+
+        ``value_widget(parent, term)`` makes a term's Value cell, and ``on_change()`` runs after
+        any change to ``parts``. Returns ``move(index, step)``.
+        """
+        def move(index, step):
+            target = index + step
+            if 0 <= target < len(parts):
+                parts[index], parts[target] = parts[target], parts[index]
+                draw_terms()
+
+        def draw_terms():
+            for child in parent.winfo_children():
+                child.destroy()
+            for column, heading in enumerate(("Use", "Term", value_heading, "Prefix", "Suffix", "Order")):
+                ttk.Label(parent, text=heading, style="Section.TLabel").grid(row=0, column=column, sticky="w", padx=4)
+            parent.columnconfigure(2, weight=1)
+            for index, part in enumerate(parts, start=1):
+                use_var = tk.BooleanVar(value=part["use"])
+                prefix_var = tk.StringVar(value=part["prefix"])
+                suffix_var = tk.StringVar(value=part["suffix"])
+
+                def update(*_args, part=part, use_var=use_var, prefix_var=prefix_var, suffix_var=suffix_var):
+                    part.update(use=use_var.get(), prefix=prefix_var.get(), suffix=suffix_var.get())
+                    on_change()
+
+                ttk.Checkbutton(parent, variable=use_var).grid(row=index, column=0, padx=4)
+                ttk.Label(parent, text=labels[part["term"]]).grid(row=index, column=1, sticky="w", padx=4)
+                value_widget(parent, part["term"]).grid(row=index, column=2, sticky="ew", padx=4, pady=1)
+                ttk.Entry(parent, textvariable=prefix_var, width=8).grid(row=index, column=3, padx=4, pady=1)
+                ttk.Entry(parent, textvariable=suffix_var, width=8).grid(row=index, column=4, padx=4, pady=1)
+                order = ttk.Frame(parent)
+                order.grid(row=index, column=5, padx=4)
+                ttk.Button(order, text="\u25b2", width=3, command=lambda i=index - 1: move(i, -1)).pack(side="left")
+                ttk.Button(order, text="\u25bc", width=3, command=lambda i=index - 1: move(i, 1)).pack(side="left")
+                for var in (use_var, prefix_var, suffix_var):
+                    var.trace_add("write", update)
+            on_change()
+
+        draw_terms()
+        return move
+
 
     def _open_family_name_builder(self, row_index: int):
         """The Family Name Builder: build a family's name from its codes, categories and description.
@@ -1724,43 +1778,13 @@ class DDMGUI:
         def refresh_name(*_args):
             name_var.set(built_name())
 
-        def move(index, step):
-            target = index + step
-            if 0 <= target < len(parts):
-                parts[index], parts[target] = parts[target], parts[index]
-                draw_terms()
+        def value_label(parent, term):
+            value = str(getattr(fam, term) or "")
+            return ttk.Label(parent, text=value or "(blank)", foreground="#111827" if value else "#9ca3af")
 
-        def draw_terms():
-            for child in terms_frame.winfo_children():
-                child.destroy()
-            for column, heading in enumerate(("Use", "Term", "Value (This Family)", "Prefix", "Suffix", "Order")):
-                ttk.Label(terms_frame, text=heading, style="Section.TLabel").grid(row=0, column=column, sticky="w", padx=4)
-            terms_frame.columnconfigure(2, weight=1)
-            for index, part in enumerate(parts, start=1):
-                use_var = tk.BooleanVar(value=part["use"])
-                prefix_var = tk.StringVar(value=part["prefix"])
-                suffix_var = tk.StringVar(value=part["suffix"])
-
-                def update(*_args, part=part, use_var=use_var, prefix_var=prefix_var, suffix_var=suffix_var):
-                    part.update(use=use_var.get(), prefix=prefix_var.get(), suffix=suffix_var.get())
-                    refresh_name()
-
-                value = str(getattr(fam, part["term"]) or "")
-                ttk.Checkbutton(terms_frame, variable=use_var).grid(row=index, column=0, padx=4)
-                ttk.Label(terms_frame, text=labels[part["term"]]).grid(row=index, column=1, sticky="w", padx=4)
-                ttk.Label(terms_frame, text=value or "(blank)", foreground="#111827" if value else "#9ca3af").grid(
-                    row=index, column=2, sticky="w", padx=4)
-                ttk.Entry(terms_frame, textvariable=prefix_var, width=8).grid(row=index, column=3, padx=4, pady=1)
-                ttk.Entry(terms_frame, textvariable=suffix_var, width=8).grid(row=index, column=4, padx=4, pady=1)
-                order = ttk.Frame(terms_frame)
-                order.grid(row=index, column=5, padx=4)
-                ttk.Button(order, text="\u25b2", width=3, command=lambda i=index - 1: move(i, -1)).pack(side="left")
-                ttk.Button(order, text="\u25bc", width=3, command=lambda i=index - 1: move(i, 1)).pack(side="left")
-                for var in (use_var, prefix_var, suffix_var):
-                    var.trace_add("write", update)
-            refresh_name()
-
-        draw_terms()
+        move = self._build_name_terms_table(
+            terms_frame, parts, labels, "Value (This Family)", value_label, refresh_name,
+        )
 
         name_box = ttk.Frame(window)
         name_box.pack(fill="x", padx=12, pady=(12, 4))
@@ -1826,60 +1850,71 @@ class DDMGUI:
     # --- parameter names --------------------------------------------------------
 
     # Terms picked from the values already in use (or typed, to add a new one); the rest are typed.
-    _param_term_dropdowns = ("parent_category", "child_category", "units")
+    _param_term_dropdowns = ("company_code", "parent_category", "child_category", "units")
 
     def _open_param_name_builder(self, row_index: Optional[int] = None):
-        """The Parameter Name Builder: a parameter's name from the master workbook's five terms.
+        """The Parameter Name Builder: build a parameter's name from its terms, as the Family Name Builder does.
 
-        With ``row_index`` it renames that parameter (or only records its terms, if the name
-        stays the same); without it, it adds a new parameter. A name that doesn't follow the
-        scheme stays as it is until a term or the New Name is changed.
+        Each term can be used or not, and has a prefix and suffix; a blank term is left out with
+        them, and the first term in a name has no prefix. The order, prefixes and suffixes are one
+        format shared by every parameter, saved when a parameter is saved here. With ``row_index``
+        it renames that parameter; without it, it adds a new one. A parameter without recorded
+        terms keeps its name until a term, the format or the New Name is changed.
         """
         param = None
         if row_index is not None:
             if not 0 <= row_index < len(self.catalog.params):
                 return None
             param = self.catalog.params[row_index]
+        labels = dict(PARAM_NAME_TERMS)
+        parts = [dict(part) for part in self.catalog.param_name_format]
 
         window = tk.Toplevel(self.root)
         window.title("Parameter Name Builder")
         window.transient(self.root)
         window.grab_set()
-        window.geometry("640x480" if param is None else "640x380")
+        window.geometry("720x480" if param is None else "720x400")
 
         heading = "New Parameter" if param is None else f"Parameter: {param.name}"
         ttk.Label(window, text=heading, style="Section.TLabel").pack(anchor="w", padx=12, pady=(10, 2))
         ttk.Label(
             window,
-            text="New Name = IPS_ + Parent Category _ Child Category _ Descriptor + Clarifier _ Units. "
-                 "A blank term is left out with its separator. Nothing separates Descriptor from Clarifier: "
-                 "start a Clarifier with _ to separate them.",
-            wraplength=610, justify="left",
+            text="Each used term adds Prefix + Value + Suffix. A blank value is left out with its prefix and "
+                 "suffix, and the first term in the name has no prefix. The order, prefixes and suffixes are "
+                 "shared by every parameter.",
+            wraplength=690, justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 8))
 
-        terms = {term: "" for term, _label in PARAM_NAME_TERMS} if param is None else param.name_terms
+        if param is None:
+            terms = {term: "" for term, _label in PARAM_NAME_TERMS}
+            terms["company_code"] = PARAM_NAME_COMPANY
+            first_name = ""
+        else:
+            terms = param.name_terms
+            first_name = build_param_name(terms, parts) if param.has_name_terms else param.name
         term_vars = {term: tk.StringVar(value=terms[term]) for term, _label in PARAM_NAME_TERMS}
-        name_var = tk.StringVar(value="" if param is None else param.name)
+        name_var = tk.StringVar(value=first_name)
         long_name = tk.StringVar()
-
-        fields = ttk.Frame(window)
-        fields.pack(fill="x", padx=12)
-        fields.columnconfigure(1, weight=1)
-        for row, (term, label) in enumerate(PARAM_NAME_TERMS):
-            ttk.Label(fields, text=f"{label} =").grid(row=row, column=0, sticky="w", pady=2)
-            if term in self._param_term_dropdowns:
-                entry = ttk.Combobox(fields, textvariable=term_vars[term], values=self.catalog.param_term_values(term))
-            else:
-                entry = ttk.Entry(fields, textvariable=term_vars[term])
-            entry.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=2)
-            if row == 0:
-                entry.focus_set()
+        state = {"changed": False}
 
         def current_terms():
             return {term: var.get() for term, var in term_vars.items()}
 
         def rebuild_name(*_args):
-            name_var.set(build_param_name(current_terms()))
+            if state["changed"]:
+                name_var.set(build_param_name(current_terms(), parts))
+
+        def value_field(parent, term):
+            if term in self._param_term_dropdowns:
+                return ttk.Combobox(parent, textvariable=term_vars[term], values=self.catalog.param_term_values(term))
+            return ttk.Entry(parent, textvariable=term_vars[term])
+
+        terms_frame = ttk.Frame(window)
+        terms_frame.pack(fill="x", padx=12)
+        move = self._build_name_terms_table(
+            terms_frame, parts, labels, "Value (This Parameter)", value_field, rebuild_name,
+        )
+        state["changed"] = True  # from here on, every change rebuilds the name
 
         def check_length(*_args):
             too_long = len(name_var.get()) > PARAM_NAME_LONG_LENGTH
@@ -1892,14 +1927,22 @@ class DDMGUI:
         check_length()
 
         name_box = ttk.Frame(window)
-        name_box.pack(fill="x", padx=12, pady=(12, 2))
+        name_box.pack(fill="x", padx=12, pady=(12, 4))
         ttk.Label(name_box, text="New Name:", style="Section.TLabel").pack(side="left")
         ttk.Entry(name_box, textvariable=name_var, font=("Segoe UI", 11)).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ttk.Label(window, text="Edit the New Name before renaming to use something else for this parameter.",
+                  foreground="#6b7280").pack(anchor="w", padx=12)
         ttk.Label(window, textvariable=long_name, foreground="#b45309").pack(anchor="w", padx=12)
-        if param is not None and not param.has_name_terms:
-            note = ("Terms Guessed From The Name; Correct Them If Needed." if any(terms.values())
-                    else "This Name Doesn't Follow The Scheme.")
-            ttk.Label(window, text=note, foreground="#6b7280").pack(anchor="w", padx=12)
+        if param is not None:
+            note = None
+            if not param.has_name_terms:
+                note = ("Terms Guessed From The Name; Correct Them If Needed." if any(
+                    value for term, value in terms.items() if term != "company_code")
+                    else "This Name Doesn't Follow The Format.")
+            elif first_name != param.name:
+                note = "The Format Builds A Different Name; Renaming Asks About The GUID."
+            if note:
+                ttk.Label(window, text=note, foreground="#6b7280").pack(anchor="w", padx=12)
 
         new_fields = {}
         if param is None:
@@ -1921,7 +1964,7 @@ class DDMGUI:
             new_name = cell_text(name_var.get())
             try:
                 if param is None:
-                    added = self._add_param_from_builder(new_name, current_terms(), new_fields)
+                    added = self._add_param_from_builder(new_name, current_terms(), new_fields, parts)
                     window.destroy()
                     self._show_new_param(added)
                     return
@@ -1932,6 +1975,7 @@ class DDMGUI:
                 return
             if param.name != new_name:
                 return  # the rename was cancelled at the GUID question
+            self.catalog.set_param_name_format(parts)
             param.set_name_terms(current_terms())
             self.validate_all()
             if new_name != old_name:
@@ -1940,15 +1984,16 @@ class DDMGUI:
 
         buttons = ttk.Frame(window)
         buttons.pack(fill="x", side="bottom", padx=12, pady=10)
-        ttk.Button(buttons, text="Add Parameter" if param is None else "Save", command=save,
+        ttk.Button(buttons, text="Add Parameter" if param is None else "Rename This Parameter", command=save,
                    style="Action.TButton").pack(side="right")
         ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="left")
         # For tests.
+        window.parts, window.move = parts, move
         window.term_vars, window.name_var, window.long_name, window.new_fields = term_vars, name_var, long_name, new_fields
         window.save = save
         return window
 
-    def _add_param_from_builder(self, name: str, terms: dict, fields: dict):
+    def _add_param_from_builder(self, name: str, terms: dict, fields: dict, name_format):
         """Add the parameter the builder describes. Raises ``ValueError`` if the name can't be used."""
         if not name:
             raise ValueError("Parameter name is required.")
@@ -1960,6 +2005,7 @@ class DDMGUI:
             group_under=fields["group_under"].get() or None,
             instance_param=parse_bool(fields["instance_param"].get()),
         )
+        self.catalog.set_param_name_format(name_format)
         param.set_name_terms(terms)
         return param
 

@@ -45,7 +45,7 @@ LINK_OVERRIDE_COLUMNS = {
 ENTRY_COLUMNS = [
     "family_name", "group_name", "parameter_name", "header_text_override",
     "grid_column_width_override", "hidden", "override_entry", "schedule_filter", "itemize",
-    "view_template", "status", "validation_message",
+    "view_template", "schedule_guid", "status", "validation_message",
 ]
 CSV_COLUMNS = [
     "record_type", "name", "guid", "header_text", "grid_column_width", "dtype", "group_under",
@@ -53,7 +53,7 @@ CSV_COLUMNS = [
     "country", "country_code", "category", "category_code", "category_1", "category_1_code", "category_2",
     "category_2_code", "description", "family_name", "parameter_name", "group_name",
     "header_text_override", "grid_column_width_override", "hidden", "override_entry",
-    "schedule_filter", "itemize", "view_template", "caption",
+    "schedule_filter", "itemize", "view_template", "schedule_guid", "caption",
     "parameter_names", "top_row", "bottom_row",
 ] + PARAM_TERM_COLUMNS
 _CSV_RECORD_TYPES = {
@@ -165,7 +165,7 @@ def _load_params(catalog, rows, issues):
             header_text=None if header_text == name else header_text or None,
             grid_column_width=width,
         )
-        param.set_name_terms({term: _raw_text(row.get(term)) for term in PARAM_TERM_COLUMNS})
+        param.load_name_terms({term: _raw_text(row[term]) for term in PARAM_TERM_COLUMNS if term in row})
 
 
 def _load_families(catalog, family_rows, link_rows, issues):
@@ -258,13 +258,15 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
         entry = schedules.setdefault(schedule_name, {
             # Fields keep the order they first appear in: the schedule's column order.
             "families": [], "fields": {}, "headers": {}, "widths": {}, "values": [], "hidden": set(),
-            "filter": "", "itemize": True, "view_template": "",
+            "filter": "", "itemize": True, "view_template": "", "guid": "",
         })
         # Schedule-wide settings repeat on every row of the schedule; the first one given wins.
         if not entry["filter"]:
             entry["filter"] = text(row.get("schedule_filter"))
         if not entry["view_template"]:
             entry["view_template"] = text(row.get("view_template"))
+        if not entry["guid"]:
+            entry["guid"] = text(row.get("schedule_guid"))
         if text(row.get("itemize")):
             try:
                 entry["itemize"] = entry["itemize"] and parse_bool(row.get("itemize"))
@@ -314,6 +316,7 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
             filter_value=entry["filter"] or None,
             itemize=entry["itemize"],
             view_template=entry["view_template"] or None,
+            guid=entry["guid"] or None,
         )
         for family_name, param_name, value in entry["values"]:
             fam = catalog.get_family(family_name)
@@ -427,6 +430,7 @@ def _schedule_rows(catalog, columns):
             "schedule_filter": _blank(schedule.filter_value),
             "itemize": schedule.itemize,
             "view_template": _blank(schedule.view_template),
+            "schedule_guid": schedule.guid,
             "override_entry": _blank(value),
             "status": schedule.status,
             "validation_message": schedule.validation_message,

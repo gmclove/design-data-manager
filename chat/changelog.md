@@ -2,6 +2,22 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-05: Create GitHub Ticket button
+- On the main toolbar. Opens the repo's new issue page with the app version filled in.
+
+## 2026-11-05: Schedules tracked within a Revit project
+- `Schedule.guid`: stable through renames, saved in JSON and CSV (`schedule_guid`).
+- The macro keeps `GUID|role` to `UniqueId` in Extensible Storage on a `DataStorage` element, and
+  matches untracked schedules by name. A changed name prompts: Use Database Name, Keep Revit Name,
+  Leave Unchanged, Create New Schedule, with Do the Same for the Rest. Compiled against the Revit
+  API; not yet run in Revit.
+
+## 2026-11-05: Parameter Name Builder matches the Family Name Builder
+- Use, Prefix, Suffix and Order per term, in a shared `param_name_format` (JSON; like the family
+  format, not in CSV). Both windows draw their terms with `_build_name_terms_table`.
+- New term Company Code (`IPS`), which was fixed text. A Clarifier with no Descriptor becomes the
+  Descriptor (121 parameters); this happens on load, and every name still builds the same.
+
 ## 2026-11-05: Parameter Name Builder
 - The master workbook's Parameter Name Editor as five terms on `Param`: `IPS_` + Parent Category
   `_` Child Category `_` Descriptor + Clarifier `_` Units (`build_param_name`). Saved in JSON

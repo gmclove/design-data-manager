@@ -62,37 +62,66 @@ DEFAULT_FAMILY_NAME_FORMAT = (
 	{'term': 'category_2', 'use': False, 'prefix': '_', 'suffix': ''},
 )
 
-# The master workbook's parameter naming: IPS_ + Parent Category _ Child Category
-# _ Descriptor + Clarifier _ Units, leaving out blank terms. Nothing separates Descriptor from
-# Clarifier, and terms keep their own underscores and spaces (a Clarifier of "_TermUnit").
-PARAM_NAME_PREFIX = 'IPS_'
+# Parameter names are built like family names, from terms and a shared format. Terms keep their
+# own underscores and spaces (a Clarifier of "_TermUnit").
+PARAM_NAME_COMPANY = 'IPS'
+PARAM_NAME_PREFIX = PARAM_NAME_COMPANY + '_'
 PARAM_NAME_TERMS = (
+	('company_code', 'Company Code'),
 	('parent_category', 'Parent Category'),
 	('child_category', 'Child Category'),
 	('descriptor', 'Descriptor'),
 	('clarifier', 'Clarifier'),
 	('units', 'Units'),
 )
+# The master workbook's naming, e.g. IPS_SPACE_Air_ExhOccMax_CFM. Nothing separates Descriptor
+# from Clarifier.
+DEFAULT_PARAM_NAME_FORMAT = (
+	{'term': 'company_code', 'use': True, 'prefix': '', 'suffix': ''},
+	{'term': 'parent_category', 'use': True, 'prefix': '_', 'suffix': ''},
+	{'term': 'child_category', 'use': True, 'prefix': '_', 'suffix': ''},
+	{'term': 'descriptor', 'use': True, 'prefix': '_', 'suffix': ''},
+	{'term': 'clarifier', 'use': True, 'prefix': '', 'suffix': ''},
+	{'term': 'units', 'use': True, 'prefix': '_', 'suffix': ''},
+)
 # The workbook flags longer names: "LONG NAME DETECTED, CONSIDER SHORTENING".
 PARAM_NAME_LONG_LENGTH = 30
 
 
-def build_param_name(terms):
-	"""The parameter name for ``terms`` (``{term: text}``); ``''`` when every term is blank."""
-	get = lambda term: terms.get(term) or ''  # noqa: E731
-	parts = (
-		get('parent_category'), get('child_category'),
-		get('descriptor') + get('clarifier'), get('units'),
-	)
-	joined = '_'.join(part for part in parts if part)
-	return PARAM_NAME_PREFIX + joined if joined else ''
+def _join_name_terms(name_format, value_of):
+	"""A name from a format: each used, non-blank term with its prefix and suffix, except that
+	the first term in the name has no prefix."""
+	parts = []
+	for part in name_format:
+		value = value_of(part['term'])
+		if part.get('use', True) and value:
+			parts.append((part.get('prefix', '') if parts else '') + value + part.get('suffix', ''))
+	return ''.join(parts)
+
+
+def build_param_name(terms, name_format=None):
+	"""The parameter name for ``terms`` (``{term: text}``); ``''`` when every used term is blank."""
+	return _join_name_terms(name_format or DEFAULT_PARAM_NAME_FORMAT, lambda term: terms.get(term) or '')
+
+
+def upgrade_name_terms(terms):
+	"""Terms in the workbook's shape as this format needs them, building the same name.
+
+	The workbook has no Company Code, and its formula gives a Clarifier without a Descriptor a
+	separator, which a Clarifier has no prefix for, so such a Clarifier becomes the Descriptor.
+	"""
+	upgraded = {term: terms.get(term) or '' for term, _label in PARAM_NAME_TERMS}
+	upgraded['company_code'] = upgraded['company_code'] or PARAM_NAME_COMPANY
+	if not upgraded['descriptor'] and upgraded['clarifier']:
+		upgraded['descriptor'], upgraded['clarifier'] = upgraded['clarifier'], ''
+	return upgraded
 
 
 def split_param_name(name, known_units=()):
 	"""A best guess at the terms that build ``name``, or ``None`` if none can.
 
-	Whatever it guesses always builds exactly ``name``. Units are the longest ending in
-	``known_units``, else a last part in capitals; a Clarifier is never guessed.
+	Whatever it guesses always builds exactly ``name`` in the default format. Units are the
+	longest ending in ``known_units``, else a last part in capitals; a Clarifier is never guessed.
 	"""
 	if not name.startswith(PARAM_NAME_PREFIX) or name == PARAM_NAME_PREFIX:
 		return None
@@ -108,14 +137,14 @@ def split_param_name(name, known_units=()):
 			units, others = ending, others[:index]
 			break
 	terms = {term: '' for term, _label in PARAM_NAME_TERMS}
-	terms.update(parent_category=segments[0], units=units)
+	terms.update(company_code=PARAM_NAME_COMPANY, parent_category=segments[0], units=units)
 	if len(others) == 1:
 		terms['descriptor'] = others[0]
 	elif others:
 		terms.update(child_category=others[0], descriptor='_'.join(others[1:]))
 	if build_param_name(terms) != name:  # e.g. a double underscore mid-name
 		terms = {term: '' for term, _label in PARAM_NAME_TERMS}
-		terms['parent_category'] = rest
+		terms.update(company_code=PARAM_NAME_COMPANY, parent_category=rest)
 	return terms
 
 
@@ -209,6 +238,7 @@ class Param(object):
 
 		old_name = self._name
 		self._name = new_name
+		self._name_terms = None  # they described the old name
 		if not keep_guid:
 			self.guid = str(uuid.uuid4())
 		if self.catalog is not None:
@@ -217,15 +247,15 @@ class Param(object):
 
 	@property
 	def has_name_terms(self):
-		"""Whether terms that build the current name were recorded (a later rename outdates them)."""
-		return self._name_terms is not None and build_param_name(self._name_terms) == self._name
+		"""Whether terms were recorded for the current name (a rename clears them).
+
+		They can build another name once the shared format has changed, as a family's can.
+		"""
+		return self._name_terms is not None
 
 	@property
 	def name_terms(self):
-		"""This parameter's name terms: as recorded, else a guess from its name, else all blank.
-
-		Unless they're all blank, they build exactly this parameter's name.
-		"""
+		"""This parameter's name terms: as recorded, else a guess from its name, else all blank."""
 		if self.has_name_terms:
 			return dict(self._name_terms)
 		known_units = self.catalog.recorded_param_units() if self.catalog is not None else ()
@@ -235,10 +265,19 @@ class Param(object):
 	def set_name_terms(self, terms):
 		"""Record ``terms`` if they build this parameter's name; never renames. Returns whether they did."""
 		cleaned = {term: terms.get(term) or '' for term, _label in PARAM_NAME_TERMS}
-		if build_param_name(cleaned) != self._name:
+		name_format = self.catalog.param_name_format if self.catalog is not None else None
+		if build_param_name(cleaned, name_format) != self._name:
 			return False
 		self._name_terms = cleaned
 		return True
+
+	def load_name_terms(self, terms):
+		"""Restore saved terms, as they were saved. Ones from before Company Code are upgraded."""
+		if not any(terms.values()):
+			return
+		if 'company_code' not in terms:
+			terms = upgrade_name_terms(terms)
+		self._name_terms = {term: terms.get(term) or '' for term, _label in PARAM_NAME_TERMS}
 
 	@property
 	def header_text(self):
@@ -408,8 +447,7 @@ class Param(object):
 			grid_column_width=data.get('grid_column_width', 1.0),
 			catalog=catalog,
 		)
-		if data.get('name_terms'):
-			param.set_name_terms(data['name_terms'])
+		param.load_name_terms(data.get('name_terms') or {})
 		return param
 
 
@@ -734,9 +772,11 @@ class Schedule(object):
 	def __init__(self, name=None, fams=None, header_text_overrides=None,
 				 header_groups=None, grid_column_width_overrides=None, catalog=None,
 				 field_names=None, family_overrides=None, hidden_field_names=None,
-				 filter_value=None, itemize=True, view_template=None):
+				 filter_value=None, itemize=True, view_template=None, guid=None):
 		self._name = None
 		self.catalog = None
+		# Stays the same through renames, so a Revit project can tell which schedule this is.
+		self.guid = _clean_optional(guid) or str(uuid.uuid4())
 		self.name = name
 		self.fams = []
 		self.params = []
@@ -1047,7 +1087,7 @@ class Schedule(object):
 		In a catalog, families are stored by name (the catalog stores them in
 		full). A standalone schedule embeds its families.
 		"""
-		data = {'name': self.name}
+		data = {'name': self.name, 'guid': self.guid}
 		if self.catalog is not None:
 			data['family_names'] = [fam.name for fam in self.fams]
 		else:
@@ -1097,6 +1137,7 @@ class Schedule(object):
 			filter_value=data.get('filter_value'),
 			itemize=data.get('itemize', True),
 			view_template=data.get('view_template'),
+			guid=data.get('guid'),
 		)
 
 	def override_param(self, param_name, **overrides):
@@ -1214,6 +1255,7 @@ class Catalog(object):
 		self.codes = {kind: {} for kind in CODED_KINDS}
 		# How family names are built: [{'term', 'use', 'prefix', 'suffix'}, ...] (FAMILY_NAME_TERMS).
 		self.family_name_format = [dict(part) for part in DEFAULT_FAMILY_NAME_FORMAT]
+		self.param_name_format = [dict(part) for part in DEFAULT_PARAM_NAME_FORMAT]
 
 	# --- lookups ----------------------------------------------------------
 
@@ -1247,6 +1289,10 @@ class Catalog(object):
 			param._name_terms['units'] for param in self.params
 			if param._name_terms is not None and param._name_terms['units']
 		}
+
+	def set_param_name_format(self, name_format):
+		"""Set the shared parameter name format: a list of {'term', 'use', 'prefix', 'suffix'}."""
+		self.param_name_format = self._clean_name_format(name_format, PARAM_NAME_TERMS, 'parameter')
 
 	def param_term_values(self, term):
 		"""The values of name term ``term`` across the catalog's parameters, sorted for a dropdown."""
@@ -1332,11 +1378,15 @@ class Catalog(object):
 
 	def set_family_name_format(self, name_format):
 		"""Set the shared family name format: a list of {'term', 'use', 'prefix', 'suffix'}."""
-		terms = {term for term, _label in FAMILY_NAME_TERMS}
+		self.family_name_format = self._clean_name_format(name_format, FAMILY_NAME_TERMS, 'family')
+
+	@staticmethod
+	def _clean_name_format(name_format, known_terms, kind):
+		terms = {term for term, _label in known_terms}
 		cleaned = []
 		for part in name_format:
 			if part.get('term') not in terms:
-				raise ValueError("Unknown family name term: {}".format(part.get('term')))
+				raise ValueError("Unknown {} name term: {}".format(kind, part.get('term')))
 			cleaned.append({
 				'term': part['term'], 'use': bool(part.get('use', True)),
 				'prefix': str(part.get('prefix') or ''), 'suffix': str(part.get('suffix') or ''),
@@ -1345,19 +1395,17 @@ class Catalog(object):
 		listed = {part['term'] for part in cleaned}
 		cleaned.extend(
 			{'term': term, 'use': False, 'prefix': '', 'suffix': ''}
-			for term, _label in FAMILY_NAME_TERMS if term not in listed
+			for term, _label in known_terms if term not in listed
 		)
-		self.family_name_format = cleaned
+		return cleaned
 
 	def build_family_name(self, fam, name_format=None):
 		"""``fam``'s name from the name format: each used, non-blank term with its prefix and
 		suffix, except that the first term in the name has no prefix."""
-		parts = []
-		for part in name_format or self.family_name_format:
-			value = str(getattr(fam, part['term']) or '').strip()
-			if part.get('use', True) and value:
-				parts.append((part.get('prefix', '') if parts else '') + value + part.get('suffix', ''))
-		return ''.join(parts)
+		return _join_name_terms(
+			name_format or self.family_name_format,
+			lambda term: str(getattr(fam, term) or '').strip(),
+		)
 
 	def remove_schedule(self, name):
 		schedule = self.get_schedule(name)
@@ -1439,6 +1487,9 @@ class Catalog(object):
 	def _register_schedule(self, schedule):
 		if schedule.name is not None:
 			self._check_schedule_name_free(schedule.name)
+		# A shared GUID (a hand-edited file) would make two schedules fight over one Revit schedule.
+		if any(other.guid == schedule.guid for other in self.schedules):
+			schedule.guid = str(uuid.uuid4())
 		schedule.catalog = self
 		self.schedules.append(schedule)
 
@@ -1486,6 +1537,7 @@ class Catalog(object):
 			'schedules': [schedule.to_dict() for schedule in self.schedules],
 			**{key: dict(self.codes[kind]) for kind, key in _CODE_KEYS.items()},
 			'family_name_format': [dict(part) for part in self.family_name_format],
+			'param_name_format': [dict(part) for part in self.param_name_format],
 		}
 
 	@classmethod
@@ -1500,6 +1552,8 @@ class Catalog(object):
 				catalog.set_code(kind, name, code)
 		if data.get('family_name_format'):
 			catalog.set_family_name_format(data['family_name_format'])
+		if data.get('param_name_format'):
+			catalog.set_param_name_format(data['param_name_format'])
 		for param_data in data.get('params', []):
 			Param.from_dict(param_data, catalog=catalog)
 		for fam_data in data.get('families', []):

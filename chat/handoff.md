@@ -46,8 +46,13 @@ folder works.
 - Open questions for the user: the database's country code is USA but family names use US; the
   family window (family Default Values, a family's parameter list) is now unreachable.
 - Imported families have no parameters yet (the workbook doesn't record them).
-- Parameter Name Builder added; every parameter now has recorded name terms.
-- 246 tests; the heading wrap failure is fixed (the test was out of date, not the app). On this
+- Parameter Name Builder added, with the same Use / Prefix / Suffix / Order table as the Family Name
+  Builder (uncommitted); every parameter now has recorded name terms. The database file gets the
+  new term shape at the next Save; loading upgrades it.
+- Don't use Rename All Families yet: see Known issues in [plan.md](plan.md).
+- 253 tests; the heading wrap failure is fixed (the test was out of date, not the app). On this
   machine Tk sometimes fails to start in full runs, failing a random window test; rerun it alone.
   Moving off OneDrive didn't cure it (see [plan.md](plan.md)).
+- Schedule tracking within a project added (uncommitted): see [changelog.md](changelog.md). The
+  rename prompt's four options are my reading of the user's request; confirm them.
 - Top priority is still the real Revit run of the schedule macro, which needs the user.

@@ -34,7 +34,8 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
       `net10.0-windows` on this machine (original kept as `.csproj.bak`). The second machine
       needs the same change once it has 2025.5.
 - [ ] Run it in Revit 2025 on a real project and note what goes wrong (needs the user). Unverified
-      until then: header group row index (`GroupHeaders(0, ...)`, nested groups), whether
+      until then: schedule tracking (Extensible Storage record, rename prompt, whether a
+      workshared `DataStorage` owned by someone else blocks a run), header group row index (`GroupHeaders(0, ...)`, nested groups), whether
       `ClearFields` drops old header groups, multi-category schedulable fields for shared
       parameters, and `IPS_GROUP_Schedule_Name` being schedulable in each category.
 - [x] CSV saves lose column order: no longer true. Checked 2026-11-05: reversing a demo schedule's
@@ -87,6 +88,11 @@ unsaved-changes prompts.
   rename?
 
 ## Known issues
+- The working database's families have no Category 1, Category 2 or their codes (0 of 231; the database
+  was imported before the import read them). The Family Name Builder therefore builds a shortened
+  name for 230 of 231 families, e.g. `IPS-US_Pilot Light` for `IPS-US_CTRL_Device_Pilot Light_2D`, and
+  **Rename All Families to Match** would shorten them all. Fill them from the workbook first,
+  without renaming, as was done for the parameter name terms.
 - On the second machine, Tk sometimes fails to start inside tests ("Can't find a usable
   tk.tcl", "couldn't read file ... panedwindow.tcl: no such file" for a file that exists), so a
   different GUI test can fail on any given run. Rerunning passes. OneDrive is not the (only) cause:

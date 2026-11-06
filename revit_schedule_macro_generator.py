@@ -14,9 +14,16 @@ schedule's view template when it has one.
 
 When it runs, the macro asks (in a Windows Forms dialog) whether to rebuild all
 schedules or the ones picked from a list, and whether to override Revit schedules
-that already have the same name. Overriding updates them in place, so the Revit
-schedules follow the database and keep their place on sheets; otherwise they're
-left as they are.
+that already exist. Overriding updates them in place, so the Revit schedules follow
+the database and keep their place on sheets; otherwise they're left as they are.
+
+The macro keeps each Revit schedule's UniqueId in the project, against the database
+schedule's GUID and which of the three it is. So a schedule renamed in the database
+or in Revit is still found. When its name differs from the database's, the macro asks
+whether to use the database's name, keep the Revit name, leave the schedule unchanged
+or create a new schedule. A Revit schedule not tracked yet is matched by name, then
+tracked from then on. The record belongs to one project: a schedule copied to another
+project is matched by name there.
 
 The generated file is a fixed routine plus a table of schedule data; only the
 data changes from one database to the next.
@@ -32,6 +39,9 @@ MODEL_PREFIX = "3D - "
 # Namespace when no macro module is chosen; copying the file into a module means changing it.
 DEFAULT_NAMESPACE = "RevitMacros"
 WORKING_SUFFIX = " - Working"
+# Extensible Storage schema of the project's record of its schedules. Never change it: projects
+# would lose their record.
+TRACKING_SCHEMA_GUID = "b7d4e2a6-5c1f-4f83-9a2e-6d0c8e3f1a57"
 # Characters Revit doesn't allow in view names.
 INVALID_VIEW_NAME_CHARACTERS = set('\\:{}[]|;<>?`~')
 
@@ -48,7 +58,7 @@ def _csharp_string(value) -> str:
 def schedule_specs(catalog):
     """What the macro builds: ``(specs, notes)``.
 
-    A spec is ``{"name", "filter_value", "itemize", "view_template",
+    A spec is ``{"name", "guid", "filter_value", "itemize", "view_template",
     "columns": [{"parameter", "header", "width_feet", "hidden"}],
     "header_groups": [{"caption", "parameters"}]}``. Notes explain each database schedule
     left out, and are shown in Revit when the macro runs.
@@ -87,6 +97,7 @@ def schedule_specs(catalog):
         header_groups = sorted(schedule.header_groups, key=lambda group: len(group["parameter_names"]))
         specs.append({
             "name": name,
+            "guid": schedule.guid,
             "filter_value": schedule.resolved_filter_value,
             "itemize": schedule.itemize,
             "view_template": schedule.view_template or "",
@@ -101,7 +112,8 @@ def schedule_specs(catalog):
 
 def _spec_source(spec):
     lines = [
-        f"            new DdmSchedule({_csharp_string(spec['name'])}, {_csharp_string(spec['filter_value'])}, "
+        f"            new DdmSchedule({_csharp_string(spec['name'])}, {_csharp_string(spec['guid'])}, "
+        f"{_csharp_string(spec['filter_value'])}, "
         f"{'true' if spec['itemize'] else 'false'}, {_csharp_string(spec['view_template'])},"
     ]
     lines.append("                new[]")
@@ -142,6 +154,7 @@ def generate_schedule_macro_source(catalog, source_name="the database", namespac
         .replace("/*FILTER_PARAMETER*/", _csharp_string(FILTER_PARAMETER))
         .replace("/*MODEL_PREFIX*/", _csharp_string(MODEL_PREFIX))
         .replace("/*WORKING_SUFFIX*/", _csharp_string(WORKING_SUFFIX))
+        .replace("/*TRACKING_SCHEMA*/", TRACKING_SCHEMA_GUID)
         .replace("            /*NOTES*/\n", "".join(line + "\n" for line in note_lines))
         .replace("            /*SCHEDULES*/\n", "".join(line + "\n" for line in data))
     )
@@ -182,6 +195,7 @@ MACRO_TEMPLATE = GENERATED_HEADER + """ from /*SOURCE*/. Saving the database rew
 // don't edit it by hand. Build its macro module in the Macro Manager, then run
 // CreateSchedulesFromDatabase.
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.ExtensibleStorage;
 using Autodesk.Revit.UI;
 using System;
 using System.Collections.Generic;
@@ -200,6 +214,11 @@ namespace /*NAMESPACE*/
         private const string DdmModelPrefix = /*MODEL_PREFIX*/;
         private const string DdmWorkingSuffix = /*WORKING_SUFFIX*/;
 
+        // Which of a database schedule's three Revit schedules this is, in the project's record.
+        private const string DdmModelRole = "Model";
+        private const string DdmWorkingRole = "Working";
+        private const string DdmFinishedRole = "Finished";
+
         // Database schedules the generator left out, and why.
         private static readonly string[] DdmGeneratorNotes =
         {
@@ -216,7 +235,8 @@ namespace /*NAMESPACE*/
         /// multi-category model schedule ("3D - name"), a Detail Items working schedule showing
         /// every column ("name - Working") and a Detail Items schedule with hidden columns
         /// hidden ("name"). A dialog asks which schedules to build and whether to override
-        /// schedules that already exist.
+        /// schedules that already exist. The project records which Revit schedules are which, so
+        /// a rename on either side finds the same schedules, and the macro asks what to do.
         /// </summary>
         public void CreateSchedulesFromDatabase()
         {
@@ -227,7 +247,8 @@ namespace /*NAMESPACE*/
                 return;
             }
 
-            DdmChoice? choice = DdmAskWhatToBuild(doc, MainWindowHandle);
+            var tracker = new DdmTracker(doc);
+            DdmChoice? choice = DdmAskWhatToBuild(doc, tracker, MainWindowHandle);
             if (choice == null)
             {
                 return;
@@ -235,21 +256,27 @@ namespace /*NAMESPACE*/
 
             var created = new List<string>();
             var updated = new List<string>();
+            var renamed = new List<string>();
+            var namePrompt = new DdmNamePrompt();
             var skipped = new List<string>();
             var problems = new List<string>(DdmGeneratorNotes);
             ElementId detailItems = new ElementId(BuiltInCategory.OST_DetailComponents);
 
             foreach (DdmSchedule spec in DdmSchedules.Where(spec => choice.Names.Contains(spec.Name)))
             {
-                DdmBuildSchedule(doc, DdmModelPrefix + spec.Name, ElementId.InvalidElementId, spec, true, choice.OverrideExisting, created, updated, skipped, problems);
-                DdmBuildSchedule(doc, spec.Name + DdmWorkingSuffix, detailItems, spec, false, choice.OverrideExisting, created, updated, skipped, problems);
-                DdmBuildSchedule(doc, spec.Name, detailItems, spec, true, choice.OverrideExisting, created, updated, skipped, problems);
+                DdmBuildSchedule(doc, tracker, namePrompt, DdmModelRole, DdmModelPrefix + spec.Name, ElementId.InvalidElementId, spec, true, choice.OverrideExisting, created, updated, renamed, skipped, problems);
+                DdmBuildSchedule(doc, tracker, namePrompt, DdmWorkingRole, spec.Name + DdmWorkingSuffix, detailItems, spec, false, choice.OverrideExisting, created, updated, renamed, skipped, problems);
+                DdmBuildSchedule(doc, tracker, namePrompt, DdmFinishedRole, spec.Name, detailItems, spec, true, choice.OverrideExisting, created, updated, renamed, skipped, problems);
             }
 
             string message = $"Created {created.Count} schedule(s), updated {updated.Count}.";
+            if (renamed.Count > 0)
+            {
+                message += $"\\n\\nRenamed {renamed.Count} to the database's name:\\n" + DdmShortList(renamed);
+            }
             if (skipped.Count > 0)
             {
-                message += $"\\n\\nLeft {skipped.Count} existing schedule(s) as they were (Override Existing Schedules was off):\\n"
+                message += $"\\n\\nLeft {skipped.Count} existing schedule(s) as they were:\\n"
                     + DdmShortList(skipped);
             }
             if (problems.Count > 0)
@@ -268,15 +295,18 @@ namespace /*NAMESPACE*/
 
         /// <summary>
         /// Ask which schedules to build (all, or those checked in a searchable list) and whether
-        /// to override Revit schedules with the same name. Returns null if the user cancels.
+        /// to override Revit schedules that already exist. Returns null if the user cancels.
         /// </summary>
-        private static DdmChoice? DdmAskWhatToBuild(Document doc, IntPtr owner)
+        private static DdmChoice? DdmAskWhatToBuild(Document doc, DdmTracker tracker, IntPtr owner)
         {
             var inProject = new HashSet<string>(new FilteredElementCollector(doc)
                 .OfClass(typeof(ViewSchedule))
                 .Cast<ViewSchedule>()
                 .Where(view => !view.IsTemplate)
                 .Select(view => view.Name));
+            var alreadyBuilt = new HashSet<string>(DdmSchedules
+                .Where(spec => DdmRevitNames(spec.Name).Any(inProject.Contains) || tracker.HasAny(spec))
+                .Select(spec => spec.Name));
             List<string> names = DdmSchedules.Select(spec => spec.Name).ToList();
             var chosen = new HashSet<string>();
 
@@ -304,7 +334,7 @@ namespace /*NAMESPACE*/
                 AutoSize = true,
                 ForeColor = Drawing.SystemColors.GrayText,
             };
-            var overrideBox = new WinForms.CheckBox { Text = "Override Existing Schedules With the Same Name", Checked = true, AutoSize = true };
+            var overrideBox = new WinForms.CheckBox { Text = "Override Existing Schedules", Checked = true, AutoSize = true };
             var build = new WinForms.Button { DialogResult = WinForms.DialogResult.OK, AutoSize = true };
             var cancel = new WinForms.Button { Text = "Cancel", DialogResult = WinForms.DialogResult.Cancel, AutoSize = true };
 
@@ -346,8 +376,7 @@ namespace /*NAMESPACE*/
                 string[] words = search.Text.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 foreach (string name in names.Where(name => words.All(word => name.ToLowerInvariant().Contains(word))))
                 {
-                    bool exists = DdmRevitNames(name).Any(inProject.Contains);
-                    list.Items.Add(new DdmListItem(name, exists), chosen.Contains(name));
+                    list.Items.Add(new DdmListItem(name, alreadyBuilt.Contains(name)), chosen.Contains(name));
                 }
                 list.EndUpdate();
                 filling = false;
@@ -402,16 +431,47 @@ namespace /*NAMESPACE*/
         }
 
         private static void DdmBuildSchedule(
-            Document doc, string viewName, ElementId categoryId, DdmSchedule spec, bool hideHiddenColumns,
-            bool overrideExisting, List<string> created, List<string> updated, List<string> skipped, List<string> problems)
+            Document doc, DdmTracker tracker, DdmNamePrompt namePrompt, string role, string viewName, ElementId categoryId, DdmSchedule spec, bool hideHiddenColumns,
+            bool overrideExisting, List<string> created, List<string> updated, List<string> renamed, List<string> skipped, List<string> problems)
         {
-            ViewSchedule? existing = new FilteredElementCollector(doc)
+            string key = DdmTracker.Key(spec, role);
+            ViewSchedule? named = new FilteredElementCollector(doc)
                 .OfClass(typeof(ViewSchedule))
                 .Cast<ViewSchedule>()
                 .FirstOrDefault(view => !view.IsTemplate && view.Name == viewName);
+            // The recorded schedule, whatever it's called now; otherwise take over the one with
+            // this name, unless it's recorded as another database schedule's.
+            ViewSchedule? existing = tracker.Find(key);
+            if (existing == null && named != null && !tracker.IsAnothersSchedule(named, key))
+            {
+                existing = named;
+            }
             if (existing != null && !overrideExisting)
             {
-                skipped.Add(viewName);
+                skipped.Add(existing.Name);
+                return;
+            }
+
+            string finalName = viewName;
+            if (existing != null && existing.Name != viewName)
+            {
+                switch (namePrompt.Ask(existing.Name, viewName))
+                {
+                    case DdmNameChoice.LeaveUnchanged:
+                        skipped.Add(existing.Name);
+                        return;
+                    case DdmNameChoice.KeepRevitName:
+                        finalName = existing.Name;
+                        break;
+                    case DdmNameChoice.CreateNew:
+                        // The old schedule stays in the project, no longer tracked.
+                        existing = null;
+                        break;
+                }
+            }
+            if (finalName == viewName && named != null && (existing == null || !named.Id.Equals(existing.Id)))
+            {
+                problems.Add($"{viewName}: another Revit schedule already has this name; left unchanged.");
                 return;
             }
             if (existing != null && !existing.Definition.CategoryId.Equals(categoryId))
@@ -426,9 +486,10 @@ namespace /*NAMESPACE*/
                 {
                     tx.Start();
                     ViewSchedule schedule = existing ?? ViewSchedule.CreateSchedule(doc, categoryId);
-                    if (existing == null)
+                    string oldName = schedule.Name;
+                    if (oldName != finalName)
                     {
-                        schedule.Name = viewName;
+                        schedule.Name = finalName;
                     }
 
                     // A template that controls fields or filters would block the rebuild; reapplied below.
@@ -532,8 +593,13 @@ namespace /*NAMESPACE*/
                         }
                     }
 
+                    tracker.Record(key, schedule);
                     tx.Commit();
-                    (existing == null ? created : updated).Add(viewName);
+                    (existing == null ? created : updated).Add(finalName);
+                    if (existing != null && oldName != finalName)
+                    {
+                        renamed.Add($"{oldName} -> {finalName}");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -553,6 +619,139 @@ namespace /*NAMESPACE*/
                 .Where(field => field.GetName(doc) == parameter)
                 .OrderBy(field => field.FieldType == ScheduleFieldType.Instance ? 0 : 1)
                 .FirstOrDefault();
+        }
+
+        private enum DdmNameChoice
+        {
+            UseDatabaseName,
+            KeepRevitName,
+            LeaveUnchanged,
+            CreateNew,
+        }
+
+        /// <summary>Asks what to do about a schedule whose name differs from the database's.</summary>
+        private sealed class DdmNamePrompt
+        {
+            private DdmNameChoice? _forTheRest;
+
+            public DdmNameChoice Ask(string revitName, string databaseName)
+            {
+                if (_forTheRest != null)
+                {
+                    return _forTheRest.Value;
+                }
+                var dialog = new TaskDialog(DdmTitle)
+                {
+                    MainInstruction = "Schedule Name Has Changed",
+                    MainContent = $"Revit Name: {revitName}\\nDatabase Name: {databaseName}",
+                    VerificationText = "Do the Same for the Rest",
+                    CommonButtons = TaskDialogCommonButtons.Cancel,
+                };
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Use Database Name", "Rename the Revit schedule and update it.");
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Keep Revit Name", "Update the Revit schedule and leave its name.");
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink3, "Leave Unchanged", "Don't change this Revit schedule.");
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink4, "Create New Schedule", "Build a new schedule with the database name. The old one stays, no longer tracked.");
+                TaskDialogResult result = dialog.Show();
+                DdmNameChoice choice = result switch
+                {
+                    TaskDialogResult.CommandLink1 => DdmNameChoice.UseDatabaseName,
+                    TaskDialogResult.CommandLink2 => DdmNameChoice.KeepRevitName,
+                    TaskDialogResult.CommandLink4 => DdmNameChoice.CreateNew,
+                    // Cancel changes nothing.
+                    _ => DdmNameChoice.LeaveUnchanged,
+                };
+                if (result != TaskDialogResult.Cancel && dialog.WasVerificationChecked())
+                {
+                    _forTheRest = choice;
+                }
+                return choice;
+            }
+        }
+
+        /// <summary>
+        /// The project's record of which Revit schedule is which: "database GUID|role" to the
+        /// Revit schedule's UniqueId, in Extensible Storage on one DataStorage element.
+        /// </summary>
+        private sealed class DdmTracker
+        {
+            private const string FieldName = "ScheduleIds";
+            private static readonly Guid SchemaId = new Guid("/*TRACKING_SCHEMA*/");
+
+            private readonly Document _doc;
+            private readonly Dictionary<string, string> _ids = new Dictionary<string, string>();
+            private readonly HashSet<string> _databaseGuids = new HashSet<string>(DdmSchedules.Select(spec => spec.Guid));
+            private DataStorage? _storage;
+
+            public DdmTracker(Document doc)
+            {
+                _doc = doc;
+                Schema? schema = Schema.Lookup(SchemaId);
+                if (schema == null)
+                {
+                    return;
+                }
+                _storage = new FilteredElementCollector(doc)
+                    .OfClass(typeof(DataStorage))
+                    .Cast<DataStorage>()
+                    .FirstOrDefault(element => element.GetEntity(schema).IsValid());
+                if (_storage != null)
+                {
+                    foreach (KeyValuePair<string, string> pair in _storage.GetEntity(schema).Get<IDictionary<string, string>>(FieldName))
+                    {
+                        _ids[pair.Key] = pair.Value;
+                    }
+                }
+            }
+
+            public static string Key(DdmSchedule spec, string role) => spec.Guid + "|" + role;
+
+            /// <summary>The recorded Revit schedule, or null if none or it has been deleted.</summary>
+            public ViewSchedule? Find(string key)
+            {
+                return _ids.TryGetValue(key, out string? id) ? _doc.GetElement(id) as ViewSchedule : null;
+            }
+
+            public bool HasAny(DdmSchedule spec)
+            {
+                return new[] { DdmModelRole, DdmWorkingRole, DdmFinishedRole }.Any(role => Find(Key(spec, role)) != null);
+            }
+
+            /// <summary>
+            /// Whether the record has this Revit schedule under another key of a schedule still in
+            /// the database. Keys of schedules no longer in the database don't count: re-importing
+            /// the workbook gives its schedules new GUIDs, and they take over by name.
+            /// </summary>
+            public bool IsAnothersSchedule(ViewSchedule schedule, string key)
+            {
+                return _ids.Any(pair => pair.Key != key
+                    && pair.Value == schedule.UniqueId
+                    && _databaseGuids.Contains(pair.Key.Split('|')[0]));
+            }
+
+            /// <summary>Record a Revit schedule; needs an open transaction.</summary>
+            public void Record(string key, ViewSchedule schedule)
+            {
+                _ids[key] = schedule.UniqueId;
+                Schema schema = Schema.Lookup(SchemaId) ?? BuildSchema();
+                // Not valid if the transaction that created it was rolled back.
+                if (_storage == null || !_storage.IsValidObject)
+                {
+                    _storage = DataStorage.Create(_doc);
+                }
+                var entity = new Entity(schema);
+                entity.Set<IDictionary<string, string>>(FieldName, _ids);
+                _storage.SetEntity(entity);
+            }
+
+            private static Schema BuildSchema()
+            {
+                var builder = new SchemaBuilder(SchemaId);
+                builder.SetSchemaName("DdmScheduleTracking");
+                builder.SetReadAccessLevel(AccessLevel.Public);
+                builder.SetWriteAccessLevel(AccessLevel.Public);
+                builder.AddMapField(FieldName, typeof(string), typeof(string));
+                return builder.Finish();
+            }
         }
 
         private sealed class DdmChoice
@@ -623,10 +822,11 @@ namespace /*NAMESPACE*/
         private sealed class DdmSchedule
         {
             public DdmSchedule(
-                string name, string filterValue, bool itemize, string viewTemplate,
+                string name, string guid, string filterValue, bool itemize, string viewTemplate,
                 DdmColumn[] columns, DdmHeaderGroup[] headerGroups)
             {
                 Name = name;
+                Guid = guid;
                 FilterValue = filterValue;
                 Itemize = itemize;
                 ViewTemplate = viewTemplate;
@@ -635,6 +835,7 @@ namespace /*NAMESPACE*/
             }
 
             public string Name { get; }
+            public string Guid { get; }
             public string FilterValue { get; }
             public bool Itemize { get; }
             public string ViewTemplate { get; }

@@ -187,9 +187,22 @@ When it runs, the macro asks what to build:
 - **Rebuild All Schedules** (the default) or **Rebuild Selected Schedules**. Pick schedules from
   the list; the search box narrows it, and **Select All** / **Clear** act on the schedules shown.
   Checking a schedule switches to Rebuild Selected. A ✓ marks schedules already in the project.
-- **Override Existing Schedules With the Same Name** (on by default). On, a Revit schedule that
-  already exists is updated in place. Off, it's left as it is, and the summary lists it as left
-  unchanged; only missing schedules are created.
+- **Override Existing Schedules** (on by default). On, a Revit schedule that already exists is
+  updated in place. Off, it's left as it is, and the summary lists it as left unchanged; only
+  missing schedules are created.
+
+The project remembers which Revit schedules the macro built, even after a rename in the database
+or in Revit. When a schedule's Revit name differs from the database name, the macro asks what to
+do with it:
+- **Use Database Name:** rename the Revit schedule and update it.
+- **Keep Revit Name:** update the Revit schedule and leave its name. The macro asks again next run.
+- **Leave Unchanged:** don't change this Revit schedule. Cancel does the same.
+- **Create New Schedule:** build a new schedule with the database name. The old one stays in the
+  project, no longer tracked.
+
+Tick **Do the Same for the Rest** to apply the choice to every other changed name in that run. The
+record belongs to one project: in another project, including a schedule copied there, schedules are
+matched by name.
 
 The dialog uses Windows Forms, so the first Save switches it on in the module's project file
 (`<UseWindowsForms>`, without its automatic `using`s, so names such as `View` don't clash with
@@ -245,17 +258,20 @@ Generic Annotation, ...), and blank for categories used in both (Multi-Category 
 categories share a code; editing it on one family changes it for every family of that category.
 
 **Parameter Name Builder:** one click on a Name on the Parameters tab opens it, and **Add
-Parameter...** opens it to add a new one. It follows the master workbook's Parameter Name Editor:
-
-`IPS_` + Parent Category `_` Child Category `_` Descriptor + Clarifier `_` Units
-
-A blank term is left out with its separator. Nothing separates Descriptor from Clarifier, so a
-Clarifier like `_TermUnit` brings its own underscore. Parent Category, Child Category and Units
-list the values already in use, and typing adds a new one. Names over 30 characters get the
-workbook's long name warning. The **New Name** can be edited before saving.
-- Opening a parameter and saving changes nothing unless a term or the New Name changed. A changed
-  name asks about the GUID, as any parameter rename does. There's no rename-all.
-- A parameter without recorded terms shows a guess from its name, which always rebuilds that name.
+Parameter...** opens it to add a new one. It works like the Family Name Builder below. The terms
+are Company Code, Parent Category, Child Category, Descriptor, Clarifier and Units, each with
+**Use**, a **Prefix**, a **Suffix** and ▲▼ to reorder it, in one format shared by every parameter.
+The default format reproduces the master workbook's names, e.g. `IPS_SPACE_Air_ExhOccMax_CFM`:
+nothing separates Descriptor from Clarifier, so a Clarifier like `_TermUnit` brings its own
+underscore. Parameters have no other place for their terms, so the Values are edited here: Company
+Code, Parent Category, Child Category and Units list the values already in use, and typing adds a
+new one. Names over 30 characters get the workbook's long name warning.
+- **Rename This Parameter** saves the terms and the format, and renames the parameter if the
+  **New Name** differs, asking about the GUID as any parameter rename does. Opening a parameter and
+  saving with nothing changed changes nothing.
+- Changing the format doesn't rename other parameters. There's no rename-all: when a parameter is
+  next opened, the builder shows the name the new format gives it.
+- A parameter without recorded terms shows a guess from its name.
 - A new parameter's Data Type, Default Group Under and Instance or Type are chosen in the builder.
 
 **Family Name Builder:** builds a family's name from its terms: Client Code, Country Code,

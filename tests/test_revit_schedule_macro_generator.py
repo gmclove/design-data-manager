@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from config.app_paths import DEMO_DATA_PATH
-from ddm_tables import catalog_from_tables, read_database_csv
+from ddm_tables import catalog_from_tables, read_database_csv, write_database_csv
 from revit_macro_module import MacroModule, build_module
 from revit_parameter_manager import Catalog
 from revit_schedule_macro_generator import (
@@ -106,16 +106,58 @@ def test_columns_carry_headers_widths_in_feet_and_hidden_flags():
 
 def test_the_macro_asks_what_to_build_and_whether_to_override():
     source = generate_schedule_macro_source(make_catalog())
-    assert "DdmChoice? choice = DdmAskWhatToBuild(doc, MainWindowHandle);" in source
+    assert "DdmChoice? choice = DdmAskWhatToBuild(doc, tracker, MainWindowHandle);" in source
     assert '"Rebuild All Schedules ({names.Count})"' in source
     assert '"Rebuild Selected Schedules:"' in source
-    assert '"Override Existing Schedules With the Same Name", Checked = true' in source
+    assert '"Override Existing Schedules", Checked = true' in source
     assert "DdmSchedules.Where(spec => choice.Names.Contains(spec.Name))" in source
     # With override off, a schedule that already exists is left as it is.
     assert "if (existing != null && !overrideExisting)" in source
     # Windows Forms comes in under an alias, so its names can't clash with Revit's.
     assert "using WinForms = System.Windows.Forms;" in source
     assert "\nusing System.Windows.Forms;" not in source
+
+
+def test_a_schedules_guid_survives_a_rename_and_saving():
+    catalog = make_catalog()
+    schedule = catalog.get_schedule("Mechanical Schedule")
+    guid = schedule.guid
+    schedule.name = "Renamed Schedule"
+    assert schedule.guid == guid
+    assert schedule_specs(catalog)[0][0]["guid"] == guid
+    assert catalog.to_dict()["schedules"][0]["guid"] == guid
+    assert Catalog.from_dict(catalog.to_dict()).schedules[0].guid == guid
+
+
+def test_a_schedules_guid_survives_csv(tmp_path):
+    catalog = make_catalog()
+    guid = catalog.schedules[0].guid
+    path = tmp_path / "database.csv"
+    write_database_csv(catalog, path)
+    tables, header_groups = read_database_csv(path)
+    loaded, _issues = catalog_from_tables(header_groups=header_groups, **tables)
+    assert loaded.schedules[0].guid == guid
+
+
+def test_schedules_in_a_catalog_have_different_guids():
+    catalog = make_catalog()
+    copy = catalog.add_schedule("Other", guid=catalog.schedules[0].guid)
+    assert copy.guid != catalog.schedules[0].guid
+    assert catalog.add_schedule("Third").guid != copy.guid
+
+
+def test_the_macro_tracks_schedules_and_asks_when_a_name_has_changed():
+    catalog = make_catalog()
+    source = generate_schedule_macro_source(catalog)
+    assert f'new DdmSchedule("Mechanical Schedule", "{catalog.schedules[0].guid}", ' in source
+    assert "/*TRACKING_SCHEMA*/" not in source
+    assert "ViewSchedule? existing = tracker.Find(key);" in source
+    assert "tracker.Record(key, schedule);" in source
+    for option in ("Use Database Name", "Keep Revit Name", "Leave Unchanged", "Create New Schedule"):
+        assert f'"{option}"' in source
+    assert '"Do the Same for the Rest"' in source
+    # Asked after the override check, so turning override off never prompts.
+    assert source.index("if (existing != null && !overrideExisting)") < source.index("namePrompt.Ask(")
 
 
 def test_the_macro_goes_in_the_modules_namespace():
@@ -128,7 +170,7 @@ def test_schedule_settings_reach_the_macro():
     specs, _notes = schedule_specs(catalog)
     assert (specs[0]["filter_value"], specs[0]["itemize"], specs[0]["view_template"]) == (
         "Mechanical Schedule", True, "")
-    assert 'new DdmSchedule("Mechanical Schedule", "Mechanical Schedule", true, "",' in (
+    assert f'new DdmSchedule("Mechanical Schedule", "{catalog.schedules[0].guid}", "Mechanical Schedule", true, "",' in (
         generate_schedule_macro_source(catalog))
 
     schedule = catalog.schedules[0]
@@ -136,7 +178,7 @@ def test_schedule_settings_reach_the_macro():
     schedule.itemize = False
     schedule.view_template = "IPS Schedules"
     source = generate_schedule_macro_source(catalog)
-    assert 'new DdmSchedule("Mechanical Schedule", "MECH", false, "IPS Schedules",' in source
+    assert f'new DdmSchedule("Mechanical Schedule", "{schedule.guid}", "MECH", false, "IPS Schedules",' in source
     assert "definition.IsItemized = spec.Itemize;" in source
     assert "ScheduleFilterType.Equal, spec.FilterValue" in source
     assert "schedule.ViewTemplateId = template.Id;" in source
