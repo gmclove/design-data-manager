@@ -21,6 +21,10 @@ folder works.
   (pandas 3.0.6, numpy 2.5.3, PyInstaller 6.22.3); no `.exe` has been built with it yet. The beta
   `.exe` was kept in this repo's ignored `dist/`.
 
+## Design criteria
+Read "Design criteria" at the top of [decisions.md](decisions.md) before designing anything. The main
+one: stay away from project parameters, and add parameters to families instead.
+
 ## Machines
 - **First machine:** pushes over SSH; commits authored as George.
 - **Second machine** (Windows, OneDrive path, HTTPS remote): commits before 2026-11-01's

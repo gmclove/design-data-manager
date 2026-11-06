@@ -3,6 +3,19 @@
 Design decisions and the reasons for them. Append new ones; if one is reversed, mark it
 superseded rather than deleting it.
 
+## Design criteria
+Standing rules that every design has to meet. Check new work against them.
+- **Stay away from project parameters as much as possible** (user, 2026-11-06). Parameters belong in
+  families, for two reasons:
+  - **Control of formulas:** the database has to stay in control of each parameter's formula.
+  - **A usable Properties palette:** a project parameter shows on every family in its categories.
+    Enough of them crowd the palette of all families until it's a useless interface.
+
+  So the macro doesn't bind shared parameters to the project, even behind an option. A column that
+  can't be scheduled because a parameter is missing is reported, and the fix is to add that parameter
+  to the families that need it. Anything that would add a project parameter needs the user's approval
+  first, for that specific case.
+
 ## Model
 - **Model objects are the source of truth; the GUI should be a view on them.** The `Catalog`
   object owns params, families and schedules (no more class-level `_instances` registries).

@@ -79,6 +79,10 @@ unsaved-changes prompts.
 - [ ] Richer validation: units and data types in formulas (Length × Length = Area), circular
       references, naming conventions such as the `IPS_` prefix.
 - [ ] Recheck: demo data linking families to parameters that don't exist (`RValue`, `FinishCode`).
+- [ ] Add missing parameters to families, not the project (design criterion, see
+      [decisions.md](decisions.md)). On `2025.11.17_smart-workflow`, 576 parameters (818 columns) can't
+      be scheduled, in all three Revit schedules; all 576 are in the shared parameter file. Needs
+      families linked to their parameters first (under Beta).
 - [ ] Long term: push parameters into families and audit families against the catalog from Revit
       (pyRevit or an add-in); real storage (SQLite, or Quickbase as system of record) with change
       history and multi-user editing; a web UI instead of Tkinter if other people will use it.
