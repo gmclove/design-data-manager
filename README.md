@@ -335,6 +335,10 @@ Value, and a Family Default Value beats the Parameter Default Value. If you clea
 - **Shaded value cell:** doesn't apply, because the family doesn't have that parameter. In a
   schedule, an **Add Parameter to Family** button adds the missing parameter to the family, and
   **Add All Parameters** under the family's name adds every column it's missing at once.
+- **Column Width (in)** (Schedule Builder, Schedule section): this column's width in this schedule
+  only. It's gray while it's the parameter's; clear it to go back to that.
+- **Default Column Width (in)** (Schedule Builder, Parameter section): the parameter's own width, used
+  by every schedule that doesn't set its own.
 - **Default Header** (schedule window, Parameter section): the parameter's own header text, which
   a column uses unless the schedule overrides it (double-click the column header). Gray means
   the parameter has none, so the header is its name.

@@ -2,6 +2,11 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-06: Schedule Builder
+- The schedule window is now titled Schedule Builder.
+- Column Width (in) row in the Schedule section (this schedule's override; gray when inherited) and
+  Default Column Width (in) in the Parameter section (the parameter's own, for every schedule).
+
 ## 2026-11-05: Shared table view template
 - `table_view.py`: `DEFAULT_TABLE_VIEW` holds the settings for all tables. Bigger heading font,
   click a header to sort (ascending, descending, back to the table's order), columns fitted to their

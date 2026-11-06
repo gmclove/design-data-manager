@@ -182,6 +182,8 @@ class OverrideTable(tk.Canvas):
     rows are the schedule's header groups (Group Level N ... 1) and column headers.
     With ``hidden_names`` (a set) a Hidden Column row of checkboxes follows the
     column headers; clicking one calls ``on_hidden_toggle(parameter_name)``.
+    With ``width_cells`` (one cell per column) a Column Width row follows that;
+    clicking one calls ``on_width_click(column_index)``.
 
     Clicking a column header, or a cell in a row with ``"selects_column"``, selects
     that column; clicking a family's labels selects the family. Ctrl adds to the
@@ -201,7 +203,7 @@ class OverrideTable(tk.Canvas):
     """
 
     section_width = 150
-    label_width = 140
+    label_width = 170
     row_height = 24
     # Screen pixels per inch of Revit grid column width, and the narrowest readable column.
     pixels_per_inch = 72
@@ -210,7 +212,7 @@ class OverrideTable(tk.Canvas):
     def __init__(self, master, parameter_names, header_texts=None, groups=None, rows=None,
                  show_header=True, on_header_double_click=None, on_cell_double_click=None,
                  grid_column_widths=None, on_cell_action=None, hidden_names=None, on_hidden_toggle=None,
-                 edit_on_click=False, on_family_action=None):
+                 edit_on_click=False, on_family_action=None, width_cells=None, on_width_click=None):
         super().__init__(master, background="#ffffff", highlightthickness=0)
         self.parameter_names = list(parameter_names)
         self.header_texts = dict(header_texts or {})
@@ -231,6 +233,8 @@ class OverrideTable(tk.Canvas):
         self._family_action_boxes = {}
         self.hidden_names = None if hidden_names is None else set(hidden_names)
         self.on_hidden_toggle = on_hidden_toggle
+        self.width_cells = None if width_cells is None else list(width_cells)
+        self.on_width_click = on_width_click
         self.column_width = 170
         self.column_widths = []
         self.column_offsets = []
@@ -262,8 +266,16 @@ class OverrideTable(tk.Canvas):
         return self.row_height if self.show_header and self.hidden_names is not None else 0
 
     @property
-    def body_top(self):
+    def width_row_top(self):
         return self.hidden_row_top + self.hidden_row_height
+
+    @property
+    def width_row_height(self):
+        return self.row_height if self.show_header and self.width_cells is not None else 0
+
+    @property
+    def body_top(self):
+        return self.width_row_top + self.width_row_height
 
     def set_grid_column_widths(self, widths_in_inches):
         self.column_widths = [
@@ -324,6 +336,10 @@ class OverrideTable(tk.Canvas):
         self.hidden_names = set(hidden_names)
         self._draw_grid()
 
+    def set_width_cells(self, width_cells):
+        self.width_cells = list(width_cells)
+        self._draw_grid()
+
     def get_selected_parameter_names(self):
         return [
             self.parameter_names[index]
@@ -375,7 +391,15 @@ class OverrideTable(tk.Canvas):
         """The column whose Hidden Column checkbox is under the event, or ``None``."""
         if not self.hidden_row_height:
             return None
-        if not self.hidden_row_top <= self.canvasy(event.y) < self.body_top:
+        if not self.hidden_row_top <= self.canvasy(event.y) < self.width_row_top:
+            return None
+        return self._column_at(self.canvasx(event.x))
+
+    def _width_cell_at(self, event):
+        """The column whose Column Width cell is under the event, or ``None``."""
+        if not self.width_row_height:
+            return None
+        if not self.width_row_top <= self.canvasy(event.y) < self.body_top:
             return None
         return self._column_at(self.canvasx(event.x))
 
@@ -399,16 +423,26 @@ class OverrideTable(tk.Canvas):
             self.row_height,
         )
 
+    def width_cell_bbox(self, column_index: int):
+        """``(left, top, width, height)`` of a Column Width cell in canvas coordinates."""
+        return (
+            self.column_offsets[column_index],
+            self.width_row_top,
+            self.column_widths[column_index],
+            self.width_row_height,
+        )
+
     def start_cell_edit(self, row_index: int, column_index: int, value: str, on_commit,
-                        placeholder: str = "", choices=None, on_tab=None):
+                        placeholder: str = "", choices=None, on_tab=None, bbox=None):
         """Edit one body cell in place, with a box laid over the cell.
 
         Enter, Tab or clicking elsewhere commits and calls ``on_commit(text)``;
         Escape cancels. Tab then calls ``on_tab()`` to move on. With ``choices`` the
-        box is a drop-down whose blank first entry clears the value.
+        box is a drop-down whose blank first entry clears the value. ``bbox`` places
+        the box over a cell outside the body.
         """
         self.finish_cell_edit(commit=True)
-        left, top, width, height = self.cell_bbox(row_index, column_index)
+        left, top, width, height = bbox or self.cell_bbox(row_index, column_index)
         if choices is not None:
             editor = ttk.Combobox(self, values=["", *choices], state="readonly")
             editor.set(value)
@@ -467,6 +501,11 @@ class OverrideTable(tk.Canvas):
         if toggle is not None:
             if self.on_hidden_toggle is not None:
                 self.on_hidden_toggle(self.parameter_names[toggle])
+            return
+        width_cell = self._width_cell_at(event)
+        if width_cell is not None:
+            if self.on_width_click is not None:
+                self.on_width_click(width_cell)
             return
         family = self._family_at(event)
         if family is not None:
@@ -607,6 +646,21 @@ class OverrideTable(tk.Canvas):
 
         if self.hidden_row_height:
             self._draw_hidden_row()
+        if self.width_row_height:
+            self._draw_width_row()
+
+    def _draw_width_row(self):
+        top = self.width_row_top
+        height = self.width_row_height
+        self._label_cell(self.section_width, top, self.label_width, height, "Column Width (in)")
+        for index, cell in enumerate(self.width_cells):
+            left = self.column_offsets[index]
+            self.create_rectangle(left, top, left + self.column_widths[index], top + height,
+                                  fill="#ffffff", outline="#c8d2ce")
+            self.create_text(
+                left + 6, top + height / 2, text=cell["text"], anchor="w", font=self.body_font,
+                fill="#9ca3af" if cell["state"] == "inherited" else "#111827",
+            )
 
     def _draw_hidden_row(self):
         top = self.hidden_row_top
@@ -2311,9 +2365,9 @@ class DDMGUI:
     def _parameter_table_rows(self, parameter_names: Sequence[str], families, schedule_window: bool = False) -> List[dict]:
         """The Parameter section: each column's name and Parameter Default values.
 
-        In the schedule window (``schedule_window``) a Default Header row follows the
-        name (the parameter's own header text, in gray when it's just the name), and
-        the cells edit the parameter itself; elsewhere they're read-only.
+        In the schedule window (``schedule_window``) Default Header (the parameter's own
+        header text, in gray when it's just the name) and Default Column Width rows follow
+        the name, and the cells edit the parameter itself; elsewhere they're read-only.
         """
         definitions = [
             self.catalog.get_param(name)
@@ -2337,6 +2391,17 @@ class DDMGUI:
                 "cells": [
                     self._table_cell(None) if param is None else self._table_cell(
                         param.header_text, "set" if param._header_text is not None else "inherited", editable(param)
+                    )
+                    for param in definitions
+                ],
+            })
+            rows.append({
+                "section": "",
+                "label": self._display_labels["grid_column_width"],
+                "param_field": "grid_column_width",
+                "cells": [
+                    self._table_cell(None) if param is None else self._table_cell(
+                        f"{param.grid_column_width:g}", editable=editable(param)
                     )
                     for param in definitions
                 ],
@@ -2521,7 +2586,8 @@ class DDMGUI:
 
         A family's cell is bold when the schedule or the family sets its own value; the
         Parameter cell when a family falls back to the parameter's (or no family has the
-        column). The Default Header is bold unless the schedule overrides the header.
+        column). The Default Header and Default Column Width are bold unless the schedule
+        overrides them.
         """
         families_with = {
             name: [fam for fam in schedule.fams if name in schedule.family_param_names(fam)]
@@ -2535,6 +2601,8 @@ class DDMGUI:
                     continue
                 if field == "header_text":
                     cell["bold"] = name not in schedule.header_text_overrides
+                elif field == "grid_column_width":
+                    cell["bold"] = name not in schedule.grid_column_width_overrides
                 elif field and field != "name":
                     attribute = next(a for a, f in self._parameter_row_fields.items() if f == field)
                     families = families_with[name]
@@ -2566,8 +2634,8 @@ class DDMGUI:
         """Edit one table cell in place; on commit, run the override prompt and refresh.
 
         Tab moves on to the next editable cell in the row. A Parameter section cell
-        edits the parameter itself; a change to its name or Default Header calls
-        ``on_columns_changed()`` (the column headers need redrawing) instead.
+        edits the parameter itself; a change to its name, Default Header or Default Column
+        Width calls ``on_columns_changed()`` (the columns need redrawing) instead.
         """
         row = table.rows[row_index]
         if not row["cells"][column_index].get("editable"):
@@ -2655,7 +2723,7 @@ class DDMGUI:
             except ValueError as exc:
                 messagebox.showerror("Invalid value", str(exc), parent=table.winfo_toplevel())
                 return
-            if field in ("name", "header_text") and on_columns_changed is not None:
+            if field in ("name", "header_text", "grid_column_width") and on_columns_changed is not None:
                 on_columns_changed()
             else:
                 table.set_rows(rows_builder())
@@ -2743,6 +2811,49 @@ class DDMGUI:
         if hidden is not None:
             schedule.set_field_hidden(parameter_name, hidden)
         self.validate_all()
+
+    def _schedule_width_cells(self, schedule, parameter_names: Sequence[str]) -> List[dict]:
+        """The Column Width row: each column's width here, in gray when it's the parameter's."""
+        return [
+            self._table_cell(
+                f"{self._get_schedule_grid_column_width(schedule, name):g}",
+                "set" if name in schedule.grid_column_width_overrides else "inherited",
+                True,
+            )
+            for name in parameter_names
+        ]
+
+    def _edit_schedule_width(self, table: "OverrideTable", schedule, column_index: int, on_changed):
+        """Edit a column's width in this schedule in place. Blank goes back to the parameter's."""
+        parameter_name = table.parameter_names[column_index]
+        override = schedule.grid_column_width_overrides.get(parameter_name)
+        current = "" if override is None else f"{override:g}"
+
+        def commit(text):
+            if cell_text(text) == current:
+                return
+            try:
+                self._set_schedule_column(
+                    schedule.name, parameter_name, schedule.header_text_overrides.get(parameter_name, ""), text,
+                )
+            except ValueError as exc:
+                messagebox.showerror("Invalid value", str(exc), parent=table.winfo_toplevel())
+                return
+            on_changed()
+
+        def edit_next():
+            if column_index + 1 < len(table.parameter_names):
+                self._edit_schedule_width(table, schedule, column_index + 1, on_changed)
+
+        return table.start_cell_edit(
+            None,
+            column_index,
+            current,
+            commit,
+            placeholder="Blank Uses Parameter Default Column Width",
+            on_tab=edit_next,
+            bbox=table.width_cell_bbox(column_index),
+        )
 
     def _set_schedule_column_hidden(self, schedule_name: str, parameter_name: str, hidden: bool):
         """Hide a column in the finished Revit schedule; the working schedule still shows it."""
@@ -3282,7 +3393,7 @@ class DDMGUI:
             return
 
         form = tk.Toplevel(self.root)
-        form.title(f"Schedule Details: {selected_name}")
+        form.title(f"Schedule Builder: {selected_name}")
         form.transient(self.root)
         form.grab_set()
         form.geometry(view["geometry"] if view else "1040x840")
@@ -3369,9 +3480,7 @@ class DDMGUI:
                     return
                 table.set_header_texts(header_texts())
                 table.set_hidden_names(schedule.hidden_field_names)
-                table.set_grid_column_widths([
-                    self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
-                ])
+                refresh_widths()
                 editor.destroy()
 
             buttons = ttk.Frame(editor)
@@ -3383,6 +3492,13 @@ class DDMGUI:
 
         def header_texts():
             return {name: self._get_schedule_header_text(schedule, name) for name in parameter_names}
+
+        def refresh_widths():
+            table.width_cells = self._schedule_width_cells(schedule, parameter_names)
+            table.set_rows(rows_builder())  # the Default Column Width's bold follows the override
+            table.set_grid_column_widths([
+                self._get_schedule_grid_column_width(schedule, name) for name in parameter_names
+            ])
 
         def toggle_hidden(parameter_name):
             self._set_schedule_column_hidden(
@@ -3400,6 +3516,8 @@ class DDMGUI:
             on_header_double_click=edit_schedule_header,
             hidden_names=schedule.hidden_field_names,
             on_hidden_toggle=toggle_hidden,
+            width_cells=self._schedule_width_cells(schedule, parameter_names),
+            on_width_click=lambda column_index: self._edit_schedule_width(table, schedule, column_index, refresh_widths),
             edit_on_click=True,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
                 table, rows_builder, selected_name, row_index, column_index,

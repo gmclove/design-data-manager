@@ -1104,6 +1104,93 @@ def fake_table(rows, parameter_names):
     return table
 
 
+def test_schedule_builder_default_column_width_edits_the_parameter_everywhere():
+    gui = three_family_gui()
+    schedule = gui.catalog.get_schedule("S1")
+    param = gui.catalog.get_param("Width")
+    rows_builder = lambda: gui._schedule_table_rows(schedule)  # noqa: E731
+    rows = rows_builder()
+    labels = [row["label"] for row in rows]
+    assert labels.index("Default Column Width (in)") == labels.index("Default Header") + 1
+    width_cells = cells(rows, "Default Column Width (in)", "Parameter")
+    assert all(state == "set" and is_editable for _text, state, is_editable in width_cells)
+
+    changed = []
+    table = fake_table(rows_builder(), [p.name for p in schedule.params])
+    table.typed = "2.5"
+    row = next(i for i, r in enumerate(table.rows) if r["label"] == "Default Column Width (in)")
+    column = table.parameter_names.index("Width")
+    gui._edit_table_cell(table, rows_builder, "S1", row, column, on_columns_changed=lambda: changed.append("columns"))
+    assert param.grid_column_width == 2.5
+    assert changed == ["columns"]  # the columns are drawn at their width, so the window reopens
+    assert gui._get_schedule_grid_column_width(schedule, "Width") == 2.5
+
+    table.typed = "wide"
+    errors = []
+    original = gui_module.messagebox.showerror
+    gui_module.messagebox.showerror = lambda title, message, **_kw: errors.append(message)
+    try:
+        gui._edit_table_cell(table, rows_builder, "S1", row, column, on_columns_changed=lambda: changed.append("columns"))
+    finally:
+        gui_module.messagebox.showerror = original
+    assert errors and param.grid_column_width == 2.5
+
+
+def test_schedule_builder_column_width_row_sets_this_schedule_only(monkeypatch):
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = gui.catalog.schedules[0]
+        name = schedule.params[0].name
+        default = schedule.params[0].grid_column_width
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        form = find_window(root, f"Schedule Builder: {schedule.name}")
+        table = next(widget for widget in descendants(form) if isinstance(widget, OverrideTable))
+
+        # Grey, the parameter's width, until the schedule sets its own.
+        assert (table.width_cells[0]["text"], table.width_cells[0]["state"]) == (f"{default:g}", "inherited")
+        default_row = next(row for row in table.rows if row.get("param_field") == "grid_column_width")
+        assert default_row["cells"][0]["bold"] is True
+
+        def click_width():
+            table._on_mouse_down(SimpleNamespace(
+                x=table.column_offsets[0] + 10, y=table.width_row_top + table.width_row_height // 2, state=0,
+            ))
+            assert table.get_selected_parameter_names() == []  # a click here doesn't select the column
+            return table._cell_editor[0]
+
+        editor = click_width()
+        editor.insert(0, "3.5")
+        table.finish_cell_edit()
+
+        assert schedule.grid_column_width_overrides == {name: 3.5}
+        assert gui.catalog.get_param(name).grid_column_width == default  # the parameter is untouched
+        assert (table.width_cells[0]["text"], table.width_cells[0]["state"]) == ("3.5", "set")
+        assert table.column_widths[0] == 3.5 * table.pixels_per_inch
+        default_row = next(row for row in table.rows if row.get("param_field") == "grid_column_width")
+        assert default_row["cells"][0]["bold"] is False
+
+        # Blank goes back to the parameter's width.
+        editor = click_width()
+        assert editor.get() == "3.5"
+        editor.delete(0, tk.END)
+        table.finish_cell_edit()
+        assert schedule.grid_column_width_overrides == {}
+        assert table.width_cells[0]["state"] == "inherited"
+
+        # A bad width changes nothing.
+        errors = []
+        monkeypatch.setattr(gui_module.messagebox, "showerror", lambda title, message, **_kw: errors.append(message))
+        editor = click_width()
+        editor.insert(0, "wide")
+        table.finish_cell_edit()
+        assert errors and schedule.grid_column_width_overrides == {}
+    finally:
+        root.destroy()
+
+
 def test_schedule_window_parameter_section_edits_the_parameter_itself(monkeypatch):
     gui = three_family_gui()
     schedule = gui.catalog.get_schedule("S1")
@@ -1558,7 +1645,7 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
 
         gui._open_detail_window("schedule", "Schedule A")
         root.update()
-        schedule_popup = find_window(root, "Schedule Details: Schedule A")
+        schedule_popup = find_window(root, "Schedule Builder: Schedule A")
         table = next(widget for widget in descendants(schedule_popup) if isinstance(widget, OverrideTable))
         assert table.parameter_names == ["Length", "Width"]
 
@@ -1581,7 +1668,7 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
 
         # The Hidden Column row under the headers toggles a column with one click.
         hidden_row_y = table.hidden_row_top + table.hidden_row_height // 2
-        assert table.body_top == table.hidden_row_top + table.row_height
+        assert table.body_top == table.hidden_row_top + 2 * table.row_height  # Hidden Column, Column Width
         table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 10, y=hidden_row_y, state=0))
         assert schedule.hidden_field_names == {"Length", "Width"}
         table._on_mouse_down(SimpleNamespace(x=table.column_offsets[1] + 10, y=hidden_row_y, state=0))
@@ -1868,7 +1955,7 @@ def test_override_windows_have_an_override_rules_button(tmp_path, monkeypatch):
     try:
         gui = DDMGUI(root)
         windows = [("family", 0, "Family Details"),
-                   ("schedule", gui.catalog.schedules[0].name, f"Schedule Details: {gui.catalog.schedules[0].name}")]
+                   ("schedule", gui.catalog.schedules[0].name, f"Schedule Builder: {gui.catalog.schedules[0].name}")]
         for item_type, key, title in windows:
             gui._open_detail_window(item_type, key)
             root.update()
@@ -2129,7 +2216,7 @@ def test_schedule_settings_box_saves_filter_itemize_and_view_template(tmp_path, 
         schedule = gui.catalog.schedules[0]
         gui._open_detail_window("schedule", schedule.name)
         root.update()
-        form = find_window(root, f"Schedule Details: {schedule.name}")
+        form = find_window(root, f"Schedule Builder: {schedule.name}")
         box = next(w for w in descendants(form) if isinstance(w, ttk.LabelFrame) and w.cget("text") == "Schedule Settings")
         labels = [w.cget("text") for w in descendants(box) if isinstance(w, ttk.Label)]
         assert labels == ["Schedule Filter", "IPS_GROUP_Schedule_Name =", "View Template"]
@@ -2157,7 +2244,7 @@ def test_schedule_settings_box_saves_filter_itemize_and_view_template(tmp_path, 
 
 def schedule_window_parts(root, schedule):
     """The open schedule window's table and its Add/Remove buttons bar."""
-    form = find_window(root, f"Schedule Details: {schedule.name}")
+    form = find_window(root, f"Schedule Builder: {schedule.name}")
     table = next(w for w in descendants(form) if isinstance(w, gui_module.OverrideTable))
     bar = next(w for w in descendants(form) if hasattr(w, "remove_families"))
     return table, bar
@@ -2372,7 +2459,7 @@ def test_schedule_window_title_renames_the_schedule(tmp_path, monkeypatch):
         root.update()
 
         def name_entry(name):
-            form = find_window(root, f"Schedule Details: {name}")
+            form = find_window(root, f"Schedule Builder: {name}")
             return next(w for w in descendants(form) if hasattr(w, "rename"))
 
         entry = name_entry(old_name)
