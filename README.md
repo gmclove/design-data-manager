@@ -314,6 +314,49 @@ It's only a column: no family holds it, it isn't in the shared parameter file, a
   parameter with no parts left shows an error. Deleting a combined parameter takes it out of every schedule
   and section.
 
+## Scrolling, Copy and Paste
+
+- **Mouse wheel:** scrolls the table or list under the pointer, including the Schedule Builder's
+  grid and the section window's schedule list. Hold Shift to scroll sideways.
+- **Schedule Builder, family and section windows:** click a cell, then Ctrl+C copies it. With
+  column headers selected, it copies their parameter names. Ctrl+V pastes into the clicked cell
+  as if you had typed it there, so the usual prompts and checks apply; a formula cell opens the
+  Formula Builder with the pasted text. From a block copied in Excel, only the first value is used.
+- **Main tabs:** Ctrl+C copies the clicked cell, or the selected rows (tab-separated, ready for
+  Excel) when several are selected. On the Parameters and Families tabs, Ctrl+V pastes into the
+  clicked cell.
+- **Right-click** a cell for Copy and Paste (and Copy Rows on the main tabs).
+- Pasting into an empty box replaces its gray hint.
+
+## Formula Builder
+
+Clicking a formula anywhere (the Default Formula column on the Parameters tab, or a Default
+Formula row in a schedule or family window) opens the **Formula Builder**:
+
+- Type the formula, or double-click a parameter or function to insert it at the cursor. The
+  operator buttons insert `+ - * / ^ = < > & ( ) ,` and **"Text"** a pair of quotation marks.
+- In a family's row, the list offers that family's parameters; in Apply to All Families, the
+  parameters of every family in the schedule.
+- It checks the formula as you type and lists what's wrong. **Save** is only available for a valid
+  formula: correct syntax, only real parameters, not the parameter itself, text (quotation marks or
+  `&`) only in a Text parameter's formula, for a family, only parameters the family has, and no
+  loop (A uses B and B uses A, checked with the family's own formulas in a family row).
+- A blank formula is allowed: Save clears it. **Clear** empties the box; **Cancel** changes nothing.
+
+## Deleting
+
+- **Parameters tab, Delete Parameters...:** deletes the selected parameters from the database. The
+  question lists the families, schedules, sections and combined parameters that lose them, and the
+  formulas that use them (which then show an error). Revit keeps the shared parameter where it's
+  already loaded.
+- **Families tab, Delete Families...:** deletes the selected families and takes them off their
+  schedules. **Remove Parameters From Family...** picks parameters to take out of the selected
+  family; they stay in the database, and the family's Default Values for them go.
+- **Schedules tab, Delete Schedules...:** the macro stops making them; schedules it already made
+  stay in Revit until deleted there.
+- Changing a parameter's **Data Type** asks first: Revit ties a shared parameter's GUID to its data
+  type, so the parameter gets a new GUID.
+
 ## Families: Codes and Names
 
 On the Families tab, one click on a cell edits it in place; one click on a **Name** opens the Family

@@ -834,3 +834,37 @@ def test_duplicate_schedule_copies_everything_under_a_new_name_and_guid():
 		catalog.duplicate_schedule('Fan', '  ')
 	with pytest.raises(ValueError, match='not found'):
 		catalog.duplicate_schedule('Nope', 'Other')
+
+
+# --- formula loops ------------------------------------------------------------
+
+def test_formula_issues_reports_a_loop(catalog):
+	catalog.add_param('A', 'Length', formula='B * 2')
+	catalog.add_param('B', 'Length', formula='C + 1')
+	catalog.add_param('C', 'Length')
+
+	assert catalog.formula_issues('A / 2', 'C') == ['Formulas go round in a loop: C → A → B → C.']
+	assert catalog.formula_issues('B / 2', 'A') == []
+
+
+def test_formula_issues_uses_the_familys_own_formulas(catalog):
+	catalog.add_param('A', 'Length')
+	catalog.add_param('B', 'Length')
+	fam = catalog.add_family('F', ['A', 'B'])
+	fam.override_param('B', formula='A * 2')
+
+	assert catalog.formula_issues('B', 'A') == []
+	assert catalog.formula_issues('B', 'A', families=[fam]) == [
+		"Formulas go round in a loop: A → B → A in family 'F'."]
+
+
+def test_family_validation_reports_a_loop(catalog):
+	catalog.add_param('A', 'Length', formula='B')
+	catalog.add_param('B', 'Length')
+	fam = catalog.add_family('F', ['A', 'B'])
+	fam.override_param('B', formula='A + 1')
+
+	fam.validate()
+
+	assert fam.status == 'Error'
+	assert 'Formulas go round in a loop: A → B → A.' in fam.validation_message

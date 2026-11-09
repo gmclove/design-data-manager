@@ -55,7 +55,9 @@ one: stay away from project parameters, and add parameters to families instead.
 - Parameter Name Builder added, with the same Use / Prefix / Suffix / Order table as the Family Name
   Builder (uncommitted); every parameter now has recorded name terms. The database file gets the
   new term shape at the next Save; loading upgrades it.
-- Don't use Rename All Families yet: see Known issues in [plan.md](plan.md).
+- Rename All Families would now only rename 2 families: see Known issues in [plan.md](plan.md).
+- 2026-11-09: HUM fixed, Basis Of Design on all 92 schedules, family categories filled (live database; see
+  [changelog.md](changelog.md)). Quickbase is the lowest priority (user).
 - 253 tests; the heading wrap failure is fixed (the test was out of date, not the app). On this
   machine Tk sometimes fails to start in full runs, failing a random window test; rerun it alone.
   Moving off OneDrive didn't cure it (see [plan.md](plan.md)).

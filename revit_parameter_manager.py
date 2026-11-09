@@ -582,10 +582,25 @@ class Fam(object):
 
 		issues.extend(self._validate_formula_overrides())
 		issues.extend(self._validate_formula_references(self.resolved_params()))
+		issues.extend(self._validate_formula_loops())
 		if issues:
 			self.status = 'Error'
 			self.validation_message = '; '.join(issues)
 		return self
+
+	def _validate_formula_loops(self):
+		"""Formulas that, with this family's overrides, end up using themselves."""
+		formulas = {param.name: param.formula for param in self.resolved_params()}
+		known_names = self.known_names()
+		issues, looped = [], set()
+		for name in sorted(formulas):
+			if name in looped or not formulas[name]:
+				continue
+			loop = find_formula_loop(formulas, name, known_names)
+			if loop:
+				looped.update(loop)
+				issues.append(describe_formula_loop(loop))
+		return issues
 
 	def _validate_formula_overrides(self):
 		"""Check the formulas this family overrides, like ``Param.validate`` checks its own."""
@@ -758,6 +773,42 @@ class FamType(Fam):
 			param.with_overrides(**self.overrides.get(param.name, {}))
 			for param in self.parent_fam.resolved_params()
 		]
+
+
+def find_formula_loop(formulas, start, known_names):
+	"""A loop of formulas through ``start``, as names from ``start`` back to it; else ``None``.
+
+	``formulas`` maps each parameter name to its formula (blank for none).
+	"""
+	references = {}
+
+	def uses(name):
+		if name not in references:
+			formula = formulas.get(name)
+			references[name] = sorted(scan_references(formula, known_names)[0]) if formula else []
+		return references[name]
+
+	path, seen = [start], set()
+
+	def walk(name):
+		for used in uses(name):
+			if used == start:
+				return path + [start]
+			if used in seen:
+				continue
+			seen.add(used)
+			path.append(used)
+			found = walk(used)
+			if found:
+				return found
+			path.pop()
+		return None
+
+	return walk(start)
+
+
+def describe_formula_loop(loop):
+	return 'Formulas go round in a loop: {}.'.format(' → '.join(loop))
 
 
 def _clean_combined_part(part):
@@ -1967,6 +2018,53 @@ class Catalog(object):
 		for fam in self.families:
 			names.update(param.name for param in fam.params)
 		return names
+
+	def formula_issues(self, formula, param_name=None, families=()):
+		"""Why ``formula`` can't be the formula of parameter ``param_name``; empty when it can.
+
+		Checks what validation would flag as an error: the syntax, names that aren't parameters,
+		the parameter using itself, text in a formula for a parameter that isn't Text, and, for
+		each of ``families``, parameters the family doesn't have. A blank formula is fine: it
+		means no formula.
+		"""
+		formula = '' if formula is None else str(formula).strip()
+		if not formula:
+			return []
+		known = self.known_names()
+		issues = check_syntax(tokenize(formula, known))
+		referenced, unknown = scan_references(formula, known)
+		if unknown:
+			issues.append('Not a parameter: {}'.format(', '.join(sorted(unknown))))
+		if param_name and param_name in referenced:
+			issues.append("A formula can't use its own parameter, '{}'.".format(param_name))
+		param = self.get_param(param_name) if param_name else None
+		# Text is a quoted string or joining with &; a length like 2' 6" is a number.
+		has_text = any(
+			token.kind == 'STRING' or (token.kind == 'OP' and token.text == '&')
+			for token in tokenize(formula, known)
+		)
+		dtype_row = get_dtype_row(param.dtype) if param is not None else None
+		if has_text and dtype_row is not None and dtype_row['Data Types'] != 'Text':
+			issues.append(
+				"Text (quotation marks or &) can only go in a formula for a Text parameter; "
+				"'{}' is {}.".format(param.name, param.dtype)
+			)
+		for fam in families:
+			missing = sorted(referenced - {fam_param.name for fam_param in fam.params})
+			if missing:
+				issues.append("Family '{}' doesn't have: {}".format(fam.name, ', '.join(missing)))
+		if param_name and not issues:
+			# Each family has its own formulas (its overrides); without families, the parameters'.
+			contexts = [
+				({param.name: param.formula for param in fam.resolved_params()}, " in family '{}'".format(fam.name))
+				for fam in families
+			] or [({param.name: param.formula for param in self.params}, '')]
+			for formulas, where in contexts:
+				loop = find_formula_loop(dict(formulas, **{param_name: formula}), param_name, known)
+				if loop:
+					issues.append(describe_formula_loop(loop)[:-1] + where + '.')
+					break
+		return issues
 
 	def get_param(self, name):
 		return next((param for param in self.params if param.name == name), None)

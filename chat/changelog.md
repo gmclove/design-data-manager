@@ -2,10 +2,53 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-09: Delete buttons, formula loops, data type warning, family categories
+- Delete Parameters..., Delete Families..., Remove Parameters From Family... and Delete Schedules... on the
+  main tabs, each asking first with what it affects (see README, Deleting).
+- Formula loops: the Formula Builder refuses a formula that makes a loop, and family validation flags
+  one (`find_formula_loop` in `revit_parameter_manager.py`). The live database has none.
+- Changing a parameter's data type asks first, since it assigns a new GUID.
+- Live database (user, 2026-11-09):
+  - `HUM` on the steam humidifier's `IPS_TAG_EquipID_Abbrev` is now the family's Default Value, not a
+    formula; the family also gets `IPS_TAG_EquipID_Seq_ALPH`, which its tag suffix formula uses and the
+    other 9 families with that suffix have. No schedule is in error now.
+  - `Basis Of Design` applied to all 92 schedules with Manufacturer and Model. No columns moved; 13 title
+    or `HOUSING` captions no longer span the two columns, and 2 schedules lost separate `MANUF.`/`MODEL`
+    captions to the section's.
+  - Category 1 and 2 filled for every family from the master workbook (413 values, 54 codes including the
+    Revit categories' 2D/3D), without renaming. The Family Name Builder now gives 229 of 231 current names;
+    the other two, `IPS-US_EQUIP_BoD-Office_3D` and `IPS-US_EQUIP_BoD-Warehouse_3D`, lack the `AHU` of their
+    Category 2.
+  - Linked the High-confidence rows of `schedule-family-map.xlsx` (user): 102 new schedule-family links, 10
+    already there; 51 of 113 schedules now have families. Skipped the 14 `_AHU Section (...)` rows (sections
+    now, not schedules). No columns or statuses changed. Medium, Low and None rows wait on the user's review.
+  - Backups: `database.before-bod-align`, `database.before-categories`, `database.before-family-links`.
+
+## 2026-11-09: Live database parameter cleanup
+- Deleted unused duplicates `IPS_EQUIP_Air_Capacity_Max_CFM` / `_Min_CFM` (kept `CapacityMax`/`CapacityMin`).
+- Merged `IPS_COIL_Htg_MaxPD_FT_WC`/`_IN_WC` into `IPS_COIL_Htg_PDMax_*` (Text; headers as the cooling
+  coil's); schedules and sections keep their column places.
+- Renamed, GUIDs kept: `*_Load_SidePD_*`/`*_LoadSidePD_*` -> `*_LoadSide_PD_*`, `IPS_COIL_Htg_SourceSidePD_FT_WC`
+  -> `_SourceSide_PD_`, `IPS_HX_EA_PD_Max_IN_WC` -> `IPS_HX_EA_PDMax_IN_WC`, `IPS_FILTER_PD_DirtyMax_IN_WC`
+  -> `IPS_FILTER_PDDirtyMax_IN_WC`. Name Builder terms set to match.
+- Backups in `ddm-data`: `database.before-capacity-dedupe`, `.before-dedupe-merge`, `.before-pd-renames`.
+
 ## 2026-11-09: Schedule Builder tools and RF Tools exports
 - Ungroup Selected Headers in the Schedule Builder; the header group buttons sit above the table
   in the Schedule Builder and section windows, and both windows open wide enough for every button.
 - Schedule Builder, family and section tables: the label columns and header rows are frozen while scrolling.
+- Scrolling and copy/paste (user, 2026-11-09): one app-wide mouse-wheel handler scrolls the canvas
+  under the pointer (grids, checkbox lists; Shift for sideways); Ctrl+C/Ctrl+V and a right-click menu
+  in the grids and main tables (`ddm_clipboard.py`); pasting into an empty box no longer pastes into
+  its gray hint, which had made the paste save nothing.
+- Formula Builder (first pass, user, 2026-11-09): opens wherever a formula is entered, checks as
+  you type with `Catalog.formula_issues`, and only saves a valid formula. Lists parameters (the
+  family's own in a family row) and functions to insert. `ROUNDUP`/`ROUNDDOWN` added to the known
+  functions. Of the live database's 68 formulas, only `HUM` on the steam humidifier's
+  `IPS_TAG_EquipID_Abbrev` fails it.
+- Schedule Builder and section windows open tall enough for their buttons (capped to the screen),
+  with Close and the button row laid out first; fixes the width fit, which read Tk's 1x1 size
+  before the window showed and could open it far too short.
 - Duplicate Schedule... on the Schedules tab: a full copy with its own GUID, right after the original.
 - Save writes two RF Tools files: `.rfps` (one template per family) and `_schedules.rfps` (one
   template per schedule, with each parameter's own settings). Combined parameters are left out.

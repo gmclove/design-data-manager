@@ -1218,7 +1218,18 @@ def test_schedule_window_parameter_section_edits_the_parameter_itself(monkeypatc
     assert edit("Instance or Type", "Type")["choices"] == ["Instance", "Type"]
     assert param.instance_param is False
     edit("Default Group Under", "Dimensions")
-    edit("Default Formula", "Height * 2")
+    # A formula opens the Formula Builder; Save there calls back with the formula.
+    opened = []
+
+    def builder(current, on_save, **kwargs):
+        opened.append(kwargs)
+        on_save("Height * 2")
+
+    monkeypatch.setattr(gui, "open_formula_builder", builder)
+    table = fake_table(rows_builder(), ["Width"])
+    row = next(i for i, r in enumerate(table.rows) if r["label"] == "Default Formula" and r.get("param_field"))
+    gui._edit_table_cell(table, rows_builder, "S1", row, 0)
+    assert opened[0]["param_name"] == "Width"
     assert (param.group_under, param.formula) == ("Dimensions", "Height * 2")
     assert changed == []  # the table refreshes in place
 
@@ -2020,9 +2031,12 @@ def test_family_window_lists_values_and_saves_fields(tmp_path, monkeypatch):
             x=table.column_offsets[0] + 10, y=table.body_top + row_index * table.row_height + 5,
         ))
         root.update()
-        entry, finish = table._cell_editor
-        entry.insert(0, "Width * 2")
-        finish(True)
+        # A formula cell opens the Formula Builder, offering the family's parameters.
+        builder = find_window(root, f"Formula Builder: {table.parameter_names[0]}")
+        assert "Width" in builder.param_list.get(0, "end")
+        builder.text.insert("1.0", "Width * 2")
+        assert builder.check() == []
+        builder.save()
         assert fam.overrides[table.parameter_names[0]] == {"formula": "Width * 2"}
 
         description = next(
@@ -3024,3 +3038,347 @@ def test_override_table_keeps_label_columns_and_header_rows_in_place_when_scroll
         assert clicked[-1] == (row, column)
     finally:
         root.destroy()
+
+
+def test_windows_open_big_enough_for_their_buttons_and_stay_on_the_screen(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        window = tk.Toplevel(root)
+        ttk.Frame(window, height=900, width=100).pack()  # contents taller than asked for
+        row = ttk.Frame(window, width=1500, height=30)
+        row.pack()
+        set_to = []
+        monkeypatch.setattr(window, "geometry", lambda value=None: set_to.append(value) if value else "1x1+0+0")
+        monkeypatch.setattr(window, "winfo_screenwidth", lambda: 1920)
+        monkeypatch.setattr(window, "winfo_screenheight", lambda: 1080)
+
+        gui._fit_window(window, row, "1040x840", margin=24)
+        width, height_and_place = set_to[-1].split("x")
+        height, x, y = (int(value) for value in height_and_place.split("+"))
+        assert int(width) == 1524  # the button row's width, not the 1x1 Tk reports before showing it
+        assert height >= 930  # every row stacked in the window
+        assert y + height <= 1080 - gui._screen_margin  # bottom buttons on the screen
+
+        monkeypatch.setattr(window, "winfo_screenheight", lambda: 700)  # a short screen
+        gui._fit_window(window, row, "1040x840+50+400", margin=24)
+        width, height_and_place = set_to[-1].split("x")
+        height, x, y = (int(value) for value in height_and_place.split("+"))
+        assert height == 700 - gui._screen_margin and y == 0 and x == 50
+    finally:
+        root.destroy()
+
+
+def test_schedule_builder_lays_out_close_and_buttons_before_the_table(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        gui._open_detail_window("schedule", "Schedule A")
+        root.update()
+        form = find_window(root, "Schedule Builder: Schedule A")
+        order = form.pack_slaves()
+        close = find_button(form, "Close")
+        table_box = next(
+            widget for widget in order
+            if isinstance(widget, ttk.LabelFrame) and widget.cget("text").startswith("Schedule Default Values")
+        )
+        buttons = find_button(form, "Add Parameter...").master.master
+        # Packed before the table, at the bottom: a short window shrinks the table, not these.
+        assert order.index(close) < order.index(buttons) < order.index(table_box)
+        assert close.pack_info()["side"] == buttons.pack_info()["side"] == "bottom"
+    finally:
+        root.destroy()
+
+
+def test_formula_builder_saves_only_valid_formulas(monkeypatch):
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = three_family_gui()
+        gui.root = root
+        gui.catalog.add_param("Label", "Text")
+        gui.catalog.add_param("Height", "Length")
+        saved = []
+        window = gui.open_formula_builder("", saved.append, param_name="Width")
+
+        def type_formula(text):
+            window.text.delete("1.0", "end")
+            window.text.insert("1.0", text)
+            return window.check()
+
+        assert type_formula("") == [] and str(window.save_button.cget("state")) == "normal"  # blank clears
+        assert type_formula("Height * (2") != []
+        assert str(window.save_button.cget("state")) == "disabled"
+        window.save()
+        assert saved == [] and window.winfo_exists()  # nothing saved while it isn't valid
+        assert type_formula("Width * 2") == ["A formula can't use its own parameter, 'Width'."]
+        assert type_formula("Height * Ghost") == ["Not a parameter: Ghost"]
+        assert [issue.split(";")[0] for issue in type_formula('if(Height > 2, "BIG", "SMALL")')] == [
+            "Text (quotation marks or &) can only go in a formula for a Text parameter"
+        ]
+        assert type_formula("2' 6\" + Height") == []  # a length isn't text
+
+        # Inserting: a parameter at the cursor, a function with the cursor inside it.
+        type_formula("")
+        window.search_var.set("heig")
+        assert window.param_list.get(0, "end") == ("Height",)
+        window.param_list.selection_set(0)
+        window.insert_param()
+        window.insert(" * ")
+        window.function_list.selection_set(0)
+        window.insert_function()
+        window.insert("Height > 1, 2, 3)")
+        assert window.formula() == "Height * if(Height > 1, 2, 3)"
+        assert window.check() == []
+        window.save()
+        assert saved == ["Height * if(Height > 1, 2, 3)"]
+
+        # A Text parameter may hold text, like the phase classification formula.
+        window = gui.open_formula_builder("", saved.append, param_name="Label")
+        window.text.insert("1.0", 'if(Height < Width, "ERROR: PHASE DEMO\'D", "NEW")')
+        assert window.check() == []
+    finally:
+        root.destroy()
+
+
+def test_family_formula_builder_offers_and_requires_the_familys_parameters():
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = three_family_gui()
+        gui.root = root
+        gui.catalog.add_param("Elsewhere", "Length")
+        gui.catalog.add_param("Height", "Length")
+        family = gui.catalog.get_family("F1")
+        family.add_param(gui.catalog.get_param("Height"))
+        window = gui.open_formula_builder("", lambda text: None, param_name="Width", families=[family])
+        offered = set(window.param_list.get(0, "end"))
+        assert offered == {param.name for param in family.params} - {"Width"}
+        window.text.insert("1.0", "Elsewhere * 2")
+        assert window.check() == ["Family 'F1' doesn't have: Elsewhere"]
+        window.text.delete("1.0", "end")
+        window.text.insert("1.0", "Height * 2")
+        assert window.check() == []
+    finally:
+        root.destroy()
+
+
+def test_mouse_wheel_scrolls_the_canvas_under_the_pointer_and_leaves_lists_alone():
+    from ddm_clipboard import install_mouse_wheel
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        canvas = tk.Canvas(root)
+        canvas._ddm_scrollable = True
+        inner = ttk.Frame(canvas)  # a widget inside a scrolling canvas scrolls it too
+        tree = ttk.Treeview(canvas)
+        scrolls = []
+        canvas.yview_scroll = lambda steps, what: scrolls.append(("y", steps))
+        canvas.xview_scroll = lambda steps, what: scrolls.append(("x", steps))
+        handler = install_mouse_wheel(root)
+        under = {"widget": inner}
+        root.winfo_containing = lambda x, y: under["widget"]
+
+        assert handler(SimpleNamespace(x_root=0, y_root=0, delta=-120)) == "break"
+        assert handler(SimpleNamespace(x_root=0, y_root=0, delta=240), sideways=True) == "break"
+        assert scrolls == [("y", 1), ("x", -2)]
+        under["widget"] = tree  # Tk scrolls lists and tables itself
+        assert handler(SimpleNamespace(x_root=0, y_root=0, delta=-120)) is None
+        under["widget"] = root
+        assert handler(SimpleNamespace(x_root=0, y_root=0, delta=-120)) is None
+        assert len(scrolls) == 2
+    finally:
+        root.destroy()
+
+
+def test_pasting_into_an_empty_box_replaces_its_hint():
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        entry = gui_module.PlaceholderEntry(root, placeholder="Blank Uses the Parameter Name")
+        entry.pack()
+        root.clipboard_clear()
+        root.clipboard_append("MAX P.D.")
+        entry.focus_force()
+        entry.event_generate("<<Paste>>")
+        root.update()
+        assert entry.get() == "MAX P.D."
+    finally:
+        root.destroy()
+
+
+def test_schedule_builder_copies_and_pastes_cells(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    monkeypatch.setattr(gui_module.messagebox, "showerror", lambda *args, **kwargs: None)
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        monkeypatch.setattr(gui, "_ask_override_scope", answering({}))
+        gui._open_detail_window("schedule", "Schedule A")
+        root.update()
+        form = find_window(root, "Schedule Builder: Schedule A")
+        table = next(widget for widget in descendants(form) if isinstance(widget, OverrideTable))
+        name_row = next(i for i, row in enumerate(table.rows) if row.get("param_field") == "name")
+        value_row = next(
+            i for i, row in enumerate(table.rows)
+            if row.get("attribute") == "value" and row.get("family") and not row.get("all_families")
+        )
+
+        # Copy a read-only-looking cell: the parameter's name.
+        table.current_cell = (name_row, 0)
+        assert table.copy()
+        assert root.clipboard_get() == table.parameter_names[0]
+        # Copy the selected columns' names, tab-separated.
+        table.current_cell = None
+        table.selected_indices = {0, 1}
+        table.copy()
+        assert root.clipboard_get() == "\t".join(table.parameter_names[:2])
+
+        # Paste into a family's value: the same as typing it there. Only the first value of an Excel block.
+        family = table.rows[value_row]["family"]
+        table.current_cell = (value_row, 0)
+        root.clipboard_clear()
+        root.clipboard_append("42\t43\n44\t45\n")
+        assert table.paste()
+        param_name = table.parameter_names[0]
+        assert gui.catalog.get_schedule("Schedule A").family_overrides[family][param_name]["value"] == "42"
+
+        # Right-click offers Copy and Paste for that cell. (Showing a menu waits for a click on Windows.)
+        monkeypatch.setattr(tk.Menu, "tk_popup", lambda *args, **kwargs: None)
+        table._on_right_click(SimpleNamespace(
+            x=table.column_offsets[0] + 5, y=table.body_top + value_row * table.row_height + 5, x_root=0, y_root=0,
+        ))
+        assert [table._context_menu.entrycget(i, "label") for i in range(2)] == ["Copy", "Paste"]
+        assert table._context_menu.entrycget(1, "state") == "normal"
+    finally:
+        root.destroy()
+
+
+def test_main_tables_copy_cells_and_rows_and_paste_into_parameters(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        tree = gui.param_tree
+        columns = gui._get_table_columns("params")
+        rows = tree.get_children()
+        header = columns.index("header_text")
+
+        tree._ddm_cell = (rows[0], columns.index("name"))
+        assert gui._copy_from_table(tree)
+        assert root.clipboard_get() == gui.catalog.params[0].name
+        tree.selection_set(rows[:2])
+        gui._copy_from_table(tree)  # several rows: tab-separated lines, as Excel pastes them
+        assert root.clipboard_get().split("\n")[1].split("\t")[columns.index("name")] == gui.catalog.params[1].name
+
+        root.clipboard_clear()
+        root.clipboard_append("PASTED HEADER")
+        tree._ddm_cell = (rows[0], header)
+        assert gui._paste_into_table(tree, "params")
+        assert gui.catalog.params[0].header_text == "PASTED HEADER"
+
+        # A formula opens the Formula Builder with the pasted text; it saves only when valid.
+        root.clipboard_clear()
+        root.clipboard_append("Width +")
+        tree._ddm_cell = (gui.param_tree.get_children()[0], columns.index("formula"))
+        gui._paste_into_table(tree, "params")
+        builder = find_window(root, f"Formula Builder: {gui.catalog.params[0].name}")
+        assert builder.formula() == "Width +" and builder.check() != []
+        builder.destroy()
+        assert not gui._paste_into_table(gui.group_tree, "groups")  # schedules are edited in their window
+    finally:
+        root.destroy()
+
+
+def test_gui_warns_before_a_data_type_change_assigns_a_new_guid(monkeypatch):
+    gui = make_test_gui()
+    param = gui.catalog.params[0]
+    original_dtype, original_guid = param.dtype, param.guid
+    new_dtype = "Text" if original_dtype != "Text" else "Number"
+    prompts = []
+    answers = iter([False, True])
+
+    def answer(title, message, **kwargs):
+        prompts.append((title, message))
+        return next(answers)
+
+    monkeypatch.setattr(gui_module.messagebox, "askokcancel", answer)
+    monkeypatch.setattr(param, "_validate_formula_compatibility", lambda dtype: None)
+
+    gui._apply_cell_value("params", 0, "dtype", new_dtype)
+    assert (param.dtype, param.guid) == (original_dtype, original_guid)
+    assert prompts[0][0] == "Parameter GUID Will Change"
+    assert f"from {original_dtype} to {new_dtype} gives it a new GUID" in prompts[0][1]
+
+    gui._apply_cell_value("params", 0, "dtype", new_dtype)
+    assert param.dtype == new_dtype and param.guid != original_guid
+
+    gui._apply_cell_value("params", 0, "dtype", new_dtype)  # no change, no question
+    assert len(prompts) == 2
+
+
+class _FakeTree:
+    def __init__(self, *iids):
+        self.iids = [str(iid) for iid in iids]
+
+    def selection(self):
+        return self.iids
+
+
+def test_delete_parameters_asks_first_and_lists_what_uses_them(monkeypatch):
+    gui = make_test_gui()
+    names = [param.name for param in gui.catalog.params]
+    index = names.index("GrossArea")
+    gui.param_tree = _FakeTree(index)
+    monkeypatch.setattr(gui, "render_tables", lambda: None)
+    asked = []
+    answers = iter([False, True])
+    monkeypatch.setattr(gui_module.messagebox, "askyesno",
+                        lambda title, message, **kwargs: asked.append((title, message)) or next(answers))
+
+    gui._delete_selected_params()
+    assert gui.catalog.get_param("GrossArea") is not None
+    title, message = asked[0]
+    assert title == "Delete Parameters"
+    assert "GrossArea" in message and "These formulas use them" in message and "NetArea" in message
+
+    gui._delete_selected_params()
+    assert gui.catalog.get_param("GrossArea") is None
+
+
+def test_delete_buttons_warn_when_nothing_is_selected(monkeypatch):
+    gui = make_test_gui()
+    warnings = []
+    monkeypatch.setattr(gui_module.messagebox, "showwarning", lambda title, message, **kwargs: warnings.append(title))
+    gui.param_tree, gui.family_tree, gui.group_tree = _FakeTree(), _FakeTree(), _FakeTree()
+
+    gui._delete_selected_params()
+    gui._delete_selected_families()
+    gui._delete_selected_schedules()
+    gui._remove_params_from_selected_family()
+
+    assert warnings == ["Select Parameters", "Select Families", "Select Schedules", "Select Families"]
+
+
+def test_delete_families_schedules_and_a_familys_parameters(monkeypatch):
+    gui = make_test_gui()
+    monkeypatch.setattr(gui, "render_tables", lambda: None)
+    fam = next(fam for fam in gui.catalog.families if fam.custom_params)
+    removed = fam.custom_params[0].name
+
+    gui._remove_family_params(fam.name, [removed])
+    assert removed not in {param.name for param in fam.params}
+    assert gui.catalog.get_param(removed) is not None  # still in the database
+
+    schedule = next(s for s in gui.catalog.schedules if fam in s.fams)
+    gui._delete_families([fam.name])
+    assert gui.catalog.get_family(fam.name) is None and fam not in schedule.fams
+
+    gui._delete_schedules([schedule.name])
+    assert gui.catalog.get_schedule(schedule.name) is None

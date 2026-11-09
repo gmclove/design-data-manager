@@ -58,44 +58,42 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [x] Linking by GUID instead of by name: no longer needed. In the catalog, families and
       schedules hold the parameter objects themselves, and names are only written out at save
       time, so a rename can't leave a stale reference.
-- [ ] Remove a parameter from a family in the GUI (adding works from the schedule table).
+- [x] Remove a parameter from a family in the GUI (Families tab, Remove Parameters From Family..., 2026-11-09).
 - [x] Add parameters from the GUI (Parameter Name Builder).
-- [ ] Remove parameters; add and remove families and schedules from the GUI.
+- [x] Remove parameters, families and schedules from the GUI (Delete buttons on the main tabs, 2026-11-09).
+- [ ] Add families from the GUI (schedules: Duplicate Schedule...).
 - [x] Override Formula and Group Under (family and parameter level) in the override tables.
 
 ## From the claude.ai plan (medium and long term)
 Already done since that plan: CSV and Excel import, shared parameter file export, main-tab search,
 unsaved-changes prompts.
-- [ ] Working Quickbase sync: correct auth, native upsert via `mergeFieldId`, table and field IDs
-      from config, a dry-run mode, tests against a mocked HTTP layer. Still wrong in
-      `quickbase_integration.py`: the token goes in a `QB-USER-TOKEN` header instead of
-      `Authorization` (which is only set when there's an app token), `name` maps to reserved field
-      3, and `upsert_record` reads `record.get("id")`.
-- [ ] "Sync to Quickbase" sends nothing, and now maps nothing either: `sync_to_quickbase` passes
-      row dicts to mappers that use `getattr`, so every value comes out empty. The doc listed this
-      as partly fixed (mapping model objects); the current code is back to dicts.
 - [ ] GUI: undo, inline error highlighting. (Add/delete is under Next steps.)
 - [ ] Possible future development (user, 2026-11-05, not needed for now): a stored table view
       template, editable per user, that also remembers sort order and dragged column widths. Today
       the defaults are `DEFAULT_TABLE_VIEW` in `table_view.py`, and nothing carries over a restart.
-- [ ] Richer validation: units and data types in formulas (Length × Length = Area), circular
-      references, naming conventions such as the `IPS_` prefix.
-- [ ] Recheck: demo data linking families to parameters that don't exist (`RValue`, `FinishCode`).
+- [ ] Richer validation: units and data types in formulas (Length × Length = Area), naming conventions
+      such as the `IPS_` prefix. Circular references are done (2026-11-09).
+- [x] Recheck: demo data linking families to parameters that don't exist (`RValue`, `FinishCode`).
+      Checked 2026-11-09: both are defined as parameters in `data/test_data/demo_data.ddm.csv`.
 - [ ] Add missing parameters to families, not the project (design criterion, see
       [decisions.md](decisions.md)). On `2025.11.17_smart-workflow`, 576 parameters (818 columns) can't
       be scheduled, in all three Revit schedules; all 576 are in the shared parameter file. Needs
       families linked to their parameters first (under Beta).
 - [ ] Add missing parameters to families, first step, waiting on the user's review:
       `schedule-family-map.xlsx` in the database folder (2026-11-06), a first-pass map of schedules to
-      2D and 3D families. Not imported; the database is unchanged.
+      2D and 3D families. High-confidence rows linked 2026-11-09 (102 links); Medium (34), Low (34) and
+      None (35) rows still wait on the user's review.
 - [ ] Schedule sections (2026-11-06), in `dev`. In the live database since 2026-11-09 (31 sections, mostly
       unapplied; the 18 `_AHU Section (...)` schedules are sections now and deleted as schedules). Needs the
       user, in Revit: apply `Pump` to the Pump schedule, Save, run the macro, and check columns, captions and
-      hidden columns. The live database is format 4: older apps, including the released `.exe`, refuse it. `Basis Of Design` changes captions on 15 of its 91 schedules: 11 title
-      captions and 2 `HOUSING` captions no longer span Manufacturer and Model, and 2 schedules lose separate
-      `MANUF.` and `MODEL` captions. No columns move. Decide whether to leave those 15 out.
+      hidden columns. The live database is format 4: older apps, including the released `.exe`, refuse it. `Basis Of Design` is applied to all 92 schedules with
+      Manufacturer and Model (user, 2026-11-09: align them all, captions included).
 - [ ] Combined parameters (2026-11-09), on branch `schedule-sections`. Needs the user, in Revit: run the macro on a schedule with TAG and check its values, especially where a
       term is empty (does Revit still print the `-`?). TAG's width is the default 1 in; widen it if needed.
+- [ ] Possible standardization (user, 2026-11-09, left for now): air temperature word order. `IPS_ER_*`
+      puts the airstream first (`IPS_ER_Sumr_EA_EAT_DB_F`); `IPS_EnthER_*` puts entering/leaving first
+      (`IPS_EnthER_Sumr_EAT_EA_DB_F`, 16 parameters, only in a section). `ER` and `EnthER` are different
+      equipment, so only the order would change. Keep GUIDs when renaming (user's choice for renames).
 - [ ] Future development: prefixed sections, as roles (user, 2026-11-06), so one definition covers several
       sets of the same columns on a schedule. Design from the user's reference code, where a heat pump has an
       indoor and an outdoor fan coil: a section includes another under a role, such as `Fan` as `SA`. `Electric Motor` only covers `IPS_EQUIP_Elec_*`, but 7 schedules have 2
@@ -117,19 +115,28 @@ unsaved-changes prompts.
       (pyRevit or an add-in); real storage (SQLite, or Quickbase as system of record) with change
       history and multi-user editing; a web UI instead of Tkinter if other people will use it.
 
+## Lowest priority (user, 2026-11-09)
+Quickbase is last on the list: develop it only after everything above.
+- [ ] Working Quickbase sync: correct auth, native upsert via `mergeFieldId`, table and field IDs
+      from config, a dry-run mode, tests against a mocked HTTP layer. Still wrong in
+      `quickbase_integration.py`: the token goes in a `QB-USER-TOKEN` header instead of
+      `Authorization` (which is only set when there's an app token), `name` maps to reserved field
+      3, and `upsert_record` reads `record.get("id")`.
+- [ ] "Sync to Quickbase" sends nothing, and now maps nothing either: `sync_to_quickbase` passes
+      row dicts to mappers that use `getattr`, so every value comes out empty. The doc listed this
+      as partly fixed (mapping model objects); the current code is back to dicts.
+
 ## Open questions
 - Who uses this, and is Quickbase the system of record or a mirror? Decides storage and sync
   priority. (From the claude.ai plan, unanswered.)
-- Changing a parameter's data type silently assigns a new GUID (model behaviour, since Revit
-  ties a shared parameter's GUID to its type). Should the GUI warn first, like it does for a
-  rename?
 
 ## Known issues
-- The working database's families have no Category 1, Category 2 or their codes (0 of 231; the database
-  was imported before the import read them). The Family Name Builder therefore builds a shortened
-  name for 230 of 231 families, e.g. `IPS-US_Pilot Light` for `IPS-US_CTRL_Device_Pilot Light_2D`, and
-  **Rename All Families to Match** would shorten them all. Fill them from the workbook first,
-  without renaming, as was done for the parameter name terms.
+- Families' Category 1 and 2 were filled from the workbook on 2026-11-09. The Family Name Builder now gives
+  229 of 231 current names. **Rename All Families to Match** would rename the other two,
+  `IPS-US_EQUIP_BoD-Office_3D` and `IPS-US_EQUIP_BoD-Warehouse_3D`, adding the `AHU` of their Category 2;
+  decide whether the names or the categories are right before using it. 47 families have no Category 2,
+  and 2 no Category 1,
+  in the workbook either.
 - On the second machine, Tk sometimes fails to start inside tests ("Can't find a usable
   tk.tcl", "couldn't read file ... panedwindow.tcl: no such file" for a file that exists), so a
   different GUI test can fail on any given run. Rerunning passes. OneDrive is not the (only) cause:

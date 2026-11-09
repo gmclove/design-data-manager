@@ -12,7 +12,7 @@ from collections import namedtuple
 FORMULA_FUNCTIONS = frozenset({
 	'ABS', 'ACOS', 'AND', 'ASIN', 'ATAN', 'CEILING', 'COS', 'EXP',
 	'FALSE', 'IF', 'INT', 'LN', 'LOG', 'MAX', 'MIN', 'MOD', 'NOT',
-	'OR', 'PI', 'POWER', 'ROUND', 'SIGN', 'SIN', 'SQRT', 'TAN', 'TRUE',
+	'OR', 'PI', 'POWER', 'ROUND', 'ROUNDDOWN', 'ROUNDUP', 'SIGN', 'SIN', 'SQRT', 'TAN', 'TRUE',
 })
 OPERATORS = frozenset('+-*/^<>=&')
 

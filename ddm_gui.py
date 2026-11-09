@@ -47,7 +47,10 @@ from ddm_tables import (
     text as cell_text,
     write_database_csv,
 )
+from ddm_clipboard import context_menu, copy_text, install_mouse_wheel, paste_text, rows_as_text
 from ddm_combined import CombinedParamWindows
+from ddm_formula import FormulaBuilderWindows
+from formula import scan_references
 from ddm_sections import SectionWindows
 from excel_import import import_workbook
 from revit_parameter_manager import (
@@ -211,6 +214,8 @@ class OverrideTable(tk.Canvas):
     section_width = 150
     label_width = 170
     row_height = 24
+    # The app-wide mouse-wheel handler scrolls it (ddm_clipboard).
+    _ddm_scrollable = True
     # Screen pixels per inch of Revit grid column width, and the narrowest readable column.
     pixels_per_inch = 72
     min_column_width = 110
@@ -257,10 +262,17 @@ class OverrideTable(tk.Canvas):
         self._cell_editor = None
         # How far the frozen items are moved now, to follow the view: (x, y).
         self._frozen_offset = (0, 0)
+        # The body cell clicked last, ``(row_index, column_index)``: what Ctrl+C and Ctrl+V act on.
+        self.current_cell = None
         self.bind("<Button-1>", self._on_mouse_down)
         self.bind("<B1-Motion>", self._on_mouse_drag)
         self.bind("<Double-Button-1>", self._on_double_click)
         self.bind("<Motion>", self._on_motion)
+        for key in ("<Control-c>", "<Control-C>"):
+            self.bind(key, lambda _event: self.copy() and "break")
+        for key in ("<Control-v>", "<Control-V>"):
+            self.bind(key, lambda _event: self.paste() and "break")
+        self.bind("<Button-3>", self._on_right_click)
         self.set_grid_column_widths(grid_column_widths or [1.0] * len(self.parameter_names))
         self.set_groups(groups or [])
 
@@ -539,6 +551,9 @@ class OverrideTable(tk.Canvas):
 
     def _on_mouse_down(self, event):
         self.finish_cell_edit(commit=True)
+        # Keys go to the table, for Ctrl+C and Ctrl+V; an editor opened below takes them instead.
+        self.focus_set()
+        self.current_cell = self._cell_at(event)
         family_action = self._family_action_at(event)
         if family_action is not None:
             if self.on_family_action is not None:
@@ -860,6 +875,82 @@ class OverrideTable(tk.Canvas):
         ))
         self.configure(cursor="hand2" if clickable else "")
 
+    def copied_text(self):
+        """What Ctrl+C copies: the clicked cell's value; else the selected columns' parameter
+        names (tab-separated, as Excel lays out a row); else the selected families' names."""
+        if self.current_cell is not None:
+            row_index, column_index = self.current_cell
+            if row_index < len(self.rows) and column_index < len(self.rows[row_index]["cells"]):
+                cell = self.rows[row_index]["cells"][column_index]
+                if not cell.get("action") and cell.get("state") != "none":
+                    return str(cell.get("text") or "")
+        if self.selected_indices:
+            return "\t".join(self.parameter_names[index] for index in sorted(self.selected_indices))
+        if self.selected_families:
+            return "\n".join(name for name in self._family_names() if name in self.selected_families)
+        return None
+
+    def copy(self):
+        """Ctrl+C: copy the clicked cell (or the selected columns' or families' names)."""
+        text = self.copied_text()
+        if text is None:
+            return False
+        copy_text(self, text)
+        return True
+
+    def paste(self, text=None):
+        """Ctrl+V: put the clipboard's text into the clicked cell, as if typed there. It goes
+        through the cell's own editing, so the same checks and prompts apply; a formula cell
+        opens the Formula Builder with it. Only the first value of a block copied from Excel
+        is used. Returns whether the cell took it."""
+        text = paste_text(self) if text is None else text
+        if text is None or self.current_cell is None or self.on_cell_double_click is None:
+            return False
+        row_index, column_index = self.current_cell
+        if row_index >= len(self.rows) or not self.rows[row_index]["cells"][column_index].get("editable"):
+            self.bell()
+            return False
+        text = text.split("\n")[0].split("\t")[0].strip("\r")
+        editor = self.on_cell_double_click(row_index, column_index)
+        if editor is None and self._cell_editor is not None:
+            editor = self._cell_editor[0]
+        if isinstance(editor, ttk.Combobox):
+            if text not in editor.cget("values"):
+                self.bell()
+                self.finish_cell_edit(commit=False)
+                return False
+            editor.set(text)
+            self.finish_cell_edit(commit=True)
+            return True
+        if isinstance(editor, ttk.Entry):
+            editor.delete(0, tk.END)
+            editor.insert(0, text)
+            self.finish_cell_edit(commit=True)
+            return True
+        if isinstance(editor, tk.Toplevel) and hasattr(editor, "text"):  # the Formula Builder
+            editor.text.delete("1.0", "end")
+            editor.text.insert("1.0", text)
+            editor.check()
+            return True
+        return False
+
+    def _on_right_click(self, event):
+        self.finish_cell_edit(commit=True)
+        self.focus_set()
+        cell = self._cell_at(event)
+        if cell is not None:
+            self.current_cell = cell
+        editable = (
+            cell is not None and self.on_cell_double_click is not None
+            and self.rows[cell[0]]["cells"][cell[1]].get("editable")
+        )
+        menu = context_menu(self, [
+            ("Copy", self.copy if self.copied_text() is not None else None),
+            ("Paste", self.paste if editable else None),
+        ])
+        self._context_menu = menu  # for tests
+        menu.tk_popup(event.x_root, event.y_root)
+
     def _fit_text(self, text: str, max_width: int, font=None) -> str:
         """``text`` on one line, cut short with an ellipsis if it is wider than ``max_width``."""
         font = font or self.body_font
@@ -891,6 +982,10 @@ class PlaceholderEntry(ttk.Entry):
         self.bind("<FocusIn>", lambda _event: self._park_cursor(), add="+")
         self.bind("<ButtonRelease-1>", lambda _event: self._park_cursor(), add="+")
         self.bind("<FocusOut>", lambda _event: self._show_if_empty(), add="+")
+        # Pasting into an empty box replaces the hint, not adds to it; the hint isn't copied.
+        self.bind("<<Paste>>", lambda _event: self._hide(), add="+")
+        self.bind("<<Copy>>", lambda _event: "break" if self._showing else None, add="+")
+        self.bind("<<Cut>>", lambda _event: "break" if self._showing else None, add="+")
         self._show_if_empty()
 
     def get(self):
@@ -930,7 +1025,7 @@ class PlaceholderEntry(ttk.Entry):
         return None
 
 
-class DDMGUI(SectionWindows, CombinedParamWindows):
+class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
     """Tkinter review/edit GUI over a parameter ``Catalog``.
 
     The catalog is the source of truth. The tables are views rebuilt from it after
@@ -1036,6 +1131,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
     # --- layout -----------------------------------------------------------------
 
     def build_ui(self):
+        install_mouse_wheel(self.root)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(2, weight=1)
 
@@ -1362,6 +1458,92 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
             return DDMGUI._display_labels[column_name]
         return column_name.replace("_", " ").title()
 
+    # --- copy and paste in the main tables ------------------------------------------
+
+    def _bind_table_clipboard(self, tree: ttk.Treeview, table_name: str):
+        """Ctrl+C, Ctrl+V and a right-click menu on a main table.
+
+        Clicking a cell remembers it. Ctrl+C copies that cell, or, with several rows selected,
+        the rows as tab-separated lines (as Excel pastes them). Ctrl+V on the Parameters and
+        Families tabs puts the clipboard into the clicked cell, as an edit there would.
+        """
+        tree._ddm_cell = None
+
+        def remember(event):
+            row_id, column = tree.identify_row(event.y), tree.identify_column(event.x)
+            if row_id and column:
+                tree._ddm_cell = (row_id, int(column[1:]) - 1)
+
+        tree.bind("<Button-1>", remember, add="+")
+        for key in ("<Control-c>", "<Control-C>"):
+            tree.bind(key, lambda _event: self._copy_from_table(tree) and "break")
+        for key in ("<Control-v>", "<Control-V>"):
+            tree.bind(key, lambda _event: self._paste_into_table(tree, table_name) and "break")
+
+        def right_click(event):
+            remember(event)
+            row_id = tree.identify_row(event.y)
+            if row_id and row_id not in tree.selection():
+                tree.selection_set(row_id)
+            pastable = table_name in ("params", "families") and tree._ddm_cell is not None
+            menu = context_menu(tree, [
+                ("Copy Cell", (lambda: self._copy_from_table(tree, rows=False)) if tree._ddm_cell else None),
+                ("Copy Rows", (lambda: self._copy_from_table(tree, rows=True)) if tree.selection() else None),
+                ("Paste", (lambda: self._paste_into_table(tree, table_name)) if pastable else None),
+            ])
+            tree._ddm_menu = menu  # for tests
+            menu.tk_popup(event.x_root, event.y_root)
+
+        tree.bind("<Button-3>", right_click, add="+")
+
+    def _copy_from_table(self, tree: ttk.Treeview, rows=None) -> bool:
+        """Copy the clicked cell, or the selected rows (``rows=None``: the rows when several are selected)."""
+        selection = tree.selection()
+        if rows is None:
+            rows = len(selection) > 1 or tree._ddm_cell is None
+        if rows:
+            if not selection:
+                return False
+            text = rows_as_text(tree.item(row_id, "values") for row_id in selection)
+        else:
+            row_id, column = tree._ddm_cell
+            if not tree.exists(row_id):
+                return False
+            values = tree.item(row_id, "values")
+            text = str(values[column]) if column < len(values) else ""
+        copy_text(tree, text)
+        return True
+
+    def _paste_into_table(self, tree: ttk.Treeview, table_name: str) -> bool:
+        """Put the clipboard's first value into the clicked cell of the Parameters or Families tab."""
+        text = paste_text(tree)
+        if text is None or table_name not in ("params", "families") or tree._ddm_cell is None:
+            return False
+        row_id, column = tree._ddm_cell
+        if not tree.exists(row_id):
+            return False
+        self._finish_tree_cell_edit(False)
+        field_name = self._get_table_columns(table_name)[column]
+        text = text.split("\n")[0].split("\t")[0].strip("\r")
+        if table_name == "params" and field_name == "formula":
+            param = self.catalog.params[int(row_id)]
+            # A formula goes through the Formula Builder, which only saves a valid one.
+            builder = self.open_formula_builder(
+                param.formula or "", lambda formula: self._apply_cell_value("params", int(row_id), "formula", formula),
+                param_name=param.name,
+                context="Parameter Default Formula: used by every family and schedule unless they override it.",
+            )
+            builder.text.delete("1.0", "end")
+            builder.text.insert("1.0", text)
+            builder.check()
+            return True
+        try:
+            self._apply_cell_value(table_name, int(row_id), field_name, text)
+        except ValueError as exc:
+            messagebox.showerror("Invalid value", str(exc), parent=self.root)
+            return False
+        return True
+
     def _get_table_columns(self, table_name: str):
         return DDMGUI._table_columns[table_name]
 
@@ -1429,6 +1611,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
             self.group_tree = tree
 
         self._bind_table_edit_events(tree, table_name)
+        self._bind_table_clipboard(tree, table_name)
 
         y_scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
@@ -1483,12 +1666,20 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         count.pack(side="left", padx=(12, 0))
         if table_name == "params":
             ttk.Button(bar, text="Add Parameter...", command=self._open_param_name_builder).pack(side="right")
+            ttk.Button(bar, text="Delete Parameters...", command=self._delete_selected_params).pack(
+                side="right", padx=(0, 6))
+        elif table_name == "families":
+            ttk.Button(bar, text="Delete Families...", command=self._delete_selected_families).pack(side="right")
+            ttk.Button(bar, text="Remove Parameters From Family...",
+                       command=self._remove_params_from_selected_family).pack(side="right", padx=(0, 6))
         elif table_name == "sections":
             ttk.Button(bar, text="Add Section...", command=self.open_section_window).pack(side="right")
         elif table_name == "combined":
             ttk.Button(bar, text="Add Combined Parameter...", command=self.open_combined_window).pack(side="right")
         elif table_name == "groups":
             ttk.Button(bar, text="Duplicate Schedule...", command=self._duplicate_selected_schedule).pack(side="right")
+            ttk.Button(bar, text="Delete Schedules...", command=self._delete_selected_schedules).pack(
+                side="right", padx=(0, 6))
         self._search_vars[table_name] = search_var
         self._search_counts[table_name] = count
         search_var.trace_add("write", lambda *_args: self.render_tables())
@@ -1750,7 +1941,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
     def _set_param_field(self, param, column_name: str, new_value):
         value = cell_text(new_value)
         if column_name == "guid":
-            raise ValueError("GUID is assigned automatically and changes only when a parameter is renamed.")
+            raise ValueError("GUID is assigned automatically and changes only when a parameter is renamed or its data type changes.")
         if column_name == "name":
             self._rename_param(param, value)
         elif column_name == "header_text":
@@ -1759,6 +1950,12 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         elif column_name == "grid_column_width":
             param.grid_column_width = parse_width(value)
         elif column_name == "dtype":
+            if value != param.dtype:
+                # Refuse a bad type before asking about the GUID.
+                param._validate_dtype_name(value)
+                param._validate_formula_compatibility(value)
+                if not self._confirm_dtype_change(param, value):
+                    return
             param.dtype = value
         elif column_name == "group_under":
             param.group_under = value or None
@@ -1798,6 +1995,20 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         if choice is None:
             return None
         return not choice
+
+    def _confirm_dtype_change(self, param, new_dtype: str) -> bool:
+        """Warn that a new data type gives the parameter a new GUID. True to go ahead."""
+        return messagebox.askokcancel(
+            "Parameter GUID Will Change",
+            f"Changing '{param.name}' from {param.dtype} to {new_dtype} gives it a new GUID: Revit ties a "
+            "shared parameter's GUID to its data type.\n\n"
+            "In Revit it becomes a different parameter. Families and projects that use the old one keep "
+            "their values under the old GUID until the parameter is replaced there.\n\n"
+            "OK: change the data type and assign a new GUID\nCancel: keep the current data type",
+            icon=messagebox.WARNING,
+            default=messagebox.CANCEL,
+            parent=getattr(self, "root", None),
+        )
 
     def _set_family_field(self, fam, column_name: str, new_value):
         value = cell_text(new_value)
@@ -2797,6 +3008,18 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
             if next_column is not None:
                 self._edit_table_cell(table, rows_builder, schedule_name, row_index, next_column)
 
+        if attribute == "formula":
+            if all_families:
+                families = list(self._get_schedule(schedule_name).fams)
+                context = f"Family Default Formula for every family in {schedule_name}. {placeholder}."
+            else:
+                families = [self.catalog.get_family(family_name)]
+                context = f"Family Default Formula for {family_name}. {placeholder}."
+            return self.open_formula_builder(
+                current, commit, param_name=param_name, families=families, context=context,
+                parent=table.winfo_toplevel(),
+            )
+
         return table.start_cell_edit(
             row_index,
             column_index,
@@ -2843,6 +3066,13 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
             )
             if next_column is not None:
                 self._edit_table_cell(table, rows_builder, schedule_name, row_index, next_column, on_columns_changed)
+
+        if field == "formula":
+            return self.open_formula_builder(
+                current, commit, param_name=param.name,
+                context="Parameter Default Formula: sets the parameter for every family and schedule.",
+                parent=table.winfo_toplevel(),
+            )
 
         choices = None
         if field == "group_under":
@@ -3021,17 +3251,175 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         box.save = save  # for tests
         return box
 
-    @staticmethod
-    def _fit_window_width(window, row, margin=24):
-        """Widen ``window`` so every widget in ``row`` (a button row) shows, as far as the screen allows,
-        and keep it from being made narrower than that."""
+    # Room left for the taskbar and the window's title bar when fitting a window to the screen.
+    _screen_margin = 80
+
+    def _fit_window(self, window, row, geometry, margin=24):
+        """Open ``window`` at ``geometry`` (``"WxH"`` or ``"WxH+X+Y"``), made big enough that every
+        widget in ``row`` (a button row) and everything stacked in the window shows, as far as the
+        screen allows, and keep it from being made smaller than the button row.
+
+        Works from the asked-for size: before a window is shown, Tk reports it as 1x1.
+        """
         window.update_idletasks()
-        needed = min(row.winfo_reqwidth() + margin, window.winfo_screenwidth())
-        size, _, position = window.geometry().partition("+")
+        size, _, position = geometry.partition("+")
         width, height = (int(value) for value in size.split("x"))
-        window.minsize(needed, 0)
-        if width < needed:
-            window.geometry(f"{needed}x{height}" + (f"+{position}" if position else ""))
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight() - self._screen_margin
+        needed_width = min(row.winfo_reqwidth() + margin, screen_width)
+        width = min(max(width, needed_width), screen_width)
+        height = min(max(height, window.winfo_reqheight()), screen_height)
+        window.minsize(needed_width, min(300, screen_height))
+        if position:
+            x, y = (int(value) for value in position.split("+")[:2])
+        else:
+            x, y = (screen_width - width) // 2, (screen_height - height) // 2
+        # Keep the whole window, buttons at the bottom included, on the screen.
+        x = max(0, min(x, screen_width - width))
+        y = max(0, min(y, screen_height - height))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
+    # --- delete --------------------------------------------------------------------
+
+    def _selected_items(self, tree, items, kind: str, action: str):
+        """The catalog items selected in ``tree``; warns and returns ``[]`` when none are."""
+        selection = tree.selection() if tree is not None else ()
+        if not selection:
+            plural = {"family": "Families"}.get(kind, f"{kind.title()}s")
+            messagebox.showwarning(
+                f"Select {plural}", f"Select the {plural.lower()} to {action} on the {plural} tab first.",
+                parent=getattr(self, "root", None),
+            )
+            return []
+        return [items[int(iid)] for iid in selection]
+
+    @staticmethod
+    def _listed(names, limit: int = 15) -> str:
+        names = list(names)
+        shown = "\n".join(f"  {name}" for name in names[:limit])
+        return shown + (f"\n  ...and {len(names) - limit} more" if len(names) > limit else "")
+
+    def delete_params_message(self, names) -> str:
+        """What deleting parameters ``names`` takes with it, for the confirmation."""
+        names = set(names)
+        lines = [f"Delete {len(names)} parameter(s) from the database?", "", self._listed(sorted(names)), ""]
+        families = [fam.name for fam in self.catalog.families if names & {param.name for param in fam.params}]
+        schedules = [s.name for s in self.catalog.schedules if names & {param.name for param in s.params}]
+        sections = [section.name for section in self.catalog.sections if names & set(section.members)]
+        combined = [c.name for c in self.catalog.combined_params if names & set(c.parameter_names)]
+        known = self.catalog.known_names()
+        users = sorted(
+            param.name for param in self.catalog.params
+            if param.name not in names and param.formula
+            and names & set(scan_references(param.formula, known)[0])
+        )
+        users += sorted(
+            f"{fam.name}: {name}" for fam in self.catalog.families for name, overrides in fam.overrides.items()
+            if name not in names and overrides.get("formula")
+            and names & set(scan_references(overrides["formula"], known)[0])
+        )
+        for label, found in (("Families", families), ("Schedules (the column goes)", schedules),
+                             ("Sections", sections), ("Combined parameters (the part goes)", combined)):
+            if found:
+                lines += [f"{label}: {len(found)}", self._listed(found, 8), ""]
+        if users:
+            lines += ["These formulas use them and will show an error:", self._listed(users, 8), ""]
+        lines.append("Revit keeps the shared parameter in families and projects that already have it.")
+        return "\n".join(lines)
+
+    def _delete_selected_params(self):
+        """Delete Parameters...: delete the parameters selected on the Parameters tab."""
+        params = self._selected_items(self.param_tree, self.catalog.params, "parameter", "delete")
+        if params and messagebox.askyesno(
+            "Delete Parameters", self.delete_params_message(param.name for param in params),
+            icon=messagebox.WARNING, default=messagebox.NO, parent=getattr(self, "root", None),
+        ):
+            self._delete_params([param.name for param in params])
+
+    def _delete_params(self, names):
+        for name in names:
+            self.catalog.remove_param(name)
+        self.validate_all()
+        self.render_tables()
+        self._append_message(f"Deleted {len(names)} parameter(s): {', '.join(names)}.")
+
+    def _delete_selected_families(self):
+        """Delete Families...: delete the families selected on the Families tab."""
+        families = self._selected_items(self.family_tree, self.catalog.families, "family", "delete")
+        if not families:
+            return
+        names = [fam.name for fam in families]
+        schedules = [s.name for s in self.catalog.schedules if set(names) & {fam.name for fam in s.fams}]
+        message = f"Delete {len(names)} {'family' if len(names) == 1 else 'families'} from the database?\n\n{self._listed(names)}\n\n"
+        if schedules:
+            message += f"They come off these schedules: {len(schedules)}\n{self._listed(schedules, 8)}\n\n"
+        message += "The .rfa files and Revit projects aren't touched."
+        if messagebox.askyesno("Delete Families", message, icon=messagebox.WARNING, default=messagebox.NO,
+                               parent=getattr(self, "root", None)):
+            self._delete_families(names)
+
+    def _delete_families(self, names):
+        for name in names:
+            self.catalog.remove_family(name)
+        self.validate_all()
+        self.render_tables()
+        self._append_message(f"Deleted {len(names)} {'family' if len(names) == 1 else 'families'}: {', '.join(names)}.")
+
+    def _remove_params_from_selected_family(self):
+        """Remove Parameters From Family...: pick parameters to take out of the selected family."""
+        families = self._selected_items(self.family_tree, self.catalog.families, "family", "change")
+        if not families:
+            return None
+        if len(families) > 1:
+            messagebox.showwarning("Select One Family", "Select one family to remove parameters from.",
+                                   parent=getattr(self, "root", None))
+            return None
+        fam = families[0]
+        choices = [(param.name, f"{param.name} {param.header_text or ''}") for param in fam.custom_params]
+
+        def remove(names):
+            using = [s.name for s in self.catalog.schedules if fam in s.fams and set(names) & {p.name for p in s.params}]
+            message = f"Remove these parameters from family {fam.name}?\n\n{self._listed(names)}"
+            if fam.overrides and set(names) & set(fam.overrides):
+                message += "\n\nThe family's Default Values for them go too."
+            if using:
+                message += (f"\n\nThe columns stay on these schedules, empty for this family:"
+                            f"\n{self._listed(using, 8)}")
+            if messagebox.askyesno("Remove Parameters From Family", message, parent=getattr(self, "root", None)):
+                self._remove_family_params(fam.name, names)
+
+        return self._pick_names(
+            getattr(self, "root", None), f"Remove Parameters From {fam.name}", choices, remove,
+            "Common parameters (IPS_GROUP_*) stay on every family.",
+        )
+
+    def _remove_family_params(self, family_name: str, names):
+        fam = self.catalog.get_family(family_name)
+        for name in names:
+            fam.remove_param(name)
+        self.validate_all()
+        self.render_tables()
+        self._append_message(f"Removed {len(names)} parameter(s) from family {family_name}: {', '.join(names)}.")
+
+    def _delete_selected_schedules(self):
+        """Delete Schedules...: delete the schedules selected on the Schedules tab."""
+        schedules = self._selected_items(self.group_tree, self.catalog.schedules, "schedule", "delete")
+        if not schedules:
+            return
+        names = [s.name for s in schedules]
+        message = (f"Delete {len(names)} schedule(s) from the database?\n\n{self._listed(names)}\n\n"
+                   "The macro stops making them. Schedules it already made in Revit stay there until "
+                   "you delete them in Revit.")
+        if messagebox.askyesno("Delete Schedules", message, icon=messagebox.WARNING, default=messagebox.NO,
+                               parent=getattr(self, "root", None)):
+            self._delete_schedules(names)
+
+    def _delete_schedules(self, names):
+        for name in names:
+            self.catalog.remove_schedule(name)
+        self.validate_all()
+        self.render_tables()
+        self._append_message(f"Deleted {len(names)} schedule(s): {', '.join(names)}.")
 
     def _duplicate_selected_schedule(self):
         """Duplicate Schedule...: copy the schedule selected on the Schedules tab."""
@@ -3406,6 +3794,20 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         field_name = self._get_table_columns(table_name)[column_number]
         if field_name in {"status", "validation_message", "guid"} or not tree.exists(row_id):
             return
+        if table_name == "params" and field_name == "formula":
+            param = self.catalog.params[int(row_id)]
+
+            def save_formula(text):
+                try:
+                    self._apply_cell_value("params", int(row_id), "formula", text)
+                except ValueError as exc:
+                    messagebox.showerror("Invalid value", str(exc), parent=self.root)
+
+            self.open_formula_builder(
+                param.formula or "", save_formula, param_name=param.name,
+                context="Parameter Default Formula: used by every family and schedule unless they override it.",
+            )
+            return
         bbox = tree.bbox(row_id, f"#{column_number + 1}")
         if not bbox:
             return
@@ -3591,7 +3993,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         form.title(f"Schedule Builder: {selected_name}")
         form.transient(self.root)
         form.grab_set()
-        form.geometry(view["geometry"] if view else "1040x840")
+        geometry = view["geometry"] if view else "1040x840"
+        form.geometry(geometry)
 
         title_bar = ttk.Frame(form)
         title_bar.pack(fill="x", padx=12, pady=(10, 4))
@@ -3629,9 +4032,11 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         if not parameter_names:
             ttk.Label(table_box, text="No Parameters Yet: Add Parameter... Adds Columns").pack(anchor="w")
             edit_buttons = self._build_schedule_edit_buttons(form, schedule, lambda: table, reopen)
-            edit_buttons.pack(fill="x", padx=12)
-            ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(8, 10))
-            self._fit_window_width(form, edit_buttons, margin=24)
+            # Laid out first, at the bottom: when the window is short, the space above gives way.
+            ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(
+                side="bottom", pady=(8, 10), before=table_box)
+            edit_buttons.pack(side="bottom", fill="x", padx=12, before=table_box)
+            self._fit_window(form, edit_buttons, geometry, margin=24)
             return
 
         def edit_schedule_header(parameter_name):
@@ -3742,8 +4147,12 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
             table.xview_moveto(view.get("xview", 0))
             table.yview_moveto(view.get("yview", 0))
 
+        # Close and the column and family buttons are laid out first, at the bottom, so a short
+        # window shrinks the table rather than hiding them.
+        ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(
+            side="bottom", pady=(8, 10), before=table_box)
         group_controls = ttk.Frame(form)
-        group_controls.pack(fill="x", padx=12)
+        group_controls.pack(side="bottom", fill="x", padx=12, before=table_box)
         self._build_schedule_edit_buttons(group_controls, schedule, lambda: table, reopen).pack(side="left")
 
         def begin_header_group():
@@ -3803,8 +4212,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         ttk.Label(header_controls, text="Header Groups:").pack(side="left", padx=(0, 6))
         ttk.Button(header_controls, text="Group Selected Headers", command=begin_header_group).pack(side="left")
         ttk.Button(header_controls, text="Ungroup Selected Headers", command=ungroup_headers).pack(side="left", padx=(6, 0))
-        self._fit_window_width(form, group_controls, margin=24)
-        ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(8, 10))
+        self._fit_window(form, group_controls, geometry, margin=24)
 
     # --- files ------------------------------------------------------------------
 

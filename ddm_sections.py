@@ -150,7 +150,8 @@ class SectionWindows:
         """Define a section (``None`` for a new one) and pick the schedules that use it."""
         window = tk.Toplevel(getattr(self, "root", None))
         window.title(f"Section: {section.name}" if section else "Add Section")
-        window.geometry("1320x820")
+        geometry = "1320x820"
+        window.geometry(geometry)
         members = list(section.members) if section else []
         hidden = set(section.own_hidden) if section else set()
 
@@ -540,7 +541,7 @@ class SectionWindows:
         # The columns pane gets 3 of 4 parts of the width: wide enough there for its button row.
         window.update_idletasks()
         row = left_buttons.winfo_reqwidth()
-        self._fit_window_width(window, left_buttons, margin=(row + 24) * 4 // 3 + 24 - row)
+        self._fit_window(window, left_buttons, geometry, margin=(row + 24) * 4 // 3 + 24 - row)
 
         # For tests.
         window.name_var, window.caption_var = name_var, caption_var
@@ -604,12 +605,8 @@ class SectionWindows:
         rows_id = canvas.create_window((0, 0), window=rows, anchor="nw")
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(rows_id, width=event.width))
         rows.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        def scrolled(event):
-            if canvas.winfo_exists():
-                canvas.yview_scroll(-int(event.delta / 120), "units")
-
-        window.bind("<MouseWheel>", scrolled)
+        # The app-wide mouse-wheel handler scrolls it when the pointer is over it (ddm_clipboard).
+        canvas._ddm_scrollable = True
         return canvas, rows
 
     # --- preview ----------------------------------------------------------------
