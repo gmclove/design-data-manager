@@ -1634,7 +1634,7 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
     try:
         gui = DDMGUI(root)
         tab_texts = [gui.notebook.tab(tab_id, "text") for tab_id in gui.notebook.tabs()]
-        assert tab_texts == ["Parameters", "Families", "Schedules"]
+        assert tab_texts == ["Parameters", "Families", "Schedules", "Sections", "Combined Parameters"]
         assert gui.file_actions.grid_info()["row"] == 5
         assert [
             widget.cget("text")
@@ -1865,7 +1865,7 @@ def test_search_filters_each_main_tab_and_edits_reach_the_right_item(tmp_path, m
     try:
         gui = DDMGUI(root)
         root.update()
-        assert set(gui._search_vars) == {"params", "families", "groups"}
+        assert set(gui._search_vars) == {"params", "families", "groups", "sections", "combined"}
 
         # Search for the last family by name: only it shows, and its row edits that family.
         fam = gui.catalog.families[-1]
@@ -2269,7 +2269,7 @@ def test_schedule_window_selects_and_removes_families_and_parameters(tmp_path, m
         buttons = [w.cget("text") for w in descendants(bar) if isinstance(w, ttk.Button)]
         assert buttons == [
             "Add Parameter...", "Remove Parameter", "◀ Move Left", "Move Right ▶",
-            "Add Family...", "Remove Family",
+            "Add Family...", "Remove Family", "Add Section...",
         ]
 
         # Clicking a family's name on the left selects it; Ctrl-click adds another.

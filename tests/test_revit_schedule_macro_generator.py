@@ -92,9 +92,9 @@ def test_columns_carry_headers_widths_in_feet_and_hidden_flags():
 
     assert notes == []
     assert specs[0]["columns"] == [
-        {"parameter": "DDM_Airflow", "header": "Design Airflow", "width_feet": 2.0, "hidden": False},
-        {"parameter": "DDM_Capacity", "header": "DDM_Capacity", "width_feet": 1.25, "hidden": False},
-        {"parameter": "DDM_Notes", "header": "DDM_Notes", "width_feet": 1 / 12, "hidden": True},
+        {"parameter": "DDM_Airflow", "header": "Design Airflow", "width_feet": 2.0, "hidden": False, "parts": []},
+        {"parameter": "DDM_Capacity", "header": "DDM_Capacity", "width_feet": 1.25, "hidden": False, "parts": []},
+        {"parameter": "DDM_Notes", "header": "DDM_Notes", "width_feet": 1 / 12, "hidden": True, "parts": []},
     ]
     assert specs[0]["header_groups"] == [{"caption": "Performance", "parameters": ["DDM_Airflow", "DDM_Capacity"]}]
 
@@ -253,7 +253,19 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
     schedule.filter_value = "FILTER"
     schedule.itemize = False
     schedule.view_template = "IPS Schedules"
+    # And a section on another schedule: a caption with a quote, a hidden column and added columns.
+    other = next(other for other in demo.schedules if other is not schedule and other.status == "Ready")
+    spare = [param.name for param in demo.params if param.name not in {p.name for p in other.params}][:2]
+    section = demo.add_section("Section", spare, caption='Section "B"', hidden_parameter_names=spare[-1:])
+    other.apply_section(section)
+    assert other.status == "Ready"
+    # And a combined parameter column, with a quote in a prefix.
+    demo.add_combined_param("TAG", [names[0], {"parameter": names[1], "prefix": '"-', "separator": "/"}])
+    status = schedule.status
+    schedule.add_columns(["TAG"])
+    assert schedule.status == status, "adding the combined column changes nothing else"
     source = generate_schedule_macro_source(demo, namespace="GLoveMacros")
+    assert "new DdmPart(" in source
     (tmp_path / "Generated.cs").write_text(source, encoding="utf-8")
     (tmp_path / "ThisApplication.cs").write_text(MACRO_ENTRY_POINT, encoding="utf-8")
     (tmp_path / "Macro.csproj").write_text(MACRO_PROJECT.format(framework=framework, revit=revit), encoding="utf-8")

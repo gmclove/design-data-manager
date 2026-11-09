@@ -248,7 +248,7 @@ def test_saved_file_is_readable_json(catalog, tmp_path):
 	build_sample(catalog)
 	path = catalog.save(tmp_path / 'catalog.json')
 	data = json.loads(path.read_text() if hasattr(path, 'read_text') else open(path).read())
-	assert data['version'] == 3
+	assert data['version'] == 4
 	assert [param['name'] for param in data['params']] == ['Width', 'Height', 'Area']
 	assert data['families'][0]['param_names'] == ['Width', 'Height', 'Area']
 	assert [param['name'] for param in data['families'][0]['custom_params']] == ['LocalOnly']

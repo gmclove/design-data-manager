@@ -83,6 +83,38 @@ unsaved-changes prompts.
       [decisions.md](decisions.md)). On `2025.11.17_smart-workflow`, 576 parameters (818 columns) can't
       be scheduled, in all three Revit schedules; all 576 are in the shared parameter file. Needs
       families linked to their parameters first (under Beta).
+- [ ] Add missing parameters to families, first step, waiting on the user's review:
+      `schedule-family-map.xlsx` in the database folder (2026-11-06), a first-pass map of schedules to
+      2D and 3D families. Not imported; the database is unchanged.
+- [ ] Schedule sections (2026-11-06), on branch `schedule-sections`. Needs the user: try
+      `database.with-sections.ddm.json` in the database folder (31 starting sections, none applied; the 18
+      `_AHU Section (...)` schedules are sections there and deleted as schedules), then
+      in Revit apply `Pump` to the Pump schedule, Save, run the macro, and check columns, captions and hidden
+      columns. When happy, bring the sections into the live database. Merging needs every machine updated first,
+      since an older app refuses format 4. `Basis Of Design` changes captions on 15 of its 91 schedules: 11 title
+      captions and 2 `HOUSING` captions no longer span Manufacturer and Model, and 2 schedules lose separate
+      `MANUF.` and `MODEL` captions. No columns move. Decide whether to leave those 15 out.
+      When the sections go live, delete the `_AHU Section (...)` schedules from the live database too.
+- [ ] Combined parameters (2026-11-09), on branch `schedule-sections`. Needs the user, in Revit: Load
+      the test copy, Save, run the macro on a schedule with TAG and check its values, especially where a
+      term is empty (does Revit still print the `-`?). TAG's width is the default 1 in; widen it if needed.
+- [ ] Future development: prefixed sections, as roles (user, 2026-11-06), so one definition covers several
+      sets of the same columns on a schedule. Design from the user's reference code, where a heat pump has an
+      indoor and an outdoor fan coil: a section includes another under a role, such as `Fan` as `SA`. `Electric Motor` only covers `IPS_EQUIP_Elec_*`, but 7 schedules have 2
+      or more motor or electrical sets, under 15 other prefixes: `IPS_FAN_SA_*`, `IPS_FAN_EA_*`, `IPS_FAN_RA_*`,
+      `IPS_PUMP_FeedWater_*`, `IPS_PUMP_SurgeTank_*`, `IPS_PUMP_Circ_*`, `IPS_PUMP_Oil_*`,
+      `IPS_EQUIP_Compress_*`, the coils. Coil blocks would benefit too (`IPS_COIL_Clg_*`, `IPS_COIL_Htg_*`;
+      `WATER-SIDE` has 12 uses in 11 variants). First check the names line up: they don't always, e.g.
+      `IPS_FAN_SA_HP` but `IPS_PUMP_FeedWater_HP_Each`. Until then these stay ordinary columns.
+      Start with fans. Name endings shared with the largest set in each group: fans fit well (`EA` 17 of 18,
+      `RA` 17 of 17, against `SA`); coils partly (`Clg` 21 of 39 against `Htg`); pumps poorly (`SurgeTank` 3 of 8
+      against `Oil`). Name mismatches such as `IPS_COIL_HtgElec_Current_A` against `_FLA_A` need a decision.
+      A water-side section (GPM, EWT, LWT, delta T) needs roles first, since those columns sit under
+      `IPS_COIL_Htg_*` and `IPS_COIL_Clg_*`.
+- [ ] Later for sections: picking schedules from family links; schedule templates made of
+      sections, which may not need a new feature, since a section with no caption that includes others (`Fan
+      Coil Unit`: fan and coil) already works as one; a rule for Revit changes inside a section when `revit-schedule-sync` merges (a removed column
+      becomes excluded; a header or order change stays local).
 - [ ] Long term: push parameters into families and audit families against the catalog from Revit
       (pyRevit or an add-in); real storage (SQLite, or Quickbase as system of record) with change
       history and multi-user editing; a web UI instead of Tkinter if other people will use it.

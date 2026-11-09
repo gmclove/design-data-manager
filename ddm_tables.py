@@ -18,7 +18,7 @@ import pandas as pd
 from config.revit_dtype_definitions import get_dtype_row
 from config.revit_family_category_definitions import get_family_category_row
 from revit_parameter_manager import (
-    CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, PARAM_NAME_TERMS, Catalog, Param,
+    CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, PARAM_NAME_TERMS, Catalog, Param, ScheduleSection,
 )
 from revit_shared_parameter_export import parameter_guid
 
@@ -54,7 +54,7 @@ CSV_COLUMNS = [
     "category_2_code", "description", "family_name", "parameter_name", "group_name",
     "header_text_override", "grid_column_width_override", "hidden", "override_entry",
     "schedule_filter", "itemize", "view_template", "schedule_guid", "caption",
-    "parameter_names", "top_row", "bottom_row",
+    "parameter_names", "top_row", "bottom_row", "hidden_parameter_names", "parts", "header_groups",
 ] + PARAM_TERM_COLUMNS
 _CSV_RECORD_TYPES = {
     "parameter": "params",
@@ -62,6 +62,9 @@ _CSV_RECORD_TYPES = {
     "link": "links",
     "schedule_column": "columns",
     "schedule_entry": "entries",
+    "schedule_section": "sections",
+    "section_use": "section_uses",
+    "combined_param": "combined_params",
 }
 _TRUE_TEXT = {"true", "1", "yes", "y", "instance"}
 _FALSE_TEXT = {"false", "0", "no", "n", "type"}
@@ -112,7 +115,7 @@ def _rows(frame):
 # --- tables -> catalog --------------------------------------------------------
 
 def catalog_from_tables(params=None, families=None, links=None, entries=None, header_groups=None,
-                        columns=None):
+                        columns=None, sections=None, section_uses=None, combined_params=None):
     """Build a ``Catalog`` from table rows. Returns ``(catalog, issues)``.
 
     ``params``, ``families``, ``links`` and ``entries`` are DataFrames (or
@@ -122,9 +125,81 @@ def catalog_from_tables(params=None, families=None, links=None, entries=None, he
     issues = []
     _load_params(catalog, _rows(params), issues)
     _load_families(catalog, _rows(families), _rows(links), issues)
+    # Before sections and schedules, which list them as columns.
+    _load_combined_params(catalog, _rows(combined_params), issues)
+    _load_sections(catalog, _rows(sections), issues)
     # Column rows first: they set each schedule's column order.
     _load_schedules(catalog, _rows(columns) + _rows(entries), header_groups or {}, issues)
+    _load_section_uses(catalog, _rows(section_uses), issues)
     return catalog, issues
+
+
+def _json_names(value, label):
+    try:
+        names = json.loads(text(value) or "[]")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid parameter list in {label}.") from exc
+    if not isinstance(names, list):
+        raise ValueError(f"The parameter list in {label} must be a JSON list.")
+    return names
+
+
+def _load_combined_params(catalog, rows, issues):
+    for row in rows:
+        name = text(row.get("name"))
+        try:
+            parts = json.loads(text(row.get("parts")) or "[]")
+            if not isinstance(parts, list):
+                raise ValueError("Its parts must be a JSON list.")
+            catalog.add_combined_param(
+                name, parts, header_text=text(row.get("header_text")) or None,
+                grid_column_width=parse_width(row.get("grid_column_width")), guid=text(row.get("guid")) or None,
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            issues.append(f"Combined parameter '{name}': {exc} Skipped.")
+
+
+def _load_sections(catalog, rows, issues):
+    for row in rows:
+        name = text(row.get("name"))
+        try:
+            ScheduleSection(
+                name,
+                _json_names(row.get("parameter_names"), f"section '{name}'"),
+                caption=text(row.get("caption")) or None,
+                hidden_parameter_names=_json_names(row.get("hidden_parameter_names"), f"section '{name}'"),
+                guid=text(row.get("guid")) or None,
+                catalog=catalog,
+                header_groups=_json_names(row.get("header_groups"), f"section '{name}'"),
+            )
+        except ValueError as exc:
+            issues.append(f"Section '{name}': {exc} Skipped.")
+    # After all are loaded: a section can include one listed later, and skipping one can break another.
+    changed = True
+    while changed:
+        changed = False
+        for section in list(catalog.sections):
+            try:
+                catalog._check_section_definition(section)
+            except ValueError as exc:
+                issues.append(f"Section '{section.name}': {exc} Skipped.")
+                catalog.sections.remove(section)
+                changed = True
+
+
+def _load_section_uses(catalog, rows, issues):
+    for row in rows:
+        schedule_name = text(row.get("group_name"))
+        schedule = catalog.get_schedule(schedule_name)
+        section = catalog.get_section_by_guid(text(row.get("guid")))
+        if schedule is None or section is None:
+            issues.append(f"Schedule '{schedule_name}' uses a section that isn't in the database; skipped.")
+            continue
+        schedule.section_uses.append({
+            "section_guid": section.guid,
+            "excluded": _json_names(row.get("parameter_names"), f"schedule '{schedule_name}'"),
+        })
+        schedule.validate()
 
 
 def _load_params(catalog, rows, issues):
@@ -282,7 +357,7 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
                 entry["families"].append(family_name)
         if not param_name:
             continue
-        if catalog.get_param(param_name) is None and param_name not in COMMON_PARAM_NAMES:
+        if catalog.get_column(param_name) is None and param_name not in COMMON_PARAM_NAMES:
             issues.append(f"Schedule '{schedule_name}' uses unknown parameter '{param_name}'; skipped.")
             continue
         entry["fields"][param_name] = None
@@ -341,6 +416,7 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
                     group.get("parameter_names", []),
                     top_row=group.get("top_row", 0),
                     bottom_row=group.get("bottom_row", group.get("top_row", 0)),
+                    section_guid=group.get("section_guid"),
                 )
             except ValueError as exc:
                 issues.append(f"Schedule '{schedule_name}', header group '{caption}': {exc} Skipped.")
@@ -491,6 +567,34 @@ def write_database_csv(catalog, csv_path):
                 "parameter_names": json.dumps(group.get("parameter_names", [])),
                 "top_row": group.get("top_row", 0),
                 "bottom_row": group.get("bottom_row", group.get("top_row", 0)),
+                "guid": group.get("section_guid", ""),
+            })
+    for section in catalog.sections:
+        records.append({
+            "record_type": "schedule_section",
+            "name": section.name,
+            "guid": section.guid,
+            "caption": _blank(section.caption),
+            "parameter_names": json.dumps(section.members),
+            "hidden_parameter_names": json.dumps(section.to_dict()["hidden_parameter_names"]),
+            "header_groups": json.dumps(section.to_dict()["header_groups"]) if section.header_groups else "",
+        })
+    for combined in catalog.combined_params:
+        records.append({
+            "record_type": "combined_param",
+            "name": combined.name,
+            "guid": combined.guid,
+            "header_text": _blank(combined._header_text),
+            "grid_column_width": combined.grid_column_width,
+            "parts": json.dumps(combined.parts),
+        })
+    for schedule in catalog.schedules:
+        for use in schedule.section_uses:
+            records.append({
+                "record_type": "section_use",
+                "group_name": schedule.name,
+                "guid": use["section_guid"],
+                "parameter_names": json.dumps(use["excluded"]),
             })
 
     frame = pd.DataFrame(records, columns=CSV_COLUMNS)
@@ -531,6 +635,7 @@ def read_database_csv(csv_path):
             "parameter_names": parameter_names,
             "top_row": top_row,
             "bottom_row": _parse_row_index(row.get("bottom_row", ""), top_row),
+            "section_guid": text(row.get("guid")) or None,
         })
     return tables, header_groups
 

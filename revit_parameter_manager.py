@@ -7,6 +7,7 @@ each other's names. Objects built without a catalog are standalone and validate
 against their own contents only.
 """
 
+import contextlib
 import json
 import math
 import os
@@ -16,10 +17,12 @@ from config.revit_dtype_definitions import get_dtype_row
 from config.revit_family_category_definitions import get_family_category_row
 from formula import FORMULA_FUNCTIONS, check_syntax, rename_reference, scan_references, tokenize
 
-CATALOG_FORMAT_VERSION = 3
+CATALOG_FORMAT_VERSION = 4
 # Version 2 files lack schedule field lists and per-schedule family overrides; both default.
 # Client and country codes were added within version 3; files without them load with none.
-READABLE_CATALOG_FORMAT_VERSIONS = (2, 3)
+# Version 3 files have no schedule sections. An older app must refuse version 4, not drop them.
+# Combined parameters came within version 4, before it was released.
+READABLE_CATALOG_FORMAT_VERSIONS = (2, 3, 4)
 
 # Families name a client, a country, a Category 1 and a Category 2, each picked from a list
 # the user adds to; the catalog keeps one code (abbreviation) for each, unique per kind.
@@ -757,6 +760,402 @@ class FamType(Fam):
 		]
 
 
+def _clean_combined_part(part):
+	"""One part of a combined parameter: ``{'parameter', 'prefix', 'suffix', 'separator'}``.
+	Prefix, suffix and separator keep their spaces: they are printed as typed."""
+	if isinstance(part, str):
+		part = {'parameter': part}
+	if not isinstance(part, dict):
+		raise ValueError('A combined parameter part is a parameter name with a prefix, suffix and separator.')
+	cleaned = {'parameter': _clean_name(part.get('parameter'))}
+	for key in ('prefix', 'suffix', 'separator'):
+		value = part.get(key)
+		cleaned[key] = '' if value is None else str(value)
+	return cleaned
+
+
+class CombinedParam(object):
+	"""A schedule column that joins several parameters into one cell, as Revit's combined
+	parameters do: ``TAG`` from the tag terms. It is only a column: no family holds it, it isn't
+	in the shared parameter file, and Revit works out its value from its parts.
+
+	``parts`` lists ``{'parameter', 'prefix', 'suffix', 'separator'}`` in order. Each part shows as
+	prefix, value, suffix; its separator goes between it and the next part.
+	"""
+
+	is_combined = True
+	# Read like a parameter's, so tables that list columns can show one.
+	dtype = 'Text'
+	group_under = None
+	value = None
+	formula = None
+	instance_param = True
+
+	def __init__(self, name, parts=(), header_text=None, grid_column_width=1.0, guid=None, catalog=None):
+		self._name = _clean_name(name, 'Combined parameter')
+		self.catalog = None
+		self.guid = _clean_optional(guid) or str(uuid.uuid4())
+		self.parts = [_clean_combined_part(part) for part in parts]
+		self._header_text = None
+		self.header_text = header_text
+		self._grid_column_width = Param._coerce_grid_column_width(grid_column_width)
+		self.status = 'Ready'
+		self.validation_message = ''
+		if catalog is not None:
+			catalog._register_combined_param(self)
+
+	@property
+	def name(self):
+		return self._name
+
+	@name.setter
+	def name(self, new_name):
+		"""Rename; schedules and sections that list it follow."""
+		cleaned = _clean_name(new_name, 'Combined parameter')
+		if cleaned == self._name:
+			return
+		old_name = self._name
+		if self.catalog is not None:
+			self.catalog._check_column_name_free(cleaned, ignore=self)
+		self._name = cleaned
+		if self.catalog is not None:
+			self.catalog._param_renamed(old_name, cleaned)
+
+	@property
+	def header_text(self):
+		return self.name if self._header_text is None else self._header_text
+
+	@header_text.setter
+	def header_text(self, new_header_text):
+		self._header_text = _clean_optional(new_header_text)
+
+	@property
+	def grid_column_width(self):
+		return self._grid_column_width
+
+	@grid_column_width.setter
+	def grid_column_width(self, new_width):
+		self._grid_column_width = Param._coerce_grid_column_width(new_width)
+
+	@property
+	def parameter_names(self):
+		return [part['parameter'] for part in self.parts]
+
+	def set_parts(self, parts):
+		parts = [_clean_combined_part(part) for part in parts]
+		if self.catalog is not None:
+			self.catalog._check_combined_parts(self.name, parts)
+		self.parts = parts
+
+	def pattern(self):
+		"""The parts as text: ``[IPS_TAG_TERM_1]-[IPS_TAG_TERM_2]...``."""
+		text = ''
+		for index, part in enumerate(self.parts):
+			text += '{}[{}]{}'.format(part['prefix'], part['parameter'], part['suffix'])
+			if index < len(self.parts) - 1:
+				text += part['separator']
+		return text
+
+	def sample(self, values):
+		"""The value from ``values`` (parameter name to text). A part with no value is left out,
+		with its prefix, suffix and separator; check Revit agrees before relying on it."""
+		shown = [(part, str(values.get(part['parameter']) or '')) for part in self.parts]
+		shown = [(part, value) for part, value in shown if value]
+		text = ''
+		for index, (part, value) in enumerate(shown):
+			text += part['prefix'] + value + part['suffix']
+			if index < len(shown) - 1:
+				text += part['separator']
+		return text
+
+	def validate(self):
+		self.status = 'Ready'
+		self.validation_message = ''
+		issues = []
+		if not self.parts:
+			issues.append('No parameters to combine.')
+		if self.catalog is not None:
+			unknown = [name for name in self.parameter_names if self.catalog.get_param(name) is None]
+			if unknown:
+				issues.append('Unknown parameter(s): {}'.format(', '.join(unknown)))
+		if issues:
+			self.status = 'Error'
+			self.validation_message = ' '.join(issues)
+		return self
+
+	def with_overrides(self, **overrides):
+		"""An unregistered copy with a schedule's header text or column width."""
+		not_allowed = set(overrides) - {'header_text', 'grid_column_width'}
+		if not_allowed:
+			raise ValueError('A combined parameter has only a header and a column width to override.')
+		result = CombinedParam(
+			self.name, self.parts, header_text=self._header_text,
+			grid_column_width=self.grid_column_width, guid=self.guid,
+		)
+		for attribute, value in overrides.items():
+			setattr(result, attribute, value)
+		return result
+
+	def to_dict(self):
+		return {
+			'name': self.name,
+			'guid': self.guid,
+			'parts': [dict(part) for part in self.parts],
+			'header_text': self._header_text,
+			'grid_column_width': self.grid_column_width,
+		}
+
+	@classmethod
+	def from_dict(cls, data, catalog=None):
+		return cls(
+			data.get('name'), data.get('parts', []), header_text=data.get('header_text'),
+			grid_column_width=data.get('grid_column_width', 1.0), guid=data.get('guid'), catalog=catalog,
+		)
+
+
+def _section_block_issue(section, order):
+	"""Why columns ``order`` break ``section``'s block (together, in its order), or ``None``."""
+	columns = [order.index(name) for name in section.parameter_names if name in order]
+	if columns and columns != list(range(columns[0], columns[0] + len(columns))):
+		return "Section '{}' sets the order of its columns and keeps them together.".format(section.name)
+	return None
+
+
+def _clean_section_groups(groups):
+	"""A section's own header groups: ``[{'caption', 'parameter_names'}]``."""
+	cleaned = []
+	for group in groups or ():
+		caption = _clean_optional(group.get('caption'))
+		if not caption:
+			raise ValueError('A header group needs a caption.')
+		names = [_clean_name(name) for name in group.get('parameter_names', ())]
+		if not names:
+			raise ValueError("Header group '{}' needs at least one column.".format(caption))
+		cleaned.append({'caption': caption, 'parameter_names': names})
+	return cleaned
+
+
+def _clean_section_member(member):
+	"""A member is a parameter name, or ``{'section': guid}`` for an included section."""
+	if isinstance(member, dict):
+		guid = _clean_optional(member.get('section'))
+		if not guid:
+			raise ValueError('An included section needs its GUID.')
+		return {'section': guid}
+	return _clean_name(member)
+
+
+class ScheduleSection(object):
+	"""A standard block of columns that many schedules share, such as electrical data.
+
+	Schedules link to a section, and their own columns, header groups and hidden columns hold
+	the result, so nothing downstream needs to know sections exist. Changing a section changes
+	every schedule that uses it. A section decides which columns travel together, their order,
+	their caption and which are hidden; headers and widths still come from the parameters.
+
+	``members`` are the section's contents, in order: parameter names and other sections, so
+	Pump can include Electric Motor, which includes Electrical Data. ``parameter_names`` is the
+	resolved list of columns. An included section needs its catalog to resolve.
+	"""
+
+	def __init__(self, name, members=(), caption=None, hidden_parameter_names=(), guid=None, catalog=None,
+				 header_groups=()):
+		self.catalog = None
+		self.guid = _clean_optional(guid) or str(uuid.uuid4())
+		self._name = None
+		self.name = name
+		# The header group over all its columns.
+		self.caption = _clean_optional(caption)
+		# Header groups over some of its columns, inside the caption: [{'caption', 'parameter_names'}].
+		self.header_groups = _clean_section_groups(header_groups)
+		self.members = [_clean_section_member(member) for member in members]
+		if not self.members:
+			raise ValueError("Section '{}' needs at least one parameter.".format(self.name))
+		own = self.own_parameter_names
+		duplicates = sorted({param_name for param_name in own if own.count(param_name) > 1})
+		if duplicates:
+			raise ValueError("Section '{}' lists a parameter twice: {}".format(self.name, ', '.join(duplicates)))
+		# Only its own columns: an included section says which of its columns are hidden.
+		self.own_hidden = {_clean_name(param_name) for param_name in hidden_parameter_names}
+		strays = sorted(self.own_hidden - set(own))
+		if strays:
+			raise ValueError("Section '{}' hides a parameter it doesn't list: {}".format(self.name, ', '.join(strays)))
+		if catalog is not None:
+			catalog._register_section(self)
+
+	@property
+	def name(self):
+		return self._name
+
+	@name.setter
+	def name(self, new_name):
+		cleaned_name = '' if new_name is None else str(new_name).strip()
+		if not cleaned_name:
+			raise ValueError('Section name is required.')
+		if self.catalog is not None:
+			self.catalog._check_section_name_free(cleaned_name, ignore=self)
+		self._name = cleaned_name
+
+	@property
+	def own_parameter_names(self):
+		return [member for member in self.members if not isinstance(member, dict)]
+
+	def included_sections(self):
+		"""The sections listed directly in this one."""
+		included = []
+		for member in self.members:
+			if isinstance(member, dict):
+				section = self.catalog.get_section_by_guid(member['section']) if self.catalog is not None else None
+				if section is None:
+					raise ValueError("Section '{}' includes a section that isn't in the database.".format(self.name))
+				included.append(section)
+		return included
+
+	def included_guids(self):
+		"""The GUID of every section inside this one, at any depth."""
+		found = set()
+		waiting = [self]
+		while waiting:
+			for member in waiting.pop().members:
+				if isinstance(member, dict) and member['section'] not in found:
+					found.add(member['section'])
+					section = self.catalog.get_section_by_guid(member['section']) if self.catalog is not None else None
+					if section is not None:
+						waiting.append(section)
+		return found
+
+	def _resolved_names(self, path=()):
+		if self.guid in path:
+			raise ValueError("Section '{}' can't include itself, directly or through another section.".format(self.name))
+		names = []
+		included = iter(self.included_sections())
+		for member in self.members:
+			if isinstance(member, dict):
+				names.extend(next(included)._resolved_names(path + (self.guid,)))
+			else:
+				names.append(member)
+		return names
+
+	@property
+	def parameter_names(self):
+		"""Every column, in order, with included sections expanded."""
+		return self._resolved_names()
+
+	@property
+	def hidden_parameter_names(self):
+		hidden = set(self.own_hidden)
+		for section in self.included_sections():
+			hidden |= section.hidden_parameter_names
+		return hidden
+
+	def bands(self):
+		"""``(caption, columns)`` for each header group, outermost first. The outermost caption wins:
+		a section with a caption covers everything inside it, so its included sections' header groups
+		don't show; one without leaves theirs showing. Its own header groups always show."""
+		names = self.parameter_names
+		own = [
+			(group['caption'], [name for name in names if name in group['parameter_names']])
+			for group in self.header_groups
+		]
+		if self.caption:
+			return [(self.caption, names)] + own
+		bands = list(own)
+		for section in self.included_sections():
+			bands.extend(section.bands())
+		return bands
+
+	def band_issue(self):
+		"""Why its header groups can't all be built, or ``None``: each needs its columns side by
+		side, and two must be one inside the other or apart, never the same columns."""
+		names = self.parameter_names
+		spans = []
+		for group in self.header_groups:
+			missing = [name for name in group['parameter_names'] if name not in names]
+			if missing:
+				return "Header group '{}' lists columns not in the section: {}".format(
+					group['caption'], ', '.join(missing))
+		for caption, columns in self.bands():
+			indices = sorted(names.index(name) for name in columns)
+			if indices[-1] - indices[0] + 1 != len(indices):
+				return "Header group '{}' needs its columns side by side.".format(caption)
+			spans.append((caption, indices[0], indices[-1]))
+		for index, (caption, start, end) in enumerate(spans):
+			for other, other_start, other_end in spans[index + 1:]:
+				if (start, end) == (other_start, other_end):
+					return "Header groups '{}' and '{}' cover the same columns.".format(caption, other)
+				inside = (start <= other_start and other_end <= end) or (other_start <= start and end <= other_end)
+				apart = end < other_start or other_end < start
+				if not inside and not apart:
+					return "Header groups '{}' and '{}' overlap; one must be inside the other.".format(caption, other)
+		return None
+
+	def edited(self, **changes):
+		"""A proposed version of this section, outside the catalog, to preview before committing."""
+		if 'parameter_names' in changes:
+			changes['members'] = changes.pop('parameter_names')
+		fields = dict(
+			name=self.name, members=self.members, caption=self.caption,
+			hidden_parameter_names=self.own_hidden, guid=self.guid, header_groups=self.header_groups,
+		)
+		fields.update(changes)
+		proposed = ScheduleSection(**fields)
+		proposed.catalog = self.catalog
+		return proposed
+
+	def to_dict(self):
+		return {
+			'name': self.name,
+			'guid': self.guid,
+			'caption': self.caption,
+			'members': [dict(member) if isinstance(member, dict) else member for member in self.members],
+			'hidden_parameter_names': [
+				param_name for param_name in self.own_parameter_names if param_name in self.own_hidden
+			],
+			'header_groups': [
+				{'caption': group['caption'], 'parameter_names': list(group['parameter_names'])}
+				for group in self.header_groups
+			],
+		}
+
+	@classmethod
+	def from_dict(cls, data, catalog=None):
+		return cls(
+			name=data.get('name'),
+			members=data.get('members', data.get('parameter_names', [])),
+			caption=data.get('caption'),
+			hidden_parameter_names=data.get('hidden_parameter_names', []),
+			guid=data.get('guid'),
+			catalog=catalog,
+			header_groups=data.get('header_groups', []),
+		)
+
+
+class SectionChange(object):
+	"""What applying a section would do to one schedule, worked out without changing anything.
+
+	``order``, ``header_groups``, ``hidden`` and ``excluded`` are the schedule's new state. The
+	rest describes it for a preview: the section's columns ``before`` and after (``block``), the
+	``captions`` of its header groups, the sections it ``absorbs`` (used here and now inside this
+	one), columns ``added``, ``moved`` and ``removed``, columns newly
+	``hidden`` and ``shown``, the captions of header groups ``replaced``, ``trimmed`` and ``dropped``,
+	and ``local_headers``, ``(parameter, schedule header, parameter header)`` for each section
+	column whose header in this schedule differs from the parameter's.
+	"""
+
+	def __init__(self, schedule, section, **fields):
+		self.schedule = schedule
+		self.section = section
+		for name, value in fields.items():
+			setattr(self, name, value)
+
+	@property
+	def changes_anything(self):
+		return bool(
+			self.added or self.moved or self.removed or self.hidden_now or self.shown_now
+			or self.replaced or self.trimmed or self.dropped or self.caption_changed or self.absorbs
+		)
+
+
 class Schedule(object):
 	"""Families scheduled together.
 
@@ -772,9 +1171,14 @@ class Schedule(object):
 	def __init__(self, name=None, fams=None, header_text_overrides=None,
 				 header_groups=None, grid_column_width_overrides=None, catalog=None,
 				 field_names=None, family_overrides=None, hidden_field_names=None,
-				 filter_value=None, itemize=True, view_template=None, guid=None):
+				 filter_value=None, itemize=True, view_template=None, guid=None, section_uses=None):
 		self._name = None
 		self.catalog = None
+		# Sections this schedule links to: [{'section_guid', 'excluded': [parameters left out here]}].
+		self.section_uses = [
+			{'section_guid': use['section_guid'], 'excluded': list(use.get('excluded', []))}
+			for use in section_uses or []
+		]
 		# Stays the same through renames, so a Revit project can tell which schedule this is.
 		self.guid = _clean_optional(guid) or str(uuid.uuid4())
 		self.name = name
@@ -813,6 +1217,7 @@ class Schedule(object):
 				group.get('parameter_names', []),
 				top_row=group.get('top_row', 0),
 				bottom_row=group.get('bottom_row', group.get('top_row', 0)),
+				section_guid=group.get('section_guid'),
 			)
 		self.validate()
 
@@ -858,18 +1263,262 @@ class Schedule(object):
 			]
 			self.hidden_field_names &= kept
 		self.refresh_params()
+		self._sync_section_uses()
 		self.validate()
 
 	def add_columns(self, param_names, after=None):
 		"""Add catalog parameters as columns, after column ``after`` or at the end.
-		Columns already in the schedule are left where they are."""
+		Columns already in the schedule are left where they are. A column its section
+		lists goes back in the section's order, wherever ``after`` says."""
 		current = [param.name for param in self.params]
 		added = [name for name in dict.fromkeys(param_names) if name not in current]
 		for name in added:
-			if self.catalog is None or self.catalog.get_param(name) is None:
+			if self.catalog is None or self.catalog.get_column(name) is None:
 				raise ValueError("Unknown parameter '{}' for schedule '{}'.".format(name, self.name))
 		position = current.index(after) + 1 if after in current else len(current)
-		self.set_field_names(current[:position] + added + current[position:])
+		order = current[:position] + added + current[position:]
+		restored_hidden = set()
+		for section, _use in self._used_sections():
+			restored = set(added) & set(section.parameter_names)
+			if not restored:
+				continue
+			restored_hidden |= restored & section.hidden_parameter_names
+			block = [name for name in section.parameter_names if name in order]
+			kept = [name for name in block if name not in restored]
+			first = kept[0] if kept else block[0]
+			others = [name for name in order if name not in block]
+			position = sum(1 for name in order[:order.index(first)] if name not in block)
+			order = others[:position] + block + others[position:]
+		self._check_section_blocks(order)
+		self.set_field_names(order)
+		self.hidden_field_names |= restored_hidden
+
+	# --- sections ---------------------------------------------------------
+
+	def _used_sections(self):
+		"""``(section, use)`` for each section this schedule links to."""
+		if self.catalog is None:
+			return []
+		used = []
+		for use in self.section_uses:
+			section = self.catalog.get_section_by_guid(use['section_guid'])
+			if section is not None:
+				used.append((section, use))
+		return used
+
+	def _section_use(self, section_guid):
+		return next((use for use in self.section_uses if use['section_guid'] == section_guid), None)
+
+	def _section_groups(self, section_guid):
+		return [group for group in self.header_groups if group.get('section_guid') == section_guid]
+
+	def sections_through(self, section):
+		"""The sections used here that are ``section`` or include it."""
+		return [
+			used for used, _use in self._used_sections()
+			if used.guid == section.guid or section.guid in used.included_guids()
+		]
+
+	def _check_section_blocks(self, order):
+		"""Raise ``ValueError`` if ``order`` splits a section or changes its order."""
+		for section, _use in self._used_sections():
+			issue = _section_block_issue(section, order)
+			if issue:
+				raise ValueError("{} Move all of its columns together, or change the order in the section.".format(issue))
+
+	def _sync_section_uses(self):
+		"""After the columns change: a section column no longer here is excluded, and a section
+		with none left is no longer used. Keeps each section's header group on its columns."""
+		order = [param.name for param in self.params]
+		for use in list(self.section_uses):
+			section = self.catalog.get_section_by_guid(use['section_guid']) if self.catalog is not None else None
+			if section is None and self.catalog is None:
+				continue
+			groups = self._section_groups(use['section_guid'])
+			block = [name for name in section.parameter_names if name in order] if section is not None else []
+			if not block:
+				self.section_uses.remove(use)
+				self.header_groups = [group for group in self.header_groups if group not in groups]
+				continue
+			use['excluded'] = [name for name in section.parameter_names if name not in order]
+			bands = [(caption, [name for name in names if name in order]) for caption, names in section.bands()]
+			bands = [(caption, names) for caption, names in bands if names]
+			if sorted((group['caption'], sorted(group['parameter_names'])) for group in groups) == sorted(
+				(caption, sorted(names)) for caption, names in bands
+			):
+				continue
+			self.header_groups = [group for group in self.header_groups if group not in groups]
+			if not _section_block_issue(section, order):
+				for caption, names in bands:
+					self.add_header_group(caption, names, section_guid=section.guid)
+
+	def plan_section(self, section, excluded=None, after=None, previous=None):
+		"""Work out what applying ``section`` would do here, changing nothing.
+
+		``excluded`` lists the section's columns this schedule leaves out; by default, what it
+		leaves out already. The block goes where its first column already is, otherwise after
+		column ``after`` or at the end. A section used here that ``section`` includes is absorbed
+		into it. ``previous`` is the section's columns before an edit, when they've changed.
+		Raises ``ValueError`` if it can't be applied.
+		"""
+		if self.catalog is None:
+			raise ValueError('A schedule needs a catalog to use a section.')
+		use = self._section_use(section.guid)
+		included = section.included_guids()
+		absorbs = [other for other, _use in self._used_sections() if other.guid in included]
+		if excluded is None:
+			left_out = set(use['excluded'] if use else ())
+			for _other, other_use in self._used_sections():
+				if other_use['section_guid'] in included:
+					left_out |= set(other_use['excluded'])
+		else:
+			left_out = set(excluded)
+		block = [name for name in section.parameter_names if name not in left_out]
+		if not block:
+			raise ValueError("Schedule '{}' would have no columns from section '{}'.".format(self.name, section.name))
+		for name in block:
+			if self.catalog.get_column(name) is None:
+				raise ValueError("Unknown parameter '{}' in section '{}'.".format(name, section.name))
+		current = [param.name for param in self.params]
+		for other, other_use in self._used_sections():
+			if other.guid == section.guid or other.guid in included:
+				continue
+			shared = (set(other.parameter_names) - set(other_use['excluded'])) & set(block)
+			if shared:
+				raise ValueError("Schedule '{}' already has {} in section '{}'.".format(
+					self.name, ', '.join(sorted(shared)), other.name))
+
+		if previous is None:
+			linked = self.catalog.get_section_by_guid(section.guid) if use else None
+			previous = set(linked.parameter_names) if linked is not None else set()
+		removed = [name for name in current if name in previous and name not in block]
+		others = [name for name in current if name not in removed and name not in block]
+		first = next((name for name in current if name in block), None)
+		if first is not None:
+			position = sum(1 for name in current[:current.index(first)] if name in others)
+		elif after in others:
+			position = others.index(after) + 1
+		else:
+			position = len(others)
+		order = others[:position] + block + others[position:]
+		self._check_section_blocks_except(section, order)
+
+		replaced, trimmed, dropped, groups = [], [], [], []
+		block_names = set(block)
+		for group in self.header_groups:
+			if group.get('section_guid') == section.guid or group.get('section_guid') in included:
+				continue
+			names = [name for name in group['parameter_names'] if name not in removed]
+			rest = [name for name in names if name not in block_names]
+			if not rest:
+				replaced.append(group['caption'])
+				continue
+			columns = sorted(order.index(name) for name in rest)
+			if columns[-1] - columns[0] + 1 != len(columns):
+				dropped.append(group['caption'])
+				continue
+			if len(rest) != len(group['parameter_names']):
+				trimmed.append(group['caption'])
+			groups.append(dict(group, parameter_names=sorted(rest, key=order.index)))
+		captions = []
+		for caption, names in section.bands():
+			names = [name for name in names if name in block_names]
+			if names:
+				captions.append(caption)
+				groups.append({
+					'caption': caption, 'parameter_names': names,
+					'top_row': 0, 'bottom_row': 0, 'section_guid': section.guid,
+				})
+
+		hidden = (self.hidden_field_names - set(removed) - block_names) | (section.hidden_parameter_names & block_names)
+		kept = [name for name in current if name in order]
+		new_kept = [name for name in order if name in current]
+		local_headers = []
+		for name in block:
+			local = self.header_text_overrides.get(name)
+			param = self.catalog.get_column(name)
+			if local is not None and local != param.header_text:
+				local_headers.append((name, local, param.header_text))
+		return SectionChange(
+			self, section,
+			order=order,
+			block=block,
+			before=[name for name in current if name in block_names or name in removed],
+			header_groups=groups,
+			hidden=hidden,
+			excluded=[name for name in section.parameter_names if name not in block_names],
+			added=[name for name in block if name not in current],
+			removed=removed,
+			moved=[
+				name for name in block
+				if name in current and kept.index(name) != new_kept.index(name)
+			],
+			hidden_now=sorted(hidden - self.hidden_field_names),
+			shown_now=sorted((self.hidden_field_names - hidden) - set(removed)),
+			replaced=replaced,
+			trimmed=trimmed,
+			dropped=dropped,
+			caption_changed=sorted(group['caption'] for group in self._section_groups(section.guid)) != sorted(captions),
+			captions=captions,
+			absorbs=absorbs,
+			local_headers=local_headers,
+		)
+
+	def _check_section_blocks_except(self, section, order):
+		for other, _use in self._used_sections():
+			if other.guid != section.guid:
+				issue = _section_block_issue(other, order)
+				if issue:
+					raise ValueError(issue)
+
+	def apply_section_change(self, change, clear_headers=()):
+		"""Commit a change from ``plan_section``. ``clear_headers`` lists columns to give back
+		the parameter's own header."""
+		for name in change.removed:
+			self.header_text_overrides.pop(name, None)
+			self.grid_column_width_overrides.pop(name, None)
+			for param_overrides in self.family_overrides.values():
+				param_overrides.pop(name, None)
+		self.family_overrides = {
+			family_name: param_overrides
+			for family_name, param_overrides in self.family_overrides.items() if param_overrides
+		}
+		for name in clear_headers:
+			self.header_text_overrides.pop(name, None)
+		self.field_names = list(change.order)
+		self.header_groups = [dict(group, parameter_names=list(group['parameter_names'])) for group in change.header_groups]
+		self.hidden_field_names = set(change.hidden)
+		use = self._section_use(change.section.guid)
+		if use is None:
+			use = {'section_guid': change.section.guid, 'excluded': []}
+			self.section_uses.append(use)
+		use['excluded'] = list(change.excluded)
+		absorbed = {other.guid for other in change.absorbs}
+		self.section_uses = [other for other in self.section_uses if other['section_guid'] not in absorbed]
+		self.refresh_params()
+		self.validate()
+
+	def apply_section(self, section, excluded=None, after=None, clear_headers=()):
+		"""Use ``section`` in this schedule, or bring it back in line with the section."""
+		self.apply_section_change(self.plan_section(section, excluded=excluded, after=after), clear_headers=clear_headers)
+
+	def detach_section(self, section):
+		"""Stop using ``section`` and keep its columns as ordinary ones."""
+		use = self._section_use(section.guid)
+		if use is None:
+			return
+		self.section_uses.remove(use)
+		for group in self._section_groups(section.guid):
+			del group['section_guid']
+
+	def remove_section(self, section):
+		"""Stop using ``section`` and take its columns out of the schedule."""
+		if self._section_use(section.guid) is None:
+			return
+		current = {param.name for param in self.params}
+		self.remove_columns([name for name in section.parameter_names if name in current])
+		# Removing its last column ends the use; this covers a use with no columns left to remove.
+		self.detach_section(section)
 
 	def move_columns(self, param_names, step):
 		"""Move columns one place left (``step`` -1) or right (+1), keeping them in order.
@@ -885,6 +1534,7 @@ class Schedule(object):
 		for index in (indices if step < 0 else reversed(indices)):
 			if order[index + step] not in moving:
 				order[index], order[index + step] = order[index + step], order[index]
+		self._check_section_blocks(order)
 		for group in self.header_groups:
 			columns = sorted(order.index(name) for name in group['parameter_names'])
 			if columns[-1] - columns[0] + 1 != len(columns):
@@ -993,6 +1643,12 @@ class Schedule(object):
 			if duplicates:
 				issues.append('Duplicate field(s): {}'.format(', '.join(duplicates)))
 
+		order = [param.name for param in self.params]
+		for section, _use in self._used_sections():
+			issue = _section_block_issue(section, order)
+			if issue:
+				issues.append(issue)
+
 		for family_name, param_overrides in self.family_overrides.items():
 			fam = self.get_family(family_name)
 			if fam is None:
@@ -1019,7 +1675,8 @@ class Schedule(object):
 		if self.field_names is not None and self.catalog is not None:
 			for name in self.field_names:
 				if name not in params_by_name:
-					param = self.catalog.get_param(name)
+					# A combined parameter is only ever a chosen column.
+					param = self.catalog.get_column(name)
 					if param is not None:
 						params_by_name[name] = param
 		return params_by_name
@@ -1042,7 +1699,7 @@ class Schedule(object):
 				param = param.with_overrides(**param_overrides)
 			self.params.append(param)
 
-	def add_header_group(self, caption, parameter_names, top_row=0, bottom_row=0):
+	def add_header_group(self, caption, parameter_names, top_row=0, bottom_row=0, section_guid=None):
 		clean_caption = '' if caption is None else str(caption).strip()
 		if not clean_caption:
 			raise ValueError('Header group caption is required.')
@@ -1078,6 +1735,9 @@ class Schedule(object):
 			'top_row': top_row,
 			'bottom_row': bottom_row,
 		}
+		# Marks a group a section made, so changing the section can rebuild it.
+		if section_guid:
+			group['section_guid'] = section_guid
 		self.header_groups.append(group)
 		return dict(group)
 
@@ -1106,6 +1766,7 @@ class Schedule(object):
 					'parameter_names': list(group['parameter_names']),
 					'top_row': group['top_row'],
 					'bottom_row': group['bottom_row'],
+					**({'section_guid': group['section_guid']} if group.get('section_guid') else {}),
 				}
 				for group in self.header_groups
 			],
@@ -1114,6 +1775,11 @@ class Schedule(object):
 			'itemize': self.itemize,
 			'view_template': self.view_template,
 		})
+		if self.section_uses:
+			data['section_uses'] = [
+				{'section_guid': use['section_guid'], 'excluded': list(use['excluded'])}
+				for use in self.section_uses
+			]
 		return data
 
 	@classmethod
@@ -1124,7 +1790,11 @@ class Schedule(object):
 			if fam is None:
 				raise ValueError("Schedule '{}' uses unknown family '{}'.".format(data.get('name'), family_name))
 			fams.append(fam)
+		for use in data.get('section_uses', []):
+			if catalog is None or catalog.get_section_by_guid(use.get('section_guid')) is None:
+				raise ValueError("Schedule '{}' uses unknown section '{}'.".format(data.get('name'), use.get('section_guid')))
 		return cls(
+			section_uses=data.get('section_uses'),
 			name=data.get('name'),
 			fams=fams,
 			header_text_overrides=data.get('header_text_overrides', {}),
@@ -1200,6 +1870,8 @@ class Schedule(object):
 		if old_name in self.hidden_field_names:
 			self.hidden_field_names.discard(old_name)
 			self.hidden_field_names.add(new_name)
+		for use in self.section_uses:
+			use['excluded'] = [new_name if name == old_name else name for name in use['excluded']]
 
 	def _param_removed(self, param_name):
 		if self.field_names is not None:
@@ -1212,6 +1884,7 @@ class Schedule(object):
 		self.grid_column_width_overrides.pop(param_name, None)
 		self.hidden_field_names.discard(param_name)
 		self.refresh_params()
+		self._sync_section_uses()
 
 	def _family_renamed(self, old_name, new_name):
 		if old_name in self.family_overrides:
@@ -1251,6 +1924,11 @@ class Catalog(object):
 		self.params = []
 		self.families = []
 		self.schedules = []
+		self.sections = []
+		# Schedule columns joining several parameters (CombinedParam).
+		self.combined_params = []
+		# A section being previewed, by GUID: lookups see it instead of the saved one.
+		self._proposed_sections = {}
 		# Code (abbreviation) of each client, country, category, ... by name: {'client': {name: code}, ...}.
 		self.codes = {kind: {} for kind in CODED_KINDS}
 		# How family names are built: [{'term', 'use', 'prefix', 'suffix'}, ...] (FAMILY_NAME_TERMS).
@@ -1272,16 +1950,189 @@ class Catalog(object):
 	def get_param(self, name):
 		return next((param for param in self.params if param.name == name), None)
 
+	def get_combined_param(self, name):
+		return next((combined for combined in self.combined_params if combined.name == name), None)
+
+	def get_column(self, name):
+		"""What a schedule column named ``name`` shows: a parameter or a combined parameter."""
+		return self.get_param(name) or self.get_combined_param(name)
+
+	def column_present(self, name, names):
+		"""Whether columns ``names`` already give column ``name``: it is among them, or it is a
+		combined parameter and all its parts are."""
+		if name in names:
+			return True
+		combined = self.get_combined_param(name)
+		return combined is not None and bool(combined.parts) and set(combined.parameter_names) <= set(names)
+
 	def get_family(self, name):
 		return next((fam for fam in self.families if fam.name == name), None)
 
 	def get_schedule(self, name):
 		return next((schedule for schedule in self.schedules if schedule.name == name), None)
 
+	def get_section(self, name):
+		return next((section for section in self.sections if section.name == name), None)
+
+	def get_section_by_guid(self, guid):
+		proposed = self._proposed_sections.get(guid)
+		if proposed is not None:
+			return proposed
+		return next((section for section in self.sections if section.guid == guid), None)
+
+	@contextlib.contextmanager
+	def proposing(self, proposed):
+		"""While previewing: sections that include ``proposed`` resolve with it, not the saved one."""
+		self._proposed_sections = {proposed.guid: proposed}
+		try:
+			yield
+		finally:
+			self._proposed_sections = {}
+
+	def sections_including(self, section):
+		"""Every section with ``section`` inside it, at any depth."""
+		return [other for other in self.sections if section.guid in other.included_guids()]
+
+	def schedules_using(self, section):
+		"""The schedules that use ``section``, directly or through a section that includes it."""
+		return [schedule for schedule in self.schedules if schedule.sections_through(section)]
+
+	# --- sections ---------------------------------------------------------
+
+	def add_section(self, name, members=(), **kwargs):
+		section = ScheduleSection(name, members, **kwargs)
+		section.catalog = self
+		self._check_section_definition(section)
+		section.catalog = None
+		self._register_section(section)
+		return section
+
+	def _check_section_definition(self, section):
+		"""Raise ``ValueError`` for an unknown parameter or section, a loop or a repeated column."""
+		names = section.parameter_names
+		unknown = [name for name in names if self.get_column(name) is None]
+		if unknown:
+			raise ValueError("Unknown parameter(s) for section '{}': {}".format(section.name, ', '.join(unknown)))
+		repeated = sorted({name for name in names if names.count(name) > 1})
+		if repeated:
+			raise ValueError("Section '{}' would list a parameter twice: {}".format(section.name, ', '.join(repeated)))
+		issue = section.band_issue()
+		if issue:
+			raise ValueError("Section '{}': {}".format(section.name, issue))
+
+	def plan_section_update(self, section, proposed):
+		"""What changing ``section`` to ``proposed`` (from ``section.edited``) would do: a list of
+		``SectionChange``, one per schedule and section it uses that has ``section`` inside.
+		``change.section`` says which that is. Changes nothing."""
+		self._check_section_name_free(proposed.name, ignore=section)
+		previous = {other.guid: set(other.parameter_names) for other in self.sections}
+		changes = []
+		with self.proposing(proposed):
+			self._check_section_definition(proposed)
+			for other in self.sections_including(section):
+				self._check_section_definition(other)
+			for schedule in self.schedules:
+				for used in schedule.sections_through(section):
+					changes.append(schedule.plan_section(used, previous=previous[used.guid]))
+		return changes
+
+	def commit_section_update(self, section, proposed, changes, clear_headers=None):
+		"""Change ``section`` to ``proposed`` and apply ``changes``, the accepted ones from
+		``plan_section_update``. A schedule with no accepted change keeps its columns, and stops
+		using the section that reached it. ``clear_headers`` maps schedule name to columns."""
+		accepted = {(change.schedule.name, change.section.guid) for change in changes}
+		for schedule in self.schedules:
+			for used in schedule.sections_through(section):
+				if (schedule.name, used.guid) not in accepted:
+					schedule.detach_section(used)
+		# The definition first: applying a change validates the schedule against its section.
+		section.name = proposed.name
+		section.caption = proposed.caption
+		section.members = [dict(member) if isinstance(member, dict) else member for member in proposed.members]
+		section.own_hidden = set(proposed.own_hidden)
+		section.header_groups = [dict(group, parameter_names=list(group['parameter_names'])) for group in proposed.header_groups]
+		for change in changes:
+			change.schedule.apply_section_change(change, (clear_headers or {}).get(change.schedule.name, ()))
+
+	def update_section(self, section, **changes):
+		"""Change ``section`` and every schedule using it."""
+		proposed = section.edited(**changes)
+		self.commit_section_update(section, proposed, self.plan_section_update(section, proposed))
+
+	def remove_section(self, name):
+		"""Delete a section. Schedules using it keep its columns as ordinary ones, and sections
+		including it take in its members, so their columns stay the same."""
+		section = self.get_section(name)
+		if section is None:
+			raise ValueError('Section not found: {}'.format(name))
+		including = self.sections_including(section)
+		for schedule in self.schedules:
+			schedule.detach_section(section)
+		for other in including:
+			members = []
+			for member in other.members:
+				if member == {'section': section.guid}:
+					members.extend(section.members)
+					other.own_hidden |= section.own_hidden
+					if not other.caption:
+						other.header_groups.extend(
+							{'caption': caption, 'parameter_names': list(columns)}
+							for caption, columns in section.bands()
+						)
+				else:
+					members.append(member)
+			other.members = members
+		self.sections.remove(section)
+		section.catalog = None
+		# Its caption went with it, so the header groups of those sections may change.
+		for other in including:
+			for schedule in self.schedules:
+				if schedule._section_use(other.guid) is not None:
+					schedule.apply_section(other)
+		return section
+
+	def _drop_empty_sections(self):
+		"""After a parameter is removed: a section with nothing left goes, and leaves those including it."""
+		empty = [section for section in self.sections if not section.members]
+		while empty:
+			for section in empty:
+				self.sections.remove(section)
+				section.catalog = None
+				for other in self.sections:
+					other.members = [member for member in other.members if member != {'section': section.guid}]
+			empty = [section for section in self.sections if not section.members]
+
 	# --- building ---------------------------------------------------------
 
 	def add_param(self, name, dtype, **kwargs):
 		return Param(name, dtype, catalog=self, **kwargs)
+
+	# --- combined parameters ----------------------------------------------
+
+	def add_combined_param(self, name, parts=(), **kwargs):
+		"""Define a combined parameter. Add it to schedules as a column, or to a section."""
+		self._check_combined_parts(name, [_clean_combined_part(part) for part in parts])
+		return CombinedParam(name, parts, catalog=self, **kwargs)
+
+	def _check_combined_parts(self, name, parts):
+		if not parts:
+			raise ValueError("Combined parameter '{}' needs at least one parameter.".format(name))
+		unknown = [part['parameter'] for part in parts if self.get_param(part['parameter']) is None]
+		if unknown:
+			raise ValueError("Unknown parameter(s) for combined parameter '{}': {}".format(name, ', '.join(unknown)))
+
+	def remove_combined_param(self, name):
+		"""Delete a combined parameter: it leaves every schedule and section that lists it."""
+		combined = self.get_combined_param(name)
+		if combined is None:
+			raise ValueError('Combined parameter not found: {}'.format(name))
+		self.combined_params.remove(combined)
+		combined.catalog = None
+		self._column_removed(name)
+		return combined
+
+	def schedules_with_column(self, name):
+		return [schedule for schedule in self.schedules if name in {param.name for param in schedule.params}]
 
 	def recorded_param_units(self):
 		"""Every Units term recorded on a parameter."""
@@ -1333,9 +2184,25 @@ class Catalog(object):
 			if param in fam.params:
 				fam.params.remove(param)
 				fam.overrides.pop(name, None)
+		# A combined parameter loses that part; with none left, it shows as an error.
+		for combined in self.combined_params:
+			combined.parts = [part for part in combined.parts if part['parameter'] != name]
+		self._column_removed(name)
+		return param
+
+	def _column_removed(self, name):
+		"""A parameter or combined parameter is gone: sections and schedules drop it."""
+		for section in self.sections:
+			if name in section.members:
+				section.members.remove(name)
+				section.own_hidden.discard(name)
+			for group in section.header_groups:
+				if name in group['parameter_names']:
+					group['parameter_names'].remove(name)
+			section.header_groups = [group for group in section.header_groups if group['parameter_names']]
+		self._drop_empty_sections()
 		for schedule in self.schedules:
 			schedule._param_removed(name)
-		return param
 
 	def remove_family(self, name):
 		fam = self.get_family(name)
@@ -1465,6 +2332,19 @@ class Catalog(object):
 		name = _clean_name(name)
 		if any(param is not ignore and param.name == name for param in self.params):
 			raise ValueError("Parameter '{}' already exists.".format(name))
+		# A schedule column name means one thing.
+		if any(combined is not ignore and combined.name == name for combined in self.combined_params):
+			raise ValueError("A combined parameter is already called '{}'.".format(name))
+
+	def _check_column_name_free(self, name, ignore=None):
+		self._check_param_name_free(name, ignore=ignore)
+
+	def _register_combined_param(self, combined):
+		self._check_column_name_free(combined.name)
+		if any(other.guid == combined.guid for other in self.combined_params):
+			combined.guid = str(uuid.uuid4())
+		combined.catalog = self
+		self.combined_params.append(combined)
 
 	def _check_family_name_free(self, name, ignore=None):
 		if any(fam is not ignore and fam.name == name for fam in self.families):
@@ -1493,7 +2373,30 @@ class Catalog(object):
 		schedule.catalog = self
 		self.schedules.append(schedule)
 
+	def _check_section_name_free(self, name, ignore=None):
+		if any(section is not ignore and section.name == name for section in self.sections):
+			raise ValueError("Section name '{}' already exists.".format(name))
+
+	def _register_section(self, section):
+		self._check_section_name_free(section.name)
+		# A shared GUID (a hand-edited file) would link schedules to the wrong section.
+		if self.get_section_by_guid(section.guid) is not None:
+			section.guid = str(uuid.uuid4())
+		section.catalog = self
+		self.sections.append(section)
+
 	def _param_renamed(self, old_name, new_name):
+		for combined in self.combined_params:
+			for part in combined.parts:
+				if part['parameter'] == old_name:
+					part['parameter'] = new_name
+		for section in self.sections:
+			section.members = [new_name if member == old_name else member for member in section.members]
+			for group in section.header_groups:
+				group['parameter_names'] = [new_name if name == old_name else name for name in group['parameter_names']]
+			if old_name in section.own_hidden:
+				section.own_hidden.discard(old_name)
+				section.own_hidden.add(new_name)
 		known_names = self.known_names() | {old_name}
 		for param in self.params:
 			if param.formula:
@@ -1521,6 +2424,10 @@ class Catalog(object):
 			fam.validate()
 			if fam.status == 'Error':
 				issues.append(('family', fam.name, fam.validation_message))
+		for combined in self.combined_params:
+			combined.validate()
+			if combined.status == 'Error':
+				issues.append(('combined parameter', combined.name, combined.validation_message))
 		for schedule in self.schedules:
 			schedule.validate()
 			if schedule.status == 'Error':
@@ -1538,6 +2445,9 @@ class Catalog(object):
 			**{key: dict(self.codes[kind]) for kind, key in _CODE_KEYS.items()},
 			'family_name_format': [dict(part) for part in self.family_name_format],
 			'param_name_format': [dict(part) for part in self.param_name_format],
+			**({'sections': [section.to_dict() for section in self.sections]} if self.sections else {}),
+			**({'combined_params': [combined.to_dict() for combined in self.combined_params]}
+			   if self.combined_params else {}),
 		}
 
 	@classmethod
@@ -1558,6 +2468,14 @@ class Catalog(object):
 			Param.from_dict(param_data, catalog=catalog)
 		for fam_data in data.get('families', []):
 			Fam.from_dict(fam_data, catalog=catalog)
+		# Before sections and schedules, which list them as columns.
+		for combined_data in data.get('combined_params', []):
+			CombinedParam.from_dict(combined_data, catalog=catalog)
+		for section_data in data.get('sections', []):
+			ScheduleSection.from_dict(section_data, catalog=catalog)
+		# After all are loaded: a section can include one listed later.
+		for section in catalog.sections:
+			catalog._check_section_definition(section)
 		for schedule_data in data.get('schedules', []):
 			Schedule.from_dict(schedule_data, catalog=catalog)
 		return catalog

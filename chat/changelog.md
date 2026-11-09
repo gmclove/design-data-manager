@@ -2,6 +2,40 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-09: Section window like the Schedule Builder, with header groups
+- Sections hold header groups besides the one over all columns, nested inside it; saved in JSON and CSV.
+- The section window shows the Schedule Builder's grid (Group Level rows, headers, Hidden Column, an
+  Included From row, the parameters' defaults) with Group Selected Headers and Ungroup Selected Headers.
+- Test copy: the AHU sections got back 77 header groups from their old schedules, such as `MOTOR DATA`
+  inside `SUPPLY FAN`; 5 old title groups that the new caption replaces were left out.
+
+## 2026-11-09: Combined parameters
+- A combined parameter is one schedule column joining several parameters, as Revit's combined
+  parameters do (`ScheduleDefinition.InsertCombinedParameterField`). It's a column only: no family
+  holds it and it isn't in the shared parameter file.
+- Combined Parameters tab and window (name, header, width, parts with prefix, suffix and separator);
+  Add Parameter... in the Schedule Builder and in sections offers them; the Schedule Builder shows the
+  pattern and each family's resulting value. Saved in the JSON (format 4) and the CSV (`combined_param`).
+- The macro builds combined columns; it compiles against Revit 2025. Not yet run in Revit.
+- Test copy: `TAG` (terms 1 to 5, `-` before terms 2 and 4) is first in `Equipment Tag` and on the 100
+  schedules with all five terms, just before their tag columns.
+
+## 2026-11-06: Schedule sections
+- A section is a standard block of columns that schedules link to; changing it changes them all.
+- A section can include other sections: `Pump` includes `Electric Motor`, which includes `Electrical
+  Data`. A change flows up through every level, and the outermost caption wins.
+- Sections tab, section window with a schedule picker, a side by side preview with an accept check for
+  each schedule, and Add Section... in the Schedule Builder.
+- Catalog format 4; version 3 files still load, but an older app refuses version 4.
+- The macro generator didn't change. On the real database its output is identical to `dev`'s, and
+  applying the twelve starting sections in memory left no schedule in error and all 5,770 columns in place.
+- `Fan` and `Basis Of Design` added to the starting sections in the test copy, after reviewing the user's
+  equipment-inventory reference code. No app code changed.
+- `Mechanical Equipment` section in the test copy (user, 2026-11-08), from the `_ALL MECH EQUIP FAMILIES`
+  schedule's columns: `Equipment Tag`, `IPS_EQUIP_Area_Served`, `Revit Admin`. The schedule stays.
+- The 18 `_AHU Section (...)` schedules became sections named `AHU ...` in the test copy and were deleted
+  there (user, 2026-11-08). Each holds the schedule's own columns, without the tag and admin ones.
+
 ## 2026-11-06: Schedule Builder
 - The schedule window is now titled Schedule Builder.
 - Column Width (in) row in the Schedule section (this schedule's override; gray when inherited) and

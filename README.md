@@ -250,6 +250,57 @@ Each schedule in the database becomes three Revit schedules:
 Revit API (it needs Revit 2025+ and the .NET SDK; otherwise it's skipped), so a macro that won't
 compile fails the tests.
 
+## Schedule Sections
+
+A section is a standard block of columns that many schedules share, such as electrical data. Change
+the section and every schedule using it changes. Sections only change a schedule's columns: they never
+add a parameter to the Revit project.
+
+- **What a section decides:** which columns travel together, their order, their header groups and
+  which columns are hidden. Headers and widths still come from each parameter, and a schedule can
+  still override a header.
+- **Sections tab:** click **Add Section...**, or double-click a section. The window lays out its columns
+  like the Schedule Builder: Group Level rows, column headers, a Hidden Column row, where each column is
+  included from, and the parameters' defaults. On the right, tick the schedules that use it; those with
+  the most of its columns are listed first.
+- **Header groups:** **Header Group Over All Columns** is the one over the whole section. For more, click
+  headers to select them and **Group Selected Headers**, as in the Schedule Builder; groups can sit inside
+  one another but can't overlap. **Ungroup Selected Headers** removes the innermost group around the
+  selected headers. Selecting every column and grouping sets the one over all columns.
+- **Sections inside sections:** a section can include others, so `Pump` includes `Electric Motor`, which
+  includes `Electrical Data`. Change `Electrical Data` and the preview lists every schedule it reaches, at any
+  level. The outermost caption wins: `Electric Motor` shows one `MOTOR DATA` caption over its columns and
+  the electrical ones, and `Pump`, having no caption, keeps `MOTOR DATA` and leaves its own columns ungrouped.
+- **Only Add Columns a Schedule Already Has** is on by default, so a section doesn't add empty columns.
+  A schedule with none of the section's columns gets them all.
+- **Preview Changes...** shows each schedule's columns now and after, and which header groups are replaced,
+  trimmed or dropped. Nothing changes until **Apply Selected**. If a schedule shows a different header from
+  the parameter's, a check lets you go back to the parameter's.
+- **In the Schedule Builder:** **Add Section...** adds a whole section after the selected column, and a label
+  names the sections in use. Remove a section's column to leave it out of that schedule; add it back and it
+  returns to its place. A section's columns move only together, and only the section can reorder them.
+- **Rules:** a parameter can be in only one section of a schedule. If you don't accept an edit for a schedule,
+  it keeps its columns and stops using its section. Deleting a section leaves its columns as ordinary ones,
+  and any section including it lists them directly. Adding a section takes over any section inside it that
+  the schedule already uses.
+
+## Combined Parameters
+
+A combined parameter is one schedule column that joins several parameters, as Revit's combined
+parameters do. `TAG` joins the five tag terms, with a `-` before terms 2 and 4, so it reads like `HW-P-1A`.
+It's only a column: no family holds it, it isn't in the shared parameter file, and Revit works out its value.
+
+- **Combined Parameters tab:** click **Add Combined Parameter...**, or double-click one. Give it a name, a
+  column header and width, then add the parameters to combine, in order. Select rows to set their
+  **Prefix**, **Suffix** and **Separator** (the separator goes before the next part); spaces count.
+- **Using it:** **Add Parameter...** in the Schedule Builder lists combined parameters too, and a section can
+  list one. When adding a section, a schedule with all of a combined parameter's parts counts as having it.
+- **In the Schedule Builder:** its column shows its pattern in the Formula row, and each family's row shows
+  the value its Default Values come to. Header, width and hidden work like any column.
+- **Renames and deletes:** renaming a part parameter updates it. Deleting one drops that part; a combined
+  parameter with no parts left shows an error. Deleting a combined parameter takes it out of every schedule
+  and section.
+
 ## Families: Codes and Names
 
 On the Families tab, one click on a cell edits it in place; one click on a **Name** opens the Family

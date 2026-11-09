@@ -16,6 +16,79 @@ Standing rules that every design has to meet. Check new work against them.
   to the families that need it. Anything that would add a project parameter needs the user's approval
   first, for that specific case.
 
+## Schedule sections
+- **A section is a catalog definition that schedules link to, not a copy** (user asked for a data
+  structure; link is my call): the 130 imported schedules show copies drift, e.g. `MOTOR DATA` has 18
+  variants across 22 uses.
+- **Schedules keep their resolved columns, header groups and hidden columns** (my call). A section writes
+  into them, so the macro, CSV and sync read what they always read.
+- **One section per standard, and a schedule can leave columns out** (my call), instead of a variant
+  for each combination. Removing a section's column from a schedule records it as excluded.
+- **The section owns order, caption and which columns are hidden; parameters own headers and widths; a
+  schedule can still override a header** (my call). A local header stays until the preview's check clears it.
+- **A parameter can be in only one section per schedule** (my call), because Revit can't repeat a column.
+- **Sections can include other sections** (user, 2026-11-06): electrical data -> electric motor -> pump.
+  Members are parameters or sections, so a change to `Electrical Data` flows up without repeating it.
+  Includes rather than single-parent inheritance (my call), so `Pump` could also include `Vibration
+  Isolation`. Loops, and a column listed twice through includes, are refused.
+- **The outermost caption wins** (my call): a section with a caption covers everything inside it, and one
+  without leaves its included sections' captions showing. That gives today's Pump layout: `MOTOR DATA` over
+  the motor and electrical columns, and the pump's own columns ungrouped.
+- **A schedule links to its top section only** (my call). Applying a section takes over any section inside
+  it that the schedule already uses. A schedule reaching a section through another can't be unticked in that
+  section's window; change it on the section it uses.
+- **Deleting an included section lists its columns directly in the sections including it** (my call), so
+  their schedules keep the same columns.
+- **No separate equipment type list** (user, 2026-11-06): whether a schedule is electrical or motor-driven
+  follows from the sections it uses.
+- **Prefixes are future development** (user, 2026-11-06), see [plan.md](plan.md).
+- **Took ideas, not code, from the user's equipment-inventory reference** (user approved, 2026-11-06). Its
+  components are what includes already do. Taken: `Fan` beside `Pump` under `Electric Motor`, `Basis Of
+  Design` from `Manuf`, and one component in two roles as the design for prefixes. Skipped: the class tree as
+  a type list (decided against above); `serial`, `status`, `qty` and `aka`, which describe one real unit, while
+  this app defines schedules and values live in Revit (no schedule has a serial or status column); `Glycol`
+  (no such columns). `abbrev` as a default per schedule is left for the user to raise.
+- **`Mechanical Equipment` section from `_ALL MECH EQUIP FAMILIES`** (user, 2026-11-08). It includes
+  `Equipment Tag` and `Revit Admin` rather than listing their columns again (my call). Its tag columns are
+  hidden, as `Equipment Tag` hides them on most schedules; the schedule shows them. The user first had the
+  schedule deleted, then kept it as a schedule too, as with `_MECH EQUIP - Elect Connections`, which is
+  made of sections too but stays a schedule.
+- **A section's header groups sit inside its caption; the outermost caption still wins over included
+  sections** (my call, 2026-11-09). A section's own groups always show; an included section's show only
+  when the section including it has no caption, as before. Groups nest or stay apart, never overlap or
+  repeat the same columns, since Revit can't build that.
+- **Ungroup removes the innermost group around the selected headers** (my call); grouping every column
+  sets the caption instead of adding a group.
+- **In the section window, a column from an included section is hidden or grouped in that section**
+  (my call): the window says where.
+- **Combined parameters are columns, not parameters** (my call, 2026-11-09): kept in their own list
+  so they never reach families, the shared parameter file or the RFPS export, but a schedule lists one
+  by name like any column, so order, hiding, header groups, widths and sections work unchanged. One name
+  space: a combined parameter can't share a name with a parameter.
+- **A schedule with all of a combined parameter's parts has it by default** (my call), for Only Add
+  Columns a Schedule Already Has when adding a section.
+- **Deleting a part parameter drops that part** (my call); with no parts left it shows an error rather
+  than disappearing from schedules.
+- **The preview of a combined value leaves out an empty part with its prefix** (my call, unverified):
+  check against Revit.
+- **TAG goes just before a schedule's tag columns, and first in `Equipment Tag`** (my call, 2026-11-09);
+  the user asked for terms 1 to 5 with a `-` before 2 and 4.
+- **`_AHU Section (...)` schedules are sections only** (user, 2026-11-08): each became an `AHU ...`
+  section and the schedule was deleted, in the test copy. The tag and admin columns stay out, since
+  `Equipment Tag` and `Revit Admin` hold them and a column can be in only one section of a schedule (my
+  call). Each has a header group like `COOLING COIL` and `PRE-COOLING COIL` (user), using wording already
+  on the user's schedules where there was one, such as `SUPPLY FAN` and `HEATING COIL` (my call). Header
+  groups inside the old schedules aren't kept (such as `MOTOR DATA` on the fans and `SUMMER`, `WINTER` on
+  energy recovery), since a section has one header group and the outer one wins. No families were linked. The live database still has the schedules.
+- **A fan with its own `IPS_FAN_HP` doesn't use `Fan`** (my call): it's one part of something larger, such as
+  a boiler or cooling tower, and the `IPS_EQUIP_Elec_*` columns there describe the whole unit.
+- **Not accepting an edit to a section stops that schedule using it, keeping its columns** (my call):
+  a schedule can't stay linked and differ.
+- **Preview adds only columns a schedule already has by default** (my call), so adopting a section
+  doesn't add empty columns. A schedule with none of them gets them all.
+- **The starting sections went in a separate file, not the live database** (my call, a change from the
+  approved plan): format 4 would stop any copy of the app without this work opening the database.
+
 ## Model
 - **Model objects are the source of truth; the GUI should be a view on them.** The `Catalog`
   object owns params, families and schedules (no more class-level `_instances` registries).

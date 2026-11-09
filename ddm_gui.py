@@ -47,6 +47,8 @@ from ddm_tables import (
     text as cell_text,
     write_database_csv,
 )
+from ddm_combined import CombinedParamWindows
+from ddm_sections import SectionWindows
 from excel_import import import_workbook
 from revit_parameter_manager import (
     CODE_KINDS, CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, FAMILY_NAME_TERMS, PARAM_NAME_COMPANY, PARAM_NAME_LONG_LENGTH,
@@ -212,8 +214,11 @@ class OverrideTable(tk.Canvas):
     def __init__(self, master, parameter_names, header_texts=None, groups=None, rows=None,
                  show_header=True, on_header_double_click=None, on_cell_double_click=None,
                  grid_column_widths=None, on_cell_action=None, hidden_names=None, on_hidden_toggle=None,
-                 edit_on_click=False, on_family_action=None, width_cells=None, on_width_click=None):
+                 edit_on_click=False, on_family_action=None, width_cells=None, on_width_click=None,
+                 header_label="Schedule"):
         super().__init__(master, background="#ffffff", highlightthickness=0)
+        # Names the header rows on the left: what they belong to.
+        self.header_label = header_label
         self.parameter_names = list(parameter_names)
         self.header_texts = dict(header_texts or {})
         self.show_header = show_header
@@ -605,7 +610,7 @@ class OverrideTable(tk.Canvas):
 
     def _draw_header(self, wrapped_headers):
         lane_count = self.header_top // self.group_row_height
-        self._label_cell(0, 0, self.section_width, self.body_top, "Schedule")
+        self._label_cell(0, 0, self.section_width, self.body_top, self.header_label)
         for lane in range(lane_count):
             top = lane * self.group_row_height
             self._label_cell(self.section_width, top, self.label_width, self.group_row_height,
@@ -875,7 +880,7 @@ class PlaceholderEntry(ttk.Entry):
         return None
 
 
-class DDMGUI:
+class DDMGUI(SectionWindows, CombinedParamWindows):
     """Tkinter review/edit GUI over a parameter ``Catalog``.
 
     The catalog is the source of truth. The tables are views rebuilt from it after
@@ -1006,14 +1011,20 @@ class DDMGUI:
         self.params_tab = ttk.Frame(self.notebook)
         self.family_tab = ttk.Frame(self.notebook)
         self.schedules_tab = ttk.Frame(self.notebook)
+        self.sections_tab = ttk.Frame(self.notebook)
+        self.combined_tab = ttk.Frame(self.notebook)
 
         self.notebook.add(self.params_tab, text="Parameters")
         self.notebook.add(self.family_tab, text="Families")
         self.notebook.add(self.schedules_tab, text="Schedules")
+        self.notebook.add(self.sections_tab, text="Sections")
+        self.notebook.add(self.combined_tab, text="Combined Parameters")
 
         self._build_data_table(self.params_tab, "params")
         self._build_data_table(self.family_tab, "families")
         self._build_data_table(self.schedules_tab, "groups")
+        self._build_data_table(self.sections_tab, "sections")
+        self._build_data_table(self.combined_tab, "combined")
 
         self._configure_detail_clicks()
 
@@ -1335,6 +1346,20 @@ class DDMGUI:
                 tree.heading(col, text=self._humanize_column_name(col))
                 tree.column(col, width=170, anchor="w")
             self.family_tree = tree
+        elif table_name == "sections":
+            columns = self._section_summary_columns
+            tree = ttk.Treeview(frame, columns=columns, show="headings")
+            for col in columns:
+                tree.heading(col, text=self._humanize_column_name(col))
+                tree.column(col, width=180 if col in ("name", "caption") else 120, anchor="w")
+            self.section_tree = tree
+        elif table_name == "combined":
+            columns = self._combined_summary_columns
+            tree = ttk.Treeview(frame, columns=columns, show="headings")
+            for col in columns:
+                tree.heading(col, text=self._humanize_column_name(col))
+                tree.column(col, width=360 if col == "pattern" else 160 if col in ("name", "header") else 110, anchor="w")
+            self.combined_tree = tree
         else:
             columns = self._schedule_summary_columns
             tree = ttk.Treeview(frame, columns=columns, show="headings")
@@ -1399,6 +1424,10 @@ class DDMGUI:
         count.pack(side="left", padx=(12, 0))
         if table_name == "params":
             ttk.Button(bar, text="Add Parameter...", command=self._open_param_name_builder).pack(side="right")
+        elif table_name == "sections":
+            ttk.Button(bar, text="Add Section...", command=self.open_section_window).pack(side="right")
+        elif table_name == "combined":
+            ttk.Button(bar, text="Add Combined Parameter...", command=self.open_combined_window).pack(side="right")
         self._search_vars[table_name] = search_var
         self._search_counts[table_name] = count
         search_var.trace_add("write", lambda *_args: self.render_tables())
@@ -1451,6 +1480,10 @@ class DDMGUI:
             self.family_tree.bind("<Button-1>", lambda event: self._on_tree_click(event, "families"), add="+")
         if self.group_tree is not None:
             self.group_tree.bind("<Double-1>", self._open_selected_schedule_window)
+        if self.section_tree is not None:
+            self.section_tree.bind("<Double-1>", self._open_selected_section_window)
+        if self.combined_tree is not None:
+            self.combined_tree.bind("<Double-1>", self._open_selected_combined_window)
 
     def _bind_table_edit_events(self, tree: ttk.Treeview, table_name: str):
         if tree is None:
@@ -1562,6 +1595,8 @@ class DDMGUI:
             ("params", self.param_tree, params, self._get_table_columns("params")),
             ("families", self.family_tree, self.families_df, self._get_table_columns("families")),
             ("groups", self.group_tree, self._build_schedule_summary_df(), self._schedule_summary_columns),
+            ("sections", self.section_tree, self._build_section_summary_df(), self._section_summary_columns),
+            ("combined", self.combined_tree, self._build_combined_summary_df(), self._combined_summary_columns),
         )
         for table_name, tree, df, columns in tables:
             shown = self._render_tree(tree, df, columns, self._search_text(table_name))
@@ -2370,7 +2405,7 @@ class DDMGUI:
         the name, and the cells edit the parameter itself; elsewhere they're read-only.
         """
         definitions = [
-            self.catalog.get_param(name)
+            self.catalog.get_column(name)
             or next((param for fam in families for param in fam.params if param.name == name), None)
             for name in parameter_names
         ]
@@ -2406,16 +2441,21 @@ class DDMGUI:
                     for param in definitions
                 ],
             })
+        def attribute_text(param, attribute):
+            if param is None:
+                return None
+            if getattr(param, "is_combined", False):
+                # A combined column has no value of its own: Revit joins its parts.
+                return param.pattern() if attribute == "formula" else None
+            return self._attribute_text(attribute, getattr(param, attribute))
+
         for attribute, _term, label in self._override_attributes:
             rows.append({
                 "section": "",
                 "label": label,
                 "param_field": self._parameter_row_fields[attribute],
                 "cells": [
-                    self._table_cell(
-                        None if param is None else self._attribute_text(attribute, getattr(param, attribute)),
-                        editable=editable(param),
-                    )
+                    self._table_cell(attribute_text(param, attribute), editable=editable(param))
                     for param in definitions
                 ],
             })
@@ -2460,6 +2500,12 @@ class DDMGUI:
             cells = []
             for name in parameter_names:
                 param = resolved.get(name)
+                combined = self.catalog.get_combined_param(name)
+                if param is None and combined is not None:
+                    values = {part: resolved[part].value for part in combined.parameter_names if part in resolved}
+                    sample = combined.sample(values) if attribute == "value" else None
+                    cells.append(self._table_cell(sample, "inherited" if sample else "none"))
+                    continue
                 if param is None:
                     cell = self._table_cell(None, "none")
                     if self.catalog.get_param(name) is not None:
@@ -2983,7 +3029,8 @@ class DDMGUI:
         return moved
 
     def _build_schedule_edit_buttons(self, parent, schedule, get_table, on_change):
-        """Add Parameter..., Remove Parameter, Move Left, Move Right, Add Family... and Remove Family.
+        """Add Parameter..., Remove Parameter, Move Left, Move Right, Add Family..., Remove Family
+        and Add Section..., with a label naming the sections the schedule uses.
 
         The Remove and Move buttons act on the columns or families selected in the
         table (``get_table()``, which may be ``None`` when the schedule has no columns).
@@ -3000,13 +3047,20 @@ class DDMGUI:
         def add_parameters():
             columns = {param.name for param in schedule.params}
             choices = [
+                (combined.name, f"{combined.name} Combined {combined.header_text} {combined.pattern()}")
+                for combined in self.catalog.combined_params if combined.name not in columns
+            ] + [
                 (param.name, f"{param.name} {param.header_text or ''} {param.group_under or ''}")
                 for param in self.catalog.params if param.name not in columns
             ]
             after = (selected("parameter") or [None])[-1]
 
             def add(names):
-                self._add_schedule_parameters(schedule.name, names, after=after)
+                try:
+                    self._add_schedule_parameters(schedule.name, names, after=after)
+                except ValueError as exc:
+                    messagebox.showwarning("Add Parameters", str(exc), parent=bar)
+                    return
                 on_change()
 
             hint = (
@@ -3079,15 +3133,24 @@ class DDMGUI:
                 self._unlink_schedule_family(schedule.name, name)
             on_change()
 
+        def add_section():
+            after = (selected("parameter") or [None])[-1]
+            return self._add_section_to_schedule(bar.winfo_toplevel(), schedule, after, on_change)
+
         for text, command in (
             ("Add Parameter...", add_parameters), ("Remove Parameter", remove_parameters),
             ("◀ Move Left", lambda: move(-1)), ("Move Right ▶", lambda: move(1)),
             ("Add Family...", add_families), ("Remove Family", remove_families),
+            ("Add Section...", add_section),
         ):
             ttk.Button(bar, text=text, command=command).pack(side="left", padx=(0, 6))
+        used_sections = [section.name for section, _use in schedule._used_sections()]
+        if used_sections:
+            ttk.Label(bar, text="Sections: " + ", ".join(used_sections)).pack(side="left", padx=(6, 0))
         # For tests.
         bar.add_parameters, bar.remove_parameters = add_parameters, remove_parameters
         bar.add_families, bar.remove_families = add_families, remove_families
+        bar.add_section = add_section
         bar.move = move
         return bar
 
@@ -3441,7 +3504,7 @@ class DDMGUI:
             default_param = next(
                 (param for fam in schedule.fams for param in fam.resolved_params() if param.name == parameter_name),
                 None,
-            ) or self.catalog.get_param(parameter_name)
+            ) or self.catalog.get_column(parameter_name)
             default_header = default_param.header_text
             default_width = default_param.grid_column_width
 

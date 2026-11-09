@@ -59,7 +59,7 @@ def schedule_specs(catalog):
     """What the macro builds: ``(specs, notes)``.
 
     A spec is ``{"name", "guid", "filter_value", "itemize", "view_template",
-    "columns": [{"parameter", "header", "width_feet", "hidden"}],
+    "columns": [{"parameter", "header", "width_feet", "hidden", "parts"}],
     "header_groups": [{"caption", "parameters"}]}``. Notes explain each database schedule
     left out, and are shown in Revit when the macro runs.
     """
@@ -83,6 +83,8 @@ def schedule_specs(catalog):
                 "header": param.header_text or param.name,
                 "width_feet": param.grid_column_width / 12,
                 "hidden": param.name in schedule.hidden_field_names,
+                # A combined parameter's parts; none for a parameter.
+                "parts": [dict(part) for part in param.parts] if getattr(param, "is_combined", False) else [],
             }
             for param in schedule.params
             if schedule.field_names is not None or param.name not in COMMON_PARAM_NAMES
@@ -119,10 +121,18 @@ def _spec_source(spec):
     lines.append("                new[]")
     lines.append("                {")
     for column in spec["columns"]:
+        parts = ""
+        if column.get("parts"):
+            parts = ", new[] { " + ", ".join(
+                "new DdmPart({}, {}, {}, {})".format(*(
+                    _csharp_string(part[key]) for key in ("parameter", "prefix", "suffix", "separator")
+                ))
+                for part in column["parts"]
+            ) + " }"
         lines.append(
             "                    new DdmColumn("
             f"{_csharp_string(column['parameter'])}, {_csharp_string(column['header'])}, "
-            f"{column['width_feet']:.12g}, {'true' if column['hidden'] else 'false'}),"
+            f"{column['width_feet']:.12g}, {'true' if column['hidden'] else 'false'}{parts}),"
         )
     lines.append("                },")
     if spec["header_groups"]:
@@ -504,13 +514,25 @@ namespace /*NAMESPACE*/
                     ScheduleField? filterField = null;
                     foreach (DdmColumn column in spec.Columns)
                     {
-                        SchedulableField? candidate = DdmFindField(doc, schedulable, column.Parameter);
-                        if (candidate == null)
+                        ScheduleField? field;
+                        if (column.Parts.Length > 0)
                         {
-                            problems.Add($"{viewName}: no schedulable parameter '{column.Parameter}'; column left out.");
-                            continue;
+                            field = DdmAddCombinedField(doc, definition, schedulable, column, viewName, problems);
+                            if (field == null)
+                            {
+                                continue;
+                            }
                         }
-                        ScheduleField field = definition.AddField(candidate);
+                        else
+                        {
+                            SchedulableField? candidate = DdmFindField(doc, schedulable, column.Parameter);
+                            if (candidate == null)
+                            {
+                                problems.Add($"{viewName}: no schedulable parameter '{column.Parameter}'; column left out.");
+                                continue;
+                            }
+                            field = definition.AddField(candidate);
+                        }
                         field.ColumnHeading = column.Header;
                         field.GridColumnWidth = column.WidthFeet;
                         field.IsHidden = hideHiddenColumns && column.Hidden;
@@ -610,6 +632,39 @@ namespace /*NAMESPACE*/
                     problems.Add($"{viewName}: {ex.Message}");
                 }
             }
+        }
+
+        /// <summary>
+        /// Add a combined parameter column: one cell joining its parts' values, each with its
+        /// prefix and suffix, and its separator before the next part. Null, with a problem noted,
+        /// when a part can't be scheduled here or Revit refuses the parts.
+        /// </summary>
+        private static ScheduleField? DdmAddCombinedField(
+            Document doc, ScheduleDefinition definition, IList<SchedulableField> schedulable, DdmColumn column,
+            string viewName, List<string> problems)
+        {
+            var data = new List<TableCellCombinedParameterData>();
+            foreach (DdmPart part in column.Parts)
+            {
+                SchedulableField? candidate = DdmFindField(doc, schedulable, part.Parameter);
+                if (candidate == null)
+                {
+                    problems.Add($"{viewName}: no schedulable parameter '{part.Parameter}' for combined column '{column.Parameter}'; column left out.");
+                    return null;
+                }
+                TableCellCombinedParameterData item = TableCellCombinedParameterData.Create();
+                item.ParamId = candidate.ParameterId;
+                item.Prefix = part.Prefix;
+                item.Suffix = part.Suffix;
+                item.Separator = part.Separator;
+                data.Add(item);
+            }
+            if (!definition.IsValidCombinedParameters(data))
+            {
+                problems.Add($"{viewName}: Revit won't combine the parts of '{column.Parameter}'; column left out.");
+                return null;
+            }
+            return definition.InsertCombinedParameterField(data, column.Parameter, definition.GetFieldCount());
         }
 
         private static SchedulableField? DdmFindField(Document doc, IList<SchedulableField> fields, string parameter)
@@ -793,18 +848,38 @@ namespace /*NAMESPACE*/
 
         private sealed class DdmColumn
         {
-            public DdmColumn(string parameter, string header, double widthFeet, bool hidden)
+            public DdmColumn(string parameter, string header, double widthFeet, bool hidden, DdmPart[]? parts = null)
             {
                 Parameter = parameter;
                 Header = header;
                 WidthFeet = widthFeet;
                 Hidden = hidden;
+                Parts = parts ?? Array.Empty<DdmPart>();
             }
 
+            // For a combined parameter, its name; otherwise the parameter scheduled.
             public string Parameter { get; }
             public string Header { get; }
             public double WidthFeet { get; }
             public bool Hidden { get; }
+            // A combined parameter's parts, in order; empty for a parameter.
+            public DdmPart[] Parts { get; }
+        }
+
+        private sealed class DdmPart
+        {
+            public DdmPart(string parameter, string prefix, string suffix, string separator)
+            {
+                Parameter = parameter;
+                Prefix = prefix;
+                Suffix = suffix;
+                Separator = separator;
+            }
+
+            public string Parameter { get; }
+            public string Prefix { get; }
+            public string Suffix { get; }
+            public string Separator { get; }
         }
 
         private sealed class DdmHeaderGroup
