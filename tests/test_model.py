@@ -795,3 +795,42 @@ def test_category_codes_are_shared_and_families_build_their_names(catalog):
 	assert restored.codes == catalog.codes
 	restored_fam = restored.get_family('Old Name')
 	assert (restored_fam.category_1, restored_fam.category_2) == ('Control', None)
+
+
+def test_duplicate_schedule_copies_everything_under_a_new_name_and_guid():
+	from revit_parameter_manager import Catalog
+	catalog = Catalog()
+	for name in ('Tag', 'Volts', 'Phase', 'Notes'):
+		catalog.add_param(name, 'Text', header_text=name.upper())
+	catalog.add_family('Fan A', ['Tag', 'Volts', 'Phase', 'Notes'])
+	electrical = catalog.add_section('Electrical', ['Volts', 'Phase'], caption='ELEC')
+	fan = catalog.add_schedule('Fan', family_names=['Fan A'], field_names=['Tag', 'Notes'])
+	catalog.add_schedule('Pump')
+	fan.apply_section(electrical)
+	fan.header_text_overrides['Tag'] = 'MARK'
+	fan.hidden_field_names.add('Notes')
+	fan.add_header_group('INFO', ['Tag', 'Notes'])
+
+	assert catalog.copy_name('Fan') == 'Fan Copy'
+	copy = catalog.duplicate_schedule('Fan', ' Fan Copy ')
+	assert [schedule.name for schedule in catalog.schedules] == ['Fan', 'Fan Copy', 'Pump']
+	assert catalog.copy_name('Fan') == 'Fan Copy 2'
+	assert copy.guid != fan.guid
+	assert copy.catalog is catalog
+	original, copied = fan.to_dict(), copy.to_dict()
+	del original['name'], original['guid'], copied['name'], copied['guid']
+	assert copied == original
+	assert copy.status == fan.status
+
+	# The copy is its own schedule: changing it leaves the original alone.
+	copy.header_text_overrides['Tag'] = 'TAG'
+	copy.hidden_field_names.discard('Notes')
+	assert fan.header_text_overrides['Tag'] == 'MARK'
+	assert 'Notes' in fan.hidden_field_names
+
+	with pytest.raises(ValueError, match='already exists'):
+		catalog.duplicate_schedule('Fan', 'Pump')
+	with pytest.raises(ValueError, match='required'):
+		catalog.duplicate_schedule('Fan', '  ')
+	with pytest.raises(ValueError, match='not found'):
+		catalog.duplicate_schedule('Nope', 'Other')

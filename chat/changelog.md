@@ -2,6 +2,19 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-09: Schedule Builder tools and RF Tools exports
+- Ungroup Selected Headers in the Schedule Builder; the header group buttons sit above the table
+  in the Schedule Builder and section windows, and both windows open wide enough for every button.
+- Schedule Builder, family and section tables: the label columns and header rows are frozen while scrolling.
+- Duplicate Schedule... on the Schedules tab: a full copy with its own GUID, right after the original.
+- Save writes two RF Tools files: `.rfps` (one template per family) and `_schedules.rfps` (one
+  template per schedule, with each parameter's own settings). Combined parameters are left out.
+- RF Tools exports fixed: values are written as they are (CSV quoting had wrapped formulas in quotes
+  and doubled theirs, breaking `IPS__PHASE_Classification`), and Group Under is RF Tools' code, the
+  Revit 2025 GroupTypeId name in capitals (`Mechanical - Flow` -> `MECHANICALAIRFLOW`,
+  `Dimensions` -> `GEOMETRY`). Codes inferred from the user's example and RevitAPI.xml; not yet
+  checked against a file RF Tools made.
+
 ## 2026-11-09: Section window like the Schedule Builder, with header groups
 - Sections hold header groups besides the one over all columns, nested inside it; saved in JSON and CSV.
 - The section window shows the Schedule Builder's grid (Group Level rows, headers, Hidden Column, an

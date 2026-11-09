@@ -1166,7 +1166,7 @@ def test_schedule_builder_column_width_row_sets_this_schedule_only(monkeypatch):
         table.finish_cell_edit()
 
         assert schedule.grid_column_width_overrides == {name: 3.5}
-        assert gui.catalog.get_param(name).grid_column_width == default  # the parameter is untouched
+        assert gui.catalog.get_column(name).grid_column_width == default  # the parameter is untouched
         assert (table.width_cells[0]["text"], table.width_cells[0]["state"]) == ("3.5", "set")
         assert table.column_widths[0] == 3.5 * table.pixels_per_inch
         default_row = next(row for row in table.rows if row.get("param_field") == "grid_column_width")
@@ -1691,6 +1691,17 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         assert schedule.header_groups[0]["parameter_names"] == ["Length", "Width"]
         assert len(table.group_layout) == 1
 
+        # Ungroup Selected Headers takes it off again; with nothing grouped, it says so.
+        warnings = []
+        monkeypatch.setattr(gui_module.messagebox, "showwarning", lambda title, message, **kwargs: warnings.append(title))
+        find_button(schedule_popup, "Ungroup Selected Headers").invoke()
+        assert schedule.header_groups == []
+        assert table.group_layout == []
+        find_button(schedule_popup, "Ungroup Selected Headers").invoke()
+        assert warnings == ["Cannot Ungroup Headers"]
+        gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
+        table.set_groups(schedule.header_groups)
+
         assert cells(table.rows, "Default Value", "Family_A")[1] == ("Override Width", "set", True)
 
         # One click on Family_A's Width value edits it; type a new one and save.
@@ -2041,6 +2052,9 @@ def test_database_saves_as_json_with_csv_and_exports_and_loads_back(tmp_path):
     assert output_paths["csv"].exists()
     assert "CreateSchedulesFromDatabase" in output_paths["macro"].read_text(encoding="utf-8")
     assert "TemplateName" in output_paths["rfps"].read_text(encoding="utf-8").splitlines()[0]
+    schedule_rows = output_paths["rfps_schedules"].read_text(encoding="utf-8").splitlines()
+    assert schedule_rows[0].startswith("TemplateName")
+    assert any(row.startswith("Schedule A	") for row in schedule_rows[1:])
     assert "*PARAM\tGUID\tNAME\tDATATYPE" in output_paths["shared_parameters"].read_text(encoding="utf-16")
 
 
@@ -2171,6 +2185,7 @@ def test_database_paths_are_configured_under_data_directory():
         "csv": DATA_DIR / "database.ddm.csv",
         "macro": DATA_DIR / "database.cs",
         "rfps": DATA_DIR / "database.rfps",
+        "rfps_schedules": DATA_DIR / "database_schedules.rfps",
         "shared_parameters": DATA_DIR / "database.txt",
     }
 
@@ -2186,6 +2201,7 @@ def test_database_output_paths_share_stem_for_json_pickle_and_csv_inputs(tmp_pat
     assert paths[0]["csv"].name == "equipment.ddm.csv"
     assert paths[0]["macro"].name == "equipment.cs"
     assert paths[0]["rfps"].name == "equipment.rfps"
+    assert paths[0]["rfps_schedules"].name == "equipment_schedules.rfps"
     assert paths[0]["shared_parameters"].name == "equipment.txt"
 
 
@@ -2921,3 +2937,90 @@ def test_create_github_ticket_opens_a_new_issue_with_the_app_version(monkeypatch
         root.destroy()
     assert len(opened) == 1
     assert opened[0].startswith("https://github.com/gmclove/design-data-manager/issues/new?body=App+Version")
+
+
+def test_duplicate_schedule_button_copies_the_selected_schedule_and_opens_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    warnings = []
+    monkeypatch.setattr(gui_module.messagebox, "showwarning", lambda title, message, **kwargs: warnings.append(title))
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        gui.notebook.select(gui.schedules_tab)
+        button = find_button(gui.schedules_tab, "Duplicate Schedule...")
+
+        gui.group_tree.selection_set(())
+        button.invoke()
+        assert warnings == ["Select a Schedule"]
+
+        index = next(i for i, schedule in enumerate(gui.catalog.schedules) if schedule.name == "Schedule A")
+        gui.group_tree.selection_set(str(index))
+        button.invoke()
+        root.update()
+        dialog = find_window(root, "Duplicate Schedule")
+        assert dialog.name_var.get() == "Schedule A Copy"
+        dialog.name_var.set(gui.catalog.schedules[index + 1].name)  # taken
+        dialog.duplicate()
+        assert warnings[-1] == "Cannot Duplicate Schedule"
+        dialog.name_var.set("Schedule A Copy")
+        dialog.duplicate()
+        root.update()
+
+        copy = gui.catalog.schedules[index + 1]
+        assert copy.name == "Schedule A Copy"
+        assert [param.name for param in copy.params] == [param.name for param in gui.catalog.schedules[index].params]
+        assert find_window(root, "Schedule Builder: Schedule A Copy") is not None
+        assert "Schedule A Copy" in gui._build_schedule_summary_df()["name"].tolist()
+    finally:
+        root.destroy()
+
+
+def test_override_table_keeps_label_columns_and_header_rows_in_place_when_scrolled():
+    root = tk.Tk()
+    try:
+        root.geometry("700x400")
+        names = [f"P{index}" for index in range(20)]
+        rows = [
+            {"section": "Parameter" if index == 0 else "", "label": f"Row {index}", "selects_column": index == 0,
+             "cells": [{"text": f"{name}-{index}", "state": "set", "editable": True} for name in names]}
+            for index in range(40)
+        ]
+        clicked = []
+        frame = ttk.Frame(root)
+        frame.pack(fill="both", expand=True)
+        table = DDMGUI._build_override_table(
+            None, frame, names, rows,
+            groups=[{"caption": "GROUP", "parameter_names": names[:3]}],
+            hidden_names=set(), on_hidden_toggle=clicked.append,
+            width_cells=[{"text": "1", "state": "inherited"} for _name in names],
+            edit_on_click=True, on_cell_double_click=lambda row, column: clicked.append((row, column)),
+        )
+        root.update()
+
+        def place(tag_text):
+            item = next(item for item in table.find_all()
+                        if table.type(item) == "text" and table.itemcget(item, "text") == tag_text)
+            x, y = table.coords(item)[:2]
+            return x - table.canvasx(0), y - table.canvasy(0)  # where it shows on screen
+
+        labels_before, header_before = place("Row 3"), place("Hidden Column")
+        table.xview_moveto(0.5)
+        table.yview_moveto(0.5)
+        root.update()
+        assert table.canvasx(0) > 0 and table.canvasy(0) > 0
+        assert place("Hidden Column") == header_before  # the label corner stays put
+        assert place("Row 3")[0] == labels_before[0]  # row labels stay left, scrolling down with the rows
+        assert place("GROUP")[1] == pytest.approx(table.group_row_height / 2)  # header rows stay on top
+
+        # Clicks still land where things show: a header row, a label, a body cell.
+        column = table._column_at(table.canvasx(table.left + 5))
+        table._on_mouse_down(SimpleNamespace(x=table.left + 5, y=table.hidden_row_top + 5, state=0))
+        assert clicked == [names[column]]
+        table._on_mouse_down(SimpleNamespace(x=table.left - 20, y=table.body_top + 5, state=0))
+        assert len(clicked) == 1  # a row label isn't a cell
+        table._on_mouse_down(SimpleNamespace(x=table.left + 5, y=table.body_top + 5, state=0))
+        row = int((table.canvasy(table.body_top + 5) - table.body_top) // table.row_height)
+        assert clicked[-1] == (row, column)
+    finally:
+        root.destroy()

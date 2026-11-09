@@ -68,7 +68,7 @@ from table_view import (
     sorted_rows,
     tree_body_font,
 )
-from revit_parameter_scheduler_export import generate_rfps_content
+from revit_parameter_scheduler_export import generate_rfps_content, generate_rfps_schedules_content
 from revit_shared_parameter_export import generate_shared_parameter_content
 
 
@@ -197,6 +197,10 @@ class OverrideTable(tk.Canvas):
     A section's first row with ``"family_action": text`` gets a button with that text under
     the section label; clicking it calls ``on_family_action(family)``.
 
+    The two label columns and the header rows (group levels, column headers, Hidden Column,
+    Column Width) are frozen: they stay in place while the table scrolls. Drawn items in them
+    carry the tags ``frozen_x`` and ``frozen_y``, moved to follow the view after every scroll.
+
     Body rows are dicts: ``{"section": str, "label": str, "cells": [cell, ...]}``,
     plus any keys the caller needs back. A cell is ``{"text": str, "state": ...,
     "editable": bool}`` where state is ``"set"`` (set at this level),
@@ -251,6 +255,8 @@ class OverrideTable(tk.Canvas):
         self.body_bold_font = tkfont.Font(root=self, font=("Segoe UI", 9, "bold"))
         self.header_top = 0
         self._cell_editor = None
+        # How far the frozen items are moved now, to follow the view: (x, y).
+        self._frozen_offset = (0, 0)
         self.bind("<Button-1>", self._on_mouse_down)
         self.bind("<B1-Motion>", self._on_mouse_drag)
         self.bind("<Double-Button-1>", self._on_double_click)
@@ -359,6 +365,44 @@ class OverrideTable(tk.Canvas):
         """The families with rows in the table, in order."""
         return list(dict.fromkeys(row["family"] for row in self.rows if row.get("family")))
 
+    def _cx(self, event):
+        """The canvas x under the event; the frozen label columns don't scroll."""
+        return event.x if event.x < self.left else self.canvasx(event.x)
+
+    def _cy(self, event):
+        """The canvas y under the event; the frozen header rows don't scroll."""
+        return event.y if event.y < self.body_top else self.canvasy(event.y)
+
+    def on_view_changed(self):
+        """After a scroll: move the frozen columns and rows back into view."""
+        x, y = self.canvasx(0), self.canvasy(0)
+        dx, dy = x - self._frozen_offset[0], y - self._frozen_offset[1]
+        if dx:
+            self.move("frozen_x", dx, 0)
+        if dy:
+            self.move("frozen_y", 0, dy)
+        self._frozen_offset = (x, y)
+
+    def _freeze(self):
+        """Tag what was just drawn in the label columns and header rows, and stack them on top."""
+        for item in self.find_all():
+            if self.type(item) == "window":
+                continue
+            coords = self.coords(item)
+            in_columns = max(coords[0::2]) <= self.left
+            in_rows = self.show_header and max(coords[1::2]) <= self.body_top
+            if in_rows:
+                self.addtag_withtag("frozen_y", item)
+            if in_columns:
+                self.addtag_withtag("frozen_x", item)
+            if in_rows and in_columns:
+                self.addtag_withtag("frozen_corner", item)
+        self.tag_raise("frozen_y")
+        self.tag_raise("frozen_x")
+        self.tag_raise("frozen_corner")
+        self._frozen_offset = (0, 0)
+        self.on_view_changed()
+
     def _column_at(self, canvas_x):
         for index, (left, width) in enumerate(zip(self.column_offsets, self.column_widths)):
             if left <= canvas_x < left + width:
@@ -367,12 +411,12 @@ class OverrideTable(tk.Canvas):
 
     def _parameter_index_at(self, event):
         """The column whose header was clicked, or ``None`` outside the header row."""
-        canvas_y = self.canvasy(event.y)
+        canvas_y = self._cy(event)
         if not self.show_header or not self.parameter_names:
             return None
         if not self.header_top <= canvas_y < self.hidden_row_top:
             return None
-        return self._column_at(self.canvasx(event.x))
+        return self._column_at(self._cx(event))
 
     def _selectable_column_at(self, event):
         """The column whose header, or a cell in a ``"selects_column"`` row, is under the event."""
@@ -386,8 +430,8 @@ class OverrideTable(tk.Canvas):
 
     def _family_at(self, event):
         """The family whose labels (left of its values) are under the event, or ``None``."""
-        canvas_y = self.canvasy(event.y)
-        if self.canvasx(event.x) >= self.left or canvas_y < self.body_top:
+        canvas_y = self._cy(event)
+        if self._cx(event) >= self.left or canvas_y < self.body_top:
             return None
         row_index = int((canvas_y - self.body_top) // self.row_height)
         return self.rows[row_index].get("family") if row_index < len(self.rows) else None
@@ -396,25 +440,25 @@ class OverrideTable(tk.Canvas):
         """The column whose Hidden Column checkbox is under the event, or ``None``."""
         if not self.hidden_row_height:
             return None
-        if not self.hidden_row_top <= self.canvasy(event.y) < self.width_row_top:
+        if not self.hidden_row_top <= self._cy(event) < self.width_row_top:
             return None
-        return self._column_at(self.canvasx(event.x))
+        return self._column_at(self._cx(event))
 
     def _width_cell_at(self, event):
         """The column whose Column Width cell is under the event, or ``None``."""
         if not self.width_row_height:
             return None
-        if not self.width_row_top <= self.canvasy(event.y) < self.body_top:
+        if not self.width_row_top <= self._cy(event) < self.body_top:
             return None
-        return self._column_at(self.canvasx(event.x))
+        return self._column_at(self._cx(event))
 
     def _cell_at(self, event):
         """``(row_index, column_index)`` of the body cell under the event, or ``None``."""
-        canvas_y = self.canvasy(event.y)
+        canvas_y = self._cy(event)
         if canvas_y < self.body_top:
             return None
         row_index = int((canvas_y - self.body_top) // self.row_height)
-        column_index = self._column_at(self.canvasx(event.x))
+        column_index = self._column_at(self._cx(event))
         if row_index >= len(self.rows) or column_index is None:
             return None
         return row_index, column_index
@@ -429,10 +473,11 @@ class OverrideTable(tk.Canvas):
         )
 
     def width_cell_bbox(self, column_index: int):
-        """``(left, top, width, height)`` of a Column Width cell in canvas coordinates."""
+        """``(left, top, width, height)`` of a Column Width cell in canvas coordinates, where it
+        shows now (the header rows are frozen)."""
         return (
             self.column_offsets[column_index],
-            self.width_row_top,
+            self.width_row_top + self._frozen_offset[1],
             self.column_widths[column_index],
             self.width_row_height,
         )
@@ -459,7 +504,9 @@ class OverrideTable(tk.Canvas):
                 editor.selection_range(0, tk.END)
             # A drop-down list takes focus while open, so only a text box commits on focus loss.
             editor.bind("<FocusOut>", lambda _event: finish(True), add="+")
-        window = self.create_window(left, top, window=editor, anchor="nw", width=width, height=height)
+        # Over a frozen header row, the box moves with it.
+        tags = ("frozen_y",) if self.show_header and top - self._frozen_offset[1] < self.body_top else ()
+        window = self.create_window(left, top, window=editor, anchor="nw", width=width, height=height, tags=tags)
         done = False
 
         def finish(commit, then=None):
@@ -604,9 +651,10 @@ class OverrideTable(tk.Canvas):
         total_height = self.body_top + len(self.rows) * self.row_height
         self.configure(height=min(max(total_height, 1), 480), scrollregion=(0, 0, right, total_height))
 
+        self._draw_body(right)
         if self.show_header:
             self._draw_header(wrapped_headers)
-        self._draw_body(right)
+        self._freeze()
 
     def _draw_header(self, wrapped_headers):
         lane_count = self.header_top // self.group_row_height
@@ -702,7 +750,9 @@ class OverrideTable(tk.Canvas):
                 else:
                     self._label_cell(0, top, self.section_width, height, first.get("section", ""),
                                      fill=self._label_fill(first))
-                self.create_line(0, top, right, top, fill="#374151", width=2)
+                # In two parts: the one under the labels stays with them as the table scrolls.
+                self.create_line(0, top, self.left, top, fill="#374151", width=2)
+                self.create_line(self.left, top, right, top, fill="#374151", width=2)
                 section_start = row_index
             if row is None:
                 break
@@ -795,7 +845,7 @@ class OverrideTable(tk.Canvas):
 
     def _family_action_at(self, event):
         """The family whose button (under its name) is under the event, or ``None``."""
-        x, y = self.canvasx(event.x), self.canvasy(event.y)
+        x, y = self._cx(event), self._cy(event)
         return next(
             (family for family, (left, top, right, bottom) in self._family_action_boxes.items()
              if left <= x <= right and top <= y <= bottom),
@@ -1269,6 +1319,14 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
                 encoding="utf-8",
                 newline="",
             )
+            # The older export, one template per schedule, kept beside it.
+            schedules_path = output_paths["rfps_schedules"]
+            schedules_content = generate_rfps_schedules_content(
+                [(schedule.name, [param.name for param in schedule.params]) for schedule in self.catalog.schedules],
+                self.params_df,
+                shared_parameter_file_name=output_paths["shared_parameters"].name,
+            )
+            schedules_path.write_text(schedules_content, encoding="utf-8", newline="")
         except (OSError, ValueError) as exc:
             messagebox.showerror(
                 "RF Tools Export Failed",
@@ -1277,7 +1335,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
                 parent=getattr(self, "root", None),
             )
             return
-        self._append_message(f"Generated RF Tools parameter scheduler file: {output_path}")
+        self._append_message(f"Generated RF Tools parameter scheduler file (families): {output_path}")
+        self._append_message(f"Generated RF Tools parameter scheduler file (schedules): {schedules_path}")
 
     def _generate_shared_parameter_file(self):
         try:
@@ -1428,6 +1487,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
             ttk.Button(bar, text="Add Section...", command=self.open_section_window).pack(side="right")
         elif table_name == "combined":
             ttk.Button(bar, text="Add Combined Parameter...", command=self.open_combined_window).pack(side="right")
+        elif table_name == "groups":
+            ttk.Button(bar, text="Duplicate Schedule...", command=self._duplicate_selected_schedule).pack(side="right")
         self._search_vars[table_name] = search_var
         self._search_counts[table_name] = count
         search_var.trace_add("write", lambda *_args: self.render_tables())
@@ -2806,7 +2867,10 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         table = OverrideTable(frame, parameter_names, rows=rows, **kwargs)
         x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
         y_scroll = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
-        table.configure(xscrollcommand=x_scroll.set, yscrollcommand=y_scroll.set)
+        table.configure(
+            xscrollcommand=lambda *view: (x_scroll.set(*view), table.on_view_changed()),
+            yscrollcommand=lambda *view: (y_scroll.set(*view), table.on_view_changed()),
+        )
         table.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
         x_scroll.grid(row=1, column=0, sticky="ew")
@@ -2956,6 +3020,69 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
         itemize_var.trace_add("write", lambda *_args: save())
         box.save = save  # for tests
         return box
+
+    @staticmethod
+    def _fit_window_width(window, row, margin=24):
+        """Widen ``window`` so every widget in ``row`` (a button row) shows, as far as the screen allows,
+        and keep it from being made narrower than that."""
+        window.update_idletasks()
+        needed = min(row.winfo_reqwidth() + margin, window.winfo_screenwidth())
+        size, _, position = window.geometry().partition("+")
+        width, height = (int(value) for value in size.split("x"))
+        window.minsize(needed, 0)
+        if width < needed:
+            window.geometry(f"{needed}x{height}" + (f"+{position}" if position else ""))
+
+    def _duplicate_selected_schedule(self):
+        """Duplicate Schedule...: copy the schedule selected on the Schedules tab."""
+        selection = self.group_tree.selection() if self.group_tree is not None else ()
+        if len(selection) != 1:
+            messagebox.showwarning(
+                "Select a Schedule", "Select one schedule on the Schedules tab to duplicate.",
+                parent=getattr(self, "root", None),
+            )
+            return None
+        return self.ask_duplicate_schedule(self.catalog.schedules[int(selection[0])].name)
+
+    def ask_duplicate_schedule(self, schedule_name: str):
+        """The Duplicate Schedule box: name the copy; Duplicate makes it and opens it in the Schedule Builder."""
+        parent = getattr(self, "root", None)
+        dialog = tk.Toplevel(parent)
+        dialog.title("Duplicate Schedule")
+        dialog.transient(parent)
+        dialog.grab_set()
+        dialog.geometry("420x150")
+        ttk.Label(dialog, text=f"Copy of: {schedule_name}").pack(anchor="w", padx=10, pady=(10, 2))
+        ttk.Label(dialog, text="New Schedule Name:", style="Section.TLabel").pack(anchor="w", padx=10, pady=(4, 4))
+        name_var = tk.StringVar(dialog, value=self.catalog.copy_name(schedule_name))
+        entry = ttk.Entry(dialog, textvariable=name_var)
+        entry.pack(fill="x", padx=10, pady=4)
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        def duplicate():
+            try:
+                copy = self._duplicate_schedule(schedule_name, name_var.get())
+            except ValueError as exc:
+                messagebox.showwarning("Cannot Duplicate Schedule", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self._open_detail_window("schedule", copy.name)
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=10, pady=(4, 8))
+        ttk.Button(buttons, text="Duplicate", command=duplicate, style="Action.TButton").pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 6))
+        entry.bind("<Return>", lambda _event: duplicate())
+        dialog.name_var, dialog.duplicate = name_var, duplicate  # for tests
+        return dialog
+
+    def _duplicate_schedule(self, schedule_name: str, new_name: str):
+        copy = self.catalog.duplicate_schedule(schedule_name, cell_text(new_name))
+        self.validate_all()
+        self.render_tables()
+        self._append_message(f"Duplicated schedule '{schedule_name}' as '{copy.name}'.")
+        return copy
 
     def _rename_schedule(self, schedule_name: str, new_name: str):
         """Rename a schedule; raises ``ValueError`` for a blank or taken name."""
@@ -3215,6 +3342,11 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
 
     def _add_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
         group = self._get_schedule(schedule_name).add_header_group(caption, parameter_names)
+        self.validate_all()
+        return group
+
+    def _remove_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str]):
+        group = self._get_schedule(schedule_name).remove_header_group(parameter_names)
         self.validate_all()
         return group
 
@@ -3482,18 +3614,24 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
 
         table = None
 
+        # Header grouping sits above the table; the column and family buttons stay under it.
+        header_controls = ttk.Frame(form)
         table_box = ttk.LabelFrame(
             form,
             text="Schedule Default Values (click a value to edit it; bold is the value the schedule uses; "
                  "double-click a header for column settings; click headers or family names to select them)",
             padding=8,
         )
-        table_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         parameter_names = self._get_schedule_parameter_names(schedule)
+        if parameter_names:
+            header_controls.pack(fill="x", padx=12, pady=(0, 6))
+        table_box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         if not parameter_names:
             ttk.Label(table_box, text="No Parameters Yet: Add Parameter... Adds Columns").pack(anchor="w")
-            self._build_schedule_edit_buttons(form, schedule, lambda: table, reopen).pack(fill="x", padx=12)
+            edit_buttons = self._build_schedule_edit_buttons(form, schedule, lambda: table, reopen)
+            edit_buttons.pack(fill="x", padx=12)
             ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(8, 10))
+            self._fit_window_width(form, edit_buttons, margin=24)
             return
 
         def edit_schedule_header(parameter_name):
@@ -3654,7 +3792,18 @@ class DDMGUI(SectionWindows, CombinedParamWindows):
             ttk.Button(buttons, text="Cancel", command=editor.destroy).pack(side="right", padx=(0, 6))
             caption_entry.bind("<Return>", lambda _event: save_header_group())
 
-        ttk.Button(group_controls, text="Group Selected Headers", command=begin_header_group).pack(side="left", padx=(12, 0))
+        def ungroup_headers():
+            try:
+                self._remove_schedule_header_group(selected_name, table.get_selected_parameter_names())
+            except ValueError as exc:
+                messagebox.showwarning("Cannot Ungroup Headers", str(exc), parent=form)
+                return
+            table.set_groups(schedule.header_groups)
+
+        ttk.Label(header_controls, text="Header Groups:").pack(side="left", padx=(0, 6))
+        ttk.Button(header_controls, text="Group Selected Headers", command=begin_header_group).pack(side="left")
+        ttk.Button(header_controls, text="Ungroup Selected Headers", command=ungroup_headers).pack(side="left", padx=(6, 0))
+        self._fit_window_width(form, group_controls, margin=24)
         ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(pady=(8, 10))
 
     # --- files ------------------------------------------------------------------

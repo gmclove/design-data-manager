@@ -191,6 +191,9 @@ class SectionWindows:
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         left_buttons = ttk.Frame(left)
         left_buttons.pack(side="bottom", fill="x", padx=6, pady=6)
+        # Header grouping above the table, as in the Schedule Builder.
+        header_controls = ttk.Frame(left)
+        header_controls.pack(fill="x", padx=6, pady=(6, 0))
         table_box = ttk.Frame(left)
         table_box.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         # Its own header groups, inside the caption.
@@ -423,9 +426,11 @@ class SectionWindows:
         for text, command in (
             ("Add Parameter...", add_parameters), ("Add Section...", add_section), ("Remove", remove_parameters),
             ("◀ Move Left", lambda: move(-1)), ("Move Right ▶", lambda: move(1)),
-            ("Group Selected Headers", group_selected), ("Ungroup Selected Headers", ungroup_selected),
         ):
             ttk.Button(left_buttons, text=text, command=command).pack(side="left", padx=(0, 6))
+        ttk.Label(header_controls, text="Header Groups:").pack(side="left", padx=(0, 6))
+        ttk.Button(header_controls, text="Group Selected Headers", command=group_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(header_controls, text="Ungroup Selected Headers", command=ungroup_selected).pack(side="left")
 
         # Right: the schedules, those with the most of its columns first.
         right = ttk.LabelFrame(panes, text="Schedules Using This Section")
@@ -532,6 +537,10 @@ class SectionWindows:
             ttk.Button(bottom, text="Delete Section", command=delete).pack(side="left")
         ttk.Button(bottom, text="Preview Changes...", command=preview, style="Action.TButton").pack(side="right")
         ttk.Button(bottom, text="Cancel", command=window.destroy).pack(side="right", padx=(0, 6))
+        # The columns pane gets 3 of 4 parts of the width: wide enough there for its button row.
+        window.update_idletasks()
+        row = left_buttons.winfo_reqwidth()
+        self._fit_window_width(window, left_buttons, margin=(row + 24) * 4 // 3 + 24 - row)
 
         # For tests.
         window.name_var, window.caption_var = name_var, caption_var

@@ -36,8 +36,7 @@ one: stay away from project parameters, and add parameters to families instead.
 - A new machine needs its own SSH key added at https://github.com/settings/keys.
 
 ## State (2026-11-05)
-- Schedule sections are on branch `schedule-sections`, not committed or merged; see [plan.md](plan.md). `database.with-sections.ddm.json` in `ddm-data` is the test copy. The live `database.ddm.json` is still format 3 on purpose.
-- Combined parameters (TAG) are on `schedule-sections` too, uncommitted; see [plan.md](plan.md). The test copy has TAG on 100 schedules.
+- Schedule sections and combined parameters are merged into `dev` (2026-11-09), not `main`. The live `database.ddm.json` now has them (user, 2026-11-09): format 4, 31 sections, TAG on 100 schedules, `Exhaust Equip` using `Equipment Tag`. The test copy was merged into it and removed; `database.before-sections.*` is the backup. The released `.exe` (from `main`) can't open format 4 until `dev` goes to `main` and the `.exe` is rebuilt.
 - The user's `reference code/equipment-inventory.zip` was reviewed and then deleted with the user's approval (2026-11-08): ideas taken, no code ported, see [decisions.md](decisions.md) and the roles entry in [plan.md](plan.md).
 - Next time the user saves in the GUI, the `.txt`, `.rfps` and `.cs` in `ddm-data` pick up the
   `IPS_SPACE_AirReq_DuctLeak_PRCNT` rename (GUID kept). In Revit it keeps the old name until its

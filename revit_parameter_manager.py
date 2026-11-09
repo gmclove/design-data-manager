@@ -1741,6 +1741,27 @@ class Schedule(object):
 		self.header_groups.append(group)
 		return dict(group)
 
+	def remove_header_group(self, parameter_names):
+		"""Remove the innermost header group around ``parameter_names`` and return it.
+
+		Raises ``ValueError`` when no group holds all of them, or when that group comes from a
+		section, which decides its own header groups.
+		"""
+		names = set(parameter_names)
+		if not names:
+			raise ValueError('Select a header in the group to remove first.')
+		around = [group for group in self.header_groups if names <= set(group['parameter_names'])]
+		if not around:
+			raise ValueError('No header group holds all the selected headers.')
+		group = min(around, key=lambda group: (len(group['parameter_names']), -group['top_row']))
+		if group.get('section_guid'):
+			section = self.catalog.get_section_by_guid(group['section_guid']) if self.catalog is not None else None
+			name = section.name if section is not None else 'a section'
+			raise ValueError("Header group '{}' comes from section '{}'; change it there.".format(
+				group['caption'], name))
+		self.header_groups.remove(group)
+		return dict(group)
+
 	def to_dict(self):
 		"""Serialize the schedule.
 
@@ -2273,6 +2294,36 @@ class Catalog(object):
 			name_format or self.family_name_format,
 			lambda term: str(getattr(fam, term) or '').strip(),
 		)
+
+	def copy_name(self, name):
+		"""A free name for a copy of schedule ``name``: ``name Copy``, then ``name Copy 2``, ..."""
+		candidate = '{} Copy'.format(name)
+		number = 2
+		while self.get_schedule(candidate) is not None:
+			candidate = '{} Copy {}'.format(name, number)
+			number += 1
+		return candidate
+
+	def duplicate_schedule(self, name, new_name):
+		"""Copy schedule ``name`` as ``new_name``, right after it in the list, and return the copy.
+
+		The copy has everything the original has (columns, families, overrides, header groups,
+		hidden columns, sections used, settings) and its own GUID, so Revit makes it a new schedule.
+		"""
+		schedule = self.get_schedule(name)
+		if schedule is None:
+			raise ValueError('Schedule not found: {}'.format(name))
+		new_name = '' if new_name is None else str(new_name).strip()
+		if not new_name:
+			raise ValueError('Schedule name is required.')
+		self._check_schedule_name_free(new_name)
+		data = schedule.to_dict()
+		data['name'] = new_name
+		data['guid'] = None
+		copy = Schedule.from_dict(data, catalog=self)
+		self.schedules.remove(copy)
+		self.schedules.insert(self.schedules.index(schedule) + 1, copy)
+		return copy
 
 	def remove_schedule(self, name):
 		schedule = self.get_schedule(name)

@@ -46,6 +46,8 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [ ] Hand the .exe to testers; collect feedback.
 - [ ] Link families to schedules and parameters (the workbook didn't record it); RF Tools
       export is empty until families have parameters.
+- [x] RF Tools exports (user, 2026-11-09): `.rfps` comes from the families (one template per family,
+      its own parameters); the per-schedule export is kept as `_schedules.rfps`.
 - [x] Workbook mistakes corrected on import (`chat/workbook-fixes.md`).
 - [x] Macro install/build works on any machine (user picks their module; .NET retarget).
 
@@ -86,17 +88,13 @@ unsaved-changes prompts.
 - [ ] Add missing parameters to families, first step, waiting on the user's review:
       `schedule-family-map.xlsx` in the database folder (2026-11-06), a first-pass map of schedules to
       2D and 3D families. Not imported; the database is unchanged.
-- [ ] Schedule sections (2026-11-06), on branch `schedule-sections`. Needs the user: try
-      `database.with-sections.ddm.json` in the database folder (31 starting sections, none applied; the 18
-      `_AHU Section (...)` schedules are sections there and deleted as schedules), then
-      in Revit apply `Pump` to the Pump schedule, Save, run the macro, and check columns, captions and hidden
-      columns. When happy, bring the sections into the live database. Merging needs every machine updated first,
-      since an older app refuses format 4. `Basis Of Design` changes captions on 15 of its 91 schedules: 11 title
+- [ ] Schedule sections (2026-11-06), in `dev`. In the live database since 2026-11-09 (31 sections, mostly
+      unapplied; the 18 `_AHU Section (...)` schedules are sections now and deleted as schedules). Needs the
+      user, in Revit: apply `Pump` to the Pump schedule, Save, run the macro, and check columns, captions and
+      hidden columns. The live database is format 4: older apps, including the released `.exe`, refuse it. `Basis Of Design` changes captions on 15 of its 91 schedules: 11 title
       captions and 2 `HOUSING` captions no longer span Manufacturer and Model, and 2 schedules lose separate
       `MANUF.` and `MODEL` captions. No columns move. Decide whether to leave those 15 out.
-      When the sections go live, delete the `_AHU Section (...)` schedules from the live database too.
-- [ ] Combined parameters (2026-11-09), on branch `schedule-sections`. Needs the user, in Revit: Load
-      the test copy, Save, run the macro on a schedule with TAG and check its values, especially where a
+- [ ] Combined parameters (2026-11-09), on branch `schedule-sections`. Needs the user, in Revit: run the macro on a schedule with TAG and check its values, especially where a
       term is empty (does Revit still print the `-`?). TAG's width is the default 1 in; widen it if needed.
 - [ ] Future development: prefixed sections, as roles (user, 2026-11-06), so one definition covers several
       sets of the same columns on a schedule. Design from the user's reference code, where a heat pump has an

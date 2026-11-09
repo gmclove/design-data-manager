@@ -644,3 +644,25 @@ def test_files_written_before_includes_still_load(catalog):
 	data = catalog.to_dict()
 	data['sections'] = [{'name': 'Old', 'guid': 'g1', 'caption': 'C', 'parameter_names': ['Volts'], 'hidden_parameter_names': []}]
 	assert Catalog.from_dict(data).get_section('Old').parameter_names == ['Volts']
+
+# --- ungrouping in a schedule ------------------------------------------------
+
+def test_ungroup_removes_the_innermost_group_around_the_selection(catalog):
+	schedule = catalog.add_schedule('Fan', field_names=['Tag', 'Flow', 'Height', 'Width'])
+	schedule.add_header_group('ALL', ['Tag', 'Flow', 'Height', 'Width'])
+	schedule.add_header_group('SIZE', ['Height', 'Width'])
+	assert schedule.remove_header_group(['Width'])['caption'] == 'SIZE'
+	assert groups(schedule) == {'ALL': ['Tag', 'Flow', 'Height', 'Width']}
+	with pytest.raises(ValueError, match='Select a header'):
+		schedule.remove_header_group([])
+	schedule.remove_header_group(['Tag'])
+	with pytest.raises(ValueError, match='No header group'):
+		schedule.remove_header_group(['Tag'])
+
+
+def test_ungroup_refuses_a_group_from_a_section(catalog, electrical):
+	schedule = catalog.add_schedule('Fan', field_names=['Tag'])
+	schedule.apply_section(electrical)
+	with pytest.raises(ValueError, match="section 'Electrical'"):
+		schedule.remove_header_group(['Volts'])
+	assert groups(schedule) == {'ELEC DATA': ELECTRICAL}

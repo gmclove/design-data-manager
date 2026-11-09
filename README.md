@@ -10,7 +10,8 @@ Catalog, validate and sync Revit parameters, families and schedules.
 - `revit_macro_module.py`: finds, remembers and builds the user's Revit macro module
 - `build_exe.py`: builds the standalone `.exe` (PyInstaller)
 - `revit_shared_parameter_export.py`: Revit shared-parameter file export
-- `revit_parameter_scheduler_export.py`: RF Tools Parameter Scheduler (`.rfps`) export
+- `revit_parameter_scheduler_export.py`: RF Tools Parameter Scheduler exports: `.rfps` (one template per
+  family) and `_schedules.rfps` (one template per schedule)
 - `revit_schedule_macro_generator.py`: Revit schedule macro (`.cs`) generator
 - `quickbase_integration.py`: Quickbase REST client and sync service (work in progress)
 - `config/`: Revit reference tables (data types, family categories, property-palette groups) and app paths
@@ -134,9 +135,17 @@ To rename a schedule, edit its name at the top of the schedule window. Enter or 
 renames it, and Escape undoes the edit. A blank name or one another schedule has is refused. A
 blank Schedule Filter follows the new name.
 
+To copy a schedule, select it on the Schedules tab and click **Duplicate Schedule...**. Name the
+copy (it suggests "*name* Copy") and click **Duplicate**. The copy gets everything the original
+has: columns, families, overrides, header groups, hidden columns, sections and settings. It goes
+right after the original and opens in the Schedule Builder. It has its own GUID, so the macro
+makes it a new schedule in Revit.
+
 Under the schedule window's table are **Add Parameter...**, **Remove Parameter**, **◀ Move
 Left**, **Move Right ▶**, **Add Family...** and **Remove Family**:
 
+- **Frozen labels and headers:** the two label columns on the left and the header rows (group
+  levels, column headers, Hidden Column, Column Width) stay in place while the table scrolls.
 - **Selecting:** click a column header or a parameter's Name cell to select a column, or click a
   family's name on the left to select the family. Ctrl-click adds to the selection and
   Shift-click selects a range.
@@ -146,6 +155,10 @@ Left**, **Move Right ▶**, **Add Family...** and **Remove Family**:
 - **◀ Move Left** and **Move Right ▶** move the selected columns one place; they stay selected,
   so click again to keep moving. A move that would split a header group is refused: select all
   of the group's columns to move the group.
+- **Group Selected Headers** (above the table, in the Header Groups row) puts a header group over the
+  selected columns. **Ungroup Selected
+  Headers** removes the innermost group around them; a group that comes from a section is changed
+  in that section instead.
 - **Add Family...** does the same for families not yet in the schedule. Each linked family is a
   row in the table.
 - **Remove Parameter** and **Remove Family** act on the selection and ask first. A removed column
@@ -413,6 +426,11 @@ own setting. Set it in the family window, or in a schedule on the family's row o
 All Families row; both set the family itself, so every schedule it's in uses it. Blank uses the
 parameter's. The RF Tools export (`.rfps`) uses each family's own Instance or Type, Default
 Value, Formula and Group Under, and the CSV keeps them on the family's link rows.
+
+**RF Tools exports:** Save writes two. `database.rfps` has one template per family, with the
+family's own parameters and settings. `database_schedules.rfps` keeps the older layout: one
+template per schedule, named after it, with the schedule's columns and each parameter's own
+settings. Combined parameters are left out of both, since they aren't Revit parameters.
 
 Each cell shows the shared value, **(Varies)** when the families differ, or blank when none is
 set. Leaving a (Varies) cell unchanged changes nothing.

@@ -1,11 +1,9 @@
 """Export the parameter database in RushForth Tools Parameter Scheduler format."""
 
-import csv
-import io
-
 import pandas as pd
 
 from config.revit_dtype_definitions import REVIT_DTYPE_TABLE
+from config.revit_property_pallet_definitions import rf_tools_group_under
 from revit_shared_parameter_export import parameter_guid
 
 
@@ -117,7 +115,7 @@ def generate_rfps_content(
                     if _is_instance(own("instance_param") if _text(own("instance_param")) else True)
                     else "Type"
                 ),
-                "GroupUnder": _text(own("group_under")),
+                "GroupUnder": rf_tools_group_under(_text(own("group_under"))),
                 "Source": f"./{shared_parameter_file_name}",
                 "ParamToReplace": "",
                 "MapToElecConnector": "0",
@@ -129,14 +127,46 @@ def generate_rfps_content(
             }
         )
 
-    output = io.StringIO(newline="")
-    writer = csv.DictWriter(
-        output,
-        fieldnames=RFPS_COLUMNS,
-        delimiter="\t",
-        lineterminator="\r\n",
-        extrasaction="raise",
+    return _write_records(records)
+
+
+def generate_rfps_schedules_content(
+    schedule_columns,
+    params_df: pd.DataFrame,
+    shared_parameter_file_name: str = "shared-parameters.txt",
+) -> str:
+    """RFPS content with one template per schedule: ``schedule_columns`` is
+    ``[(schedule name, [column names])]``. Each row takes the parameter's own settings.
+    Columns that aren't parameters (combined parameters) are left out."""
+    parameter_names = {_text(name) for name in params_df.get("name", [])}
+    schedules = [
+        (schedule_name, [name for name in columns if name in parameter_names])
+        for schedule_name, columns in schedule_columns
+    ]
+    schedules = [(name, columns) for name, columns in schedules if _text(name) and columns]
+    links = pd.DataFrame(
+        [
+            {"family_name": schedule_name, "parameter_name": column}
+            for schedule_name, columns in schedules
+            for column in columns
+        ],
+        columns=["family_name", "parameter_name"],
     )
-    writer.writeheader()
-    writer.writerows(records)
-    return output.getvalue()
+    templates = pd.DataFrame({"name": [name for name, _columns in schedules]})
+    return generate_rfps_content(templates, links, params_df, shared_parameter_file_name)
+
+
+def _write_records(records) -> str:
+    """Tab-delimited lines, each value exactly as it is: RF Tools reads quotes literally, so a
+    formula like ``if(A, "NEW", "OLD")`` must not be wrapped or have its quotes doubled.
+    A tab or line break inside a value would split the row, so it becomes a space."""
+    def field(value):
+        return " ".join(str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ").split("\t"))
+
+    lines = ["\t".join(RFPS_COLUMNS)]
+    for record in records:
+        unknown = set(record) - set(RFPS_COLUMNS)
+        if unknown:
+            raise ValueError(f"Unknown RF Tools column(s): {', '.join(sorted(unknown))}")
+        lines.append("\t".join(field(record.get(column, "")) for column in RFPS_COLUMNS))
+    return "".join(line + "\r\n" for line in lines)

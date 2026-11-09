@@ -59,5 +59,6 @@ def get_database_output_paths(database_path):
         "csv": base_path.with_name(f"{stem}.ddm.csv"),
         "macro": base_path.with_name(f"{stem}.cs"),
         "rfps": base_path.with_name(f"{stem}.rfps"),
+        "rfps_schedules": base_path.with_name(f"{stem}_schedules.rfps"),
         "shared_parameters": base_path.with_name(f"{stem}.txt"),
     }
