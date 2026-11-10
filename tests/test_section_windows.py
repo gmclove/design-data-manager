@@ -52,7 +52,7 @@ def test_the_sections_tab_lists_sections(app):
 	app.catalog.get_schedule('Fan').apply_section(section)
 	app.validate_all()
 	tree = app.section_tree
-	assert app.notebook.tab(app.sections_tab, 'text') == 'Sections'
+	assert app.notebook.tab(app.sections_tab, 'text') == 'Schedule Sections'
 	values = tree.item(tree.get_children()[0], 'values')
 	assert list(values) == ['Electrical', 'ELEC DATA', '', '3', '1']
 

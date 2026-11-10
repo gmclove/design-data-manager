@@ -64,6 +64,12 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [ ] Add families from the GUI (schedules: Duplicate Schedule...).
 - [x] Override Formula and Group Under (family and parameter level) in the override tables.
 
+## Column widths from Revit (user, 2026-11-09)
+- [x] `ExportScheduleWidths` macro, typical widths review, drag to resize in the Schedule Builder.
+- [ ] Needs the user, in Revit: Save (installs the macro), run ExportScheduleWidths in several projects, then
+      Column Widths From Revit... and Accept. First check Revit's width for a newly added field is 1"
+      (`REVIT_DEFAULT_COLUMN_WIDTH_IN` in `revit_widths.py`); if not, change it before trusting the review.
+
 ## From the claude.ai plan (medium and long term)
 Already done since that plan: CSV and Excel import, shared parameter file export, main-tab search,
 unsaved-changes prompts.

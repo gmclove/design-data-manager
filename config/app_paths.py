@@ -62,3 +62,9 @@ def get_database_output_paths(database_path):
         "rfps_schedules": base_path.with_name(f"{stem}_schedules.rfps"),
         "shared_parameters": base_path.with_name(f"{stem}.txt"),
     }
+
+
+def get_revit_widths_folder(database_path):
+    """Where the macro's ExportScheduleWidths writes, one file per Revit project: a ``revit-widths``
+    folder next to the database. Revit writes these files, so they aren't Save outputs."""
+    return Path(database_path).parent / "revit-widths"

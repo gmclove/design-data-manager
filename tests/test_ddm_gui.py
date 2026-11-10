@@ -1645,7 +1645,7 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
     try:
         gui = DDMGUI(root)
         tab_texts = [gui.notebook.tab(tab_id, "text") for tab_id in gui.notebook.tabs()]
-        assert tab_texts == ["Parameters", "Families", "Schedules", "Sections", "Combined Parameters"]
+        assert tab_texts == ["Parameters", "Families", "Schedules", "Schedule Sections", "Combined Parameters"]
         assert gui.file_actions.grid_info()["row"] == 5
         assert [
             widget.cget("text")
@@ -3382,3 +3382,80 @@ def test_delete_families_schedules_and_a_familys_parameters(monkeypatch):
 
     gui._delete_schedules([schedule.name])
     assert gui.catalog.get_schedule(schedule.name) is None
+
+
+def test_column_widths_from_revit_takes_only_the_accepted_typical_widths(tmp_path):
+    import json
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = make_test_gui()
+        gui.root = root
+        first, second = gui.catalog.params[0], gui.catalog.params[1]
+        first.grid_column_width, second.grid_column_width = 1.0, 1.0
+        columns = [
+            {"parameter": first.name, "guid": None, "heading": "", "width_feet": 0.75 / 12, "hidden": False},
+            {"parameter": second.name, "guid": None, "heading": "", "width_feet": 2 / 12, "hidden": False},
+        ]
+        (tmp_path / "Project.widths.json").write_text(json.dumps(
+            {"version": 1, "project": "Project", "schedules": [{"name": "S", "category": "", "columns": columns}]}
+        ), encoding="utf-8")
+
+        window = gui.open_width_review(tmp_path)
+
+        assert {row["parameter"] for row in window.rows} == {first.name, second.name}
+        assert window.accepted == set()  # nothing starts selected
+        window.toggle([second.name])
+        window.accept()
+        assert (first.grid_column_width, second.grid_column_width) == (1.0, 2.0)
+        assert not window.winfo_exists()
+    finally:
+        root.destroy()
+
+
+def test_dragging_a_column_edge_in_the_schedule_builder_sets_its_width(monkeypatch, tmp_path):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = gui.catalog.schedules[0]
+        name = schedule.params[0].name
+        default = schedule.params[0].grid_column_width
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        form = find_window(root, f"Schedule Builder: {schedule.name}")
+        table = next(widget for widget in descendants(form) if isinstance(widget, OverrideTable))
+        ppi = table.pixels_per_inch
+        edge_y = table.header_top + 5
+
+        def drag(to_inches):
+            right = table.column_offsets[0] + table.column_widths[0]
+            table._on_mouse_down(SimpleNamespace(x=right + 2, y=edge_y, state=0))
+            x = table.column_offsets[0] + to_inches * ppi
+            table._on_mouse_drag(SimpleNamespace(x=x, y=edge_y, state=0))
+            assert table.width_cells[0]["text"] == f"{to_inches:g}"  # shows the width while dragging
+            table._on_mouse_up(SimpleNamespace(x=x, y=edge_y, state=0))
+
+        drag(default + 0.5)
+        assert schedule.grid_column_width_overrides == {name: default + 0.5}
+        assert table.column_widths[0] == round((default + 0.5) * ppi)
+        assert table.get_selected_parameter_names() == []  # a drag on the edge doesn't select
+
+        # Not quite on a sixteenth: snapped.
+        right = table.column_offsets[0] + table.column_widths[0]
+        table._on_mouse_down(SimpleNamespace(x=right, y=edge_y, state=0))
+        table._on_mouse_drag(SimpleNamespace(x=table.column_offsets[0] + (default + 1.03) * ppi, y=edge_y, state=0))
+        table._on_mouse_up(None)
+        assert schedule.grid_column_width_overrides == {name: default + 1.0}
+
+        # Back to the parameter's width: the schedule's own width goes.
+        drag(default)
+        assert schedule.grid_column_width_overrides == {}
+
+        # Away from an edge, a header click still selects the column.
+        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 20, y=edge_y, state=0))
+        assert table.get_selected_parameter_names() == [name]
+    finally:
+        root.destroy()

@@ -2,6 +2,14 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-09: Column widths from Revit, drag to resize
+- `ExportScheduleWidths` in the generated macro: writes every non-DDM schedule's column widths (with shared
+  parameter GUIDs) to `revit-widths/<project>.widths.json` next to the database. Builds against Revit 2025.
+- `revit_widths.py`: reads the exports, finds each parameter's typical width, applies chosen ones.
+- Parameters tab, Column Widths From Revit...: review with Accept checkboxes (`ddm_widths.py`).
+- Schedule Builder: drag a column's right edge to set its width (1/16" snap); columns drawn at true width.
+- The Sections tab is now Schedule Sections (user).
+
 ## 2026-11-09: Delete buttons, formula loops, data type warning, family categories
 - Delete Parameters..., Delete Families..., Remove Parameters From Family... and Delete Schedules... on the
   main tabs, each asking first with what it affects (see README, Deleting).
@@ -22,7 +30,9 @@ Newest first. One entry per piece of work; link commits where useful.
   - Linked the High-confidence rows of `schedule-family-map.xlsx` (user): 102 new schedule-family links, 10
     already there; 51 of 113 schedules now have families. Skipped the 14 `_AHU Section (...)` rows (sections
     now, not schedules). No columns or statuses changed. Medium, Low and None rows wait on the user's review.
-  - Backups: `database.before-bod-align`, `database.before-categories`, `database.before-family-links`.
+  - Families tab: a read-only Schedules column lists the schedules each family is on.
+  - Every `database.before-*` backup in `ddm-data` (24 files, 2026-11-03 to 11-09) deleted at the user's
+    request; the backups named in this changelog no longer exist (OneDrive's recycle bin may still have them).
 
 ## 2026-11-09: Live database parameter cleanup
 - Deleted unused duplicates `IPS_EQUIP_Air_Capacity_Max_CFM` / `_Min_CFM` (kept `CapacityMax`/`CapacityMin`).

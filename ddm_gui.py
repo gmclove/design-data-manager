@@ -22,6 +22,7 @@ from config.app_paths import (
     NEW_ISSUE_URL,
     STARTER_DATABASE_PATH,
     get_database_output_paths,
+    get_revit_widths_folder,
 )
 
 try:
@@ -50,6 +51,8 @@ from ddm_tables import (
 from ddm_clipboard import context_menu, copy_text, install_mouse_wheel, paste_text, rows_as_text
 from ddm_combined import CombinedParamWindows
 from ddm_formula import FormulaBuilderWindows
+from ddm_widths import WidthReviewWindows
+from revit_widths import snap_width
 from formula import scan_references
 from ddm_sections import SectionWindows
 from excel_import import import_workbook
@@ -179,6 +182,11 @@ OVERRIDE_RULES = (
 )
 
 
+# Dragging a column edge: how close (pixels) the pointer must be, and the narrowest width (inches).
+EDGE_GRAB_PX = 4
+MIN_DRAG_WIDTH_IN = 0.25
+
+
 class OverrideTable(tk.Canvas):
     """A grid of default values: header rows, then labelled rows of cells.
 
@@ -224,8 +232,16 @@ class OverrideTable(tk.Canvas):
                  show_header=True, on_header_double_click=None, on_cell_double_click=None,
                  grid_column_widths=None, on_cell_action=None, hidden_names=None, on_hidden_toggle=None,
                  edit_on_click=False, on_family_action=None, width_cells=None, on_width_click=None,
-                 header_label="Schedule"):
+                 header_label="Schedule", on_width_drag=None):
         super().__init__(master, background="#ffffff", highlightthickness=0)
+        # Dragging a column's right edge in the header rows calls ``on_width_drag(column_index,
+        # inches)``. Columns are then drawn at their true width, so the drag shows what it sets.
+        self.on_width_drag = on_width_drag
+        if on_width_drag is not None:
+            self.min_column_width = int(self.pixels_per_inch * MIN_DRAG_WIDTH_IN)
+        # The column being resized: ``(column_index, width in inches)``; ``None`` when not dragging.
+        self._resizing = None
+        self.inch_widths = []
         # Names the header rows on the left: what they belong to.
         self.header_label = header_label
         self.parameter_names = list(parameter_names)
@@ -266,6 +282,7 @@ class OverrideTable(tk.Canvas):
         self.current_cell = None
         self.bind("<Button-1>", self._on_mouse_down)
         self.bind("<B1-Motion>", self._on_mouse_drag)
+        self.bind("<ButtonRelease-1>", self._on_mouse_up)
         self.bind("<Double-Button-1>", self._on_double_click)
         self.bind("<Motion>", self._on_motion)
         for key in ("<Control-c>", "<Control-C>"):
@@ -301,6 +318,7 @@ class OverrideTable(tk.Canvas):
         return self.width_row_top + self.width_row_height
 
     def set_grid_column_widths(self, widths_in_inches):
+        self.inch_widths = [float(width) for width in widths_in_inches]
         self.column_widths = [
             max(self.min_column_width, int(float(width) * self.pixels_per_inch)) for width in widths_in_inches
         ]
@@ -420,6 +438,36 @@ class OverrideTable(tk.Canvas):
             if left <= canvas_x < left + width:
                 return index
         return None
+
+    def _edge_at(self, event):
+        """The column whose right edge, in the header rows, is under the event, when columns can be
+        resized by dragging; else ``None``."""
+        if self.on_width_drag is None or not self.show_header or not self.parameter_names:
+            return None
+        if not 0 <= self._cy(event) < self.body_top:
+            return None
+        canvas_x = self._cx(event)
+        if canvas_x < self.left:
+            return None
+        for index, (left, width) in enumerate(zip(self.column_offsets, self.column_widths)):
+            if abs(canvas_x - (left + width)) <= EDGE_GRAB_PX:
+                return index
+        return None
+
+    def _drag_width(self, event):
+        """The width the column being resized would have with its right edge at the pointer."""
+        index = self._resizing[0]
+        inches = (self._cx(event) - self.column_offsets[index]) / self.pixels_per_inch
+        return max(MIN_DRAG_WIDTH_IN, snap_width(inches))
+
+    def _on_mouse_up(self, _event):
+        if self._resizing is None:
+            return None
+        index, inches = self._resizing
+        self._resizing = None
+        if self.on_width_drag is not None and index < len(self.parameter_names):
+            self.on_width_drag(index, inches)
+        return "break"
 
     def _parameter_index_at(self, event):
         """The column whose header was clicked, or ``None`` outside the header row."""
@@ -553,6 +601,10 @@ class OverrideTable(tk.Canvas):
         self.finish_cell_edit(commit=True)
         # Keys go to the table, for Ctrl+C and Ctrl+V; an editor opened below takes them instead.
         self.focus_set()
+        edge = self._edge_at(event)
+        if edge is not None:
+            self._resizing = (edge, self.inch_widths[edge])
+            return
         self.current_cell = self._cell_at(event)
         family_action = self._family_action_at(event)
         if family_action is not None:
@@ -616,6 +668,17 @@ class OverrideTable(tk.Canvas):
         self._draw_grid()
 
     def _on_mouse_drag(self, event):
+        if self._resizing is not None:
+            index = self._resizing[0]
+            inches = self._drag_width(event)
+            if inches != self._resizing[1]:
+                self._resizing = (index, inches)
+                widths = list(self.inch_widths)
+                widths[index] = inches
+                if self.width_cells is not None:
+                    self.width_cells[index] = dict(self.width_cells[index], text=f"{inches:g}")
+                self.set_grid_column_widths(widths)
+            return
         index = self._selectable_column_at(event)
         if index is None or self.selection_anchor is None:
             return
@@ -868,6 +931,9 @@ class OverrideTable(tk.Canvas):
         )
 
     def _on_motion(self, event):
+        if self._edge_at(event) is not None:
+            self.configure(cursor="sb_h_double_arrow")
+            return
         clickable = any(found is not None for found in (
             self._family_action_at(event),
             self._action_at(event), self._hidden_toggle_at(event), self._family_at(event),
@@ -1025,7 +1091,7 @@ class PlaceholderEntry(ttk.Entry):
         return None
 
 
-class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
+class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthReviewWindows):
     """Tkinter review/edit GUI over a parameter ``Catalog``.
 
     The catalog is the source of truth. The tables are views rebuilt from it after
@@ -1037,7 +1103,9 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
 
     _table_columns = {
         "params": list(PARAM_COLUMNS),
-        "families": list(FAMILY_COLUMNS),
+        # Schedules: the schedules each family is on (shown only; link families in the Schedule Builder).
+        "families": [column for column in FAMILY_COLUMNS if column != "status"][:-1]
+        + ["schedules", "status", "validation_message"],
     }
 
     _display_labels = {
@@ -1058,6 +1126,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
         "category": "Category",
         "description": "Description",
         "family_name": "Family Name",
+        "schedules": "Schedules",
         "parameter_name": "Parameter Name",
         "group_name": "Group Name",
         "override_entry": "Override Entry",
@@ -1163,7 +1232,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
         self.notebook.add(self.params_tab, text="Parameters")
         self.notebook.add(self.family_tab, text="Families")
         self.notebook.add(self.schedules_tab, text="Schedules")
-        self.notebook.add(self.sections_tab, text="Sections")
+        self.notebook.add(self.sections_tab, text="Schedule Sections")
         self.notebook.add(self.combined_tab, text="Combined Parameters")
 
         self._build_data_table(self.params_tab, "params")
@@ -1220,6 +1289,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
             output_path = get_database_output_paths(self.checkpoint_path)["macro"]
             source = generate_schedule_macro_source(
                 self.catalog, Path(self.checkpoint_path).name,
+                widths_folder=get_revit_widths_folder(Path(self.checkpoint_path).resolve()),
                 **({"namespace": module.namespace} if module else {}),
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1668,6 +1738,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
             ttk.Button(bar, text="Add Parameter...", command=self._open_param_name_builder).pack(side="right")
             ttk.Button(bar, text="Delete Parameters...", command=self._delete_selected_params).pack(
                 side="right", padx=(0, 6))
+            ttk.Button(bar, text="Column Widths From Revit...", command=self.open_width_review).pack(
+                side="right", padx=(0, 6))
         elif table_name == "families":
             ttk.Button(bar, text="Delete Families...", command=self._delete_selected_families).pack(side="right")
             ttk.Button(bar, text="Remove Parameters From Family...",
@@ -1843,9 +1915,15 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
         params = self.params_df
         # Shown as on the schedule window: Instance or Type, not true / false.
         params["instance_param"] = params["instance_param"].map(lambda value: self._attribute_text("instance_param", value))
+        families = self.families_df
+        on_schedules = {}
+        for schedule in self.catalog.schedules:
+            for fam in schedule.fams:
+                on_schedules.setdefault(fam.name, []).append(schedule.name)
+        families["schedules"] = families["name"].map(lambda name: "; ".join(on_schedules.get(name, [])))
         tables = (
             ("params", self.param_tree, params, self._get_table_columns("params")),
-            ("families", self.family_tree, self.families_df, self._get_table_columns("families")),
+            ("families", self.family_tree, families, self._get_table_columns("families")),
             ("groups", self.group_tree, self._build_schedule_summary_df(), self._schedule_summary_columns),
             ("sections", self.section_tree, self._build_section_summary_df(), self._section_summary_columns),
             ("combined", self.combined_tree, self._build_combined_summary_df(), self._combined_summary_columns),
@@ -3163,6 +3241,17 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
             for name in parameter_names
         ]
 
+    def _drag_schedule_width(self, schedule, parameter_name: str, inches: float, on_changed):
+        """A column edge dragged to ``inches``: this schedule's own width for the column, or none
+        when it's back at the parameter's Default Column Width."""
+        param = self.catalog.get_column(parameter_name)
+        default = getattr(param, "grid_column_width", None)
+        width_text = "" if default is not None and snap_width(default) == inches else f"{inches:g}"
+        self._set_schedule_column(
+            schedule.name, parameter_name, schedule.header_text_overrides.get(parameter_name, ""), width_text,
+        )
+        on_changed()
+
     def _edit_schedule_width(self, table: "OverrideTable", schedule, column_index: int, on_changed):
         """Edit a column's width in this schedule in place. Blank goes back to the parameter's."""
         parameter_name = table.parameter_names[column_index]
@@ -3916,7 +4005,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
         row = self.families_df.iloc[row_index]
         entries = {}
         for col in columns:
-            if col in {"status", "validation_message"}:
+            if col in {"status", "validation_message", "schedules"}:
                 ttk.Label(
                     form,
                     text=f"{self._humanize_column_name(col)}: {row.get(col)}",
@@ -4124,6 +4213,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows):
             on_hidden_toggle=toggle_hidden,
             width_cells=self._schedule_width_cells(schedule, parameter_names),
             on_width_click=lambda column_index: self._edit_schedule_width(table, schedule, column_index, refresh_widths),
+            on_width_drag=lambda column_index, inches: self._drag_schedule_width(
+                schedule, parameter_names[column_index], inches, refresh_widths),
             edit_on_click=True,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
                 table, rows_builder, selected_name, row_index, column_index,

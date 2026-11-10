@@ -149,9 +149,10 @@ def _spec_source(spec):
     return lines
 
 
-def generate_schedule_macro_source(catalog, source_name="the database", namespace=DEFAULT_NAMESPACE) -> str:
+def generate_schedule_macro_source(catalog, source_name="the database", namespace=DEFAULT_NAMESPACE,
+                                   widths_folder="") -> str:
     """The C# source of the ``CreateSchedulesFromDatabase`` macro for ``catalog``,
-    in ``namespace`` (the macro module's)."""
+    in ``namespace`` (the macro module's). ``ExportScheduleWidths`` writes to ``widths_folder``."""
     specs, notes = schedule_specs(catalog)
     data = []
     for spec in specs:
@@ -165,9 +166,17 @@ def generate_schedule_macro_source(catalog, source_name="the database", namespac
         .replace("/*MODEL_PREFIX*/", _csharp_string(MODEL_PREFIX))
         .replace("/*WORKING_SUFFIX*/", _csharp_string(WORKING_SUFFIX))
         .replace("/*TRACKING_SCHEMA*/", TRACKING_SCHEMA_GUID)
+        .replace("/*WIDTHS_FOLDER*/", _csharp_string(widths_folder))
+        .replace("/*WIDTHS_VERSION*/", str(WIDTHS_EXPORT_VERSION))
         .replace("            /*NOTES*/\n", "".join(line + "\n" for line in note_lines))
         .replace("            /*SCHEDULES*/\n", "".join(line + "\n" for line in data))
     )
+
+
+# Shape of the files ExportScheduleWidths writes (read by revit_widths):
+# {"version", "project", "exported_at", "skipped_database_schedules",
+#  "schedules": [{"name", "category", "columns": [{"parameter", "guid", "heading", "width_feet", "hidden"}]}]}
+WIDTHS_EXPORT_VERSION = 1
 
 
 # Header line that marks a file as generated, so an older copy can be found and replaced.
@@ -203,13 +212,15 @@ def install_macro(source, module_dir):
 
 MACRO_TEMPLATE = GENERATED_HEADER + """ from /*SOURCE*/. Saving the database rewrites this file;
 // don't edit it by hand. Build its macro module in the Macro Manager, then run
-// CreateSchedulesFromDatabase.
+// CreateSchedulesFromDatabase (or ExportScheduleWidths).
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.ExtensibleStorage;
 using Autodesk.Revit.UI;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using Drawing = System.Drawing;
 using WinForms = System.Windows.Forms;
 
@@ -223,6 +234,10 @@ namespace /*NAMESPACE*/
         private const string DdmFilterParameter = /*FILTER_PARAMETER*/;
         private const string DdmModelPrefix = /*MODEL_PREFIX*/;
         private const string DdmWorkingSuffix = /*WORKING_SUFFIX*/;
+
+        // Where ExportScheduleWidths writes, one file per project, for the Design Data Manager to read.
+        private const string DdmWidthsFolder = /*WIDTHS_FOLDER*/;
+        private const int DdmWidthsVersion = /*WIDTHS_VERSION*/;
 
         // Which of a database schedule's three Revit schedules this is, in the project's record.
         private const string DdmModelRole = "Model";
@@ -294,6 +309,114 @@ namespace /*NAMESPACE*/
                 message += "\\n\\nProblems:\\n" + string.Join("\\n", problems);
             }
             TaskDialog.Show(DdmTitle, message);
+        }
+
+        /// <summary>
+        /// Write the column widths of this project's schedules to a file, so the Design Data
+        /// Manager can find each parameter's typical width. Changes nothing in Revit. Schedules this
+        /// macro builds from the database are left out: they only repeat the database's widths.
+        /// </summary>
+        public void ExportScheduleWidths()
+        {
+            Document? doc = ActiveUIDocument?.Document;
+            if (doc == null)
+            {
+                TaskDialog.Show(DdmTitle, "No active Revit document is open.");
+                return;
+            }
+            if (DdmWidthsFolder.Length == 0)
+            {
+                TaskDialog.Show(DdmTitle, "This macro doesn't know where the database is. Save the database in the Design Data Manager and build the macro again.");
+                return;
+            }
+
+            var tracker = new DdmTracker(doc);
+            HashSet<string> recorded = tracker.RecordedIds();
+            var databaseNames = new HashSet<string>(DdmSchedules.SelectMany(
+                spec => new[] { DdmModelPrefix + spec.Name, spec.Name + DdmWorkingSuffix, spec.Name }));
+            var schedules = new List<object>();
+            int skipped = 0;
+            int columnCount = 0;
+            IEnumerable<ViewSchedule> views = new FilteredElementCollector(doc)
+                .OfClass(typeof(ViewSchedule))
+                .Cast<ViewSchedule>()
+                .Where(view => !view.IsTemplate && !view.IsTitleblockRevisionSchedule && !view.IsInternalKeynoteSchedule)
+                .OrderBy(view => view.Name);
+            foreach (ViewSchedule view in views)
+            {
+                if (recorded.Contains(view.UniqueId) || databaseNames.Contains(view.Name))
+                {
+                    skipped++;
+                    continue;
+                }
+                List<object> columns = DdmDescribeWidths(doc, view.Definition);
+                if (columns.Count == 0)
+                {
+                    continue;
+                }
+                columnCount += columns.Count;
+                schedules.Add(new
+                {
+                    name = view.Name,
+                    category = Category.GetCategory(doc, view.Definition.CategoryId)?.Name ?? "Multi-Category",
+                    columns,
+                });
+            }
+
+            string fileName = string.Concat(doc.Title.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+            string target = Path.Combine(DdmWidthsFolder, fileName + ".widths.json");
+            try
+            {
+                Directory.CreateDirectory(DdmWidthsFolder);
+                string json = JsonSerializer.Serialize(new
+                {
+                    version = DdmWidthsVersion,
+                    project = doc.Title,
+                    exported_at = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm"),
+                    skipped_database_schedules = skipped,
+                    schedules,
+                }, new JsonSerializerOptions { WriteIndented = true });
+                // Through a temporary file, so the app never reads a half-written one.
+                string temporary = target + ".tmp";
+                File.WriteAllText(temporary, json);
+                File.Move(temporary, target, true);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                TaskDialog.Show(DdmTitle, $"Couldn't write {target}:\\n{ex.Message}");
+                return;
+            }
+
+            TaskDialog.Show(DdmTitle,
+                $"Exported the column widths of {schedules.Count} schedule(s), {columnCount} columns, to:\\n{target}"
+                + $"\\n\\nLeft out {skipped} schedule(s) the Design Data Manager builds."
+                + "\\n\\nIn the Design Data Manager, click Column Widths From Revit on the Parameters tab.");
+        }
+
+        /// <summary>A schedule's parameter columns: name, shared parameter GUID, heading, width, hidden.</summary>
+        private static List<object> DdmDescribeWidths(Document doc, ScheduleDefinition definition)
+        {
+            var columns = new List<object>();
+            foreach (ScheduleFieldId id in definition.GetFieldOrder())
+            {
+                ScheduleField field = definition.GetField(id);
+                // Only parameters: calculated values and the like have no database parameter.
+                if (field.FieldType == ScheduleFieldType.Formula || field.FieldType == ScheduleFieldType.Percentage
+                    || field.FieldType == ScheduleFieldType.Count)
+                {
+                    continue;
+                }
+                string? guid = (doc.GetElement(field.ParameterId) as SharedParameterElement)?.GuidValue.ToString();
+                columns.Add(new
+                {
+                    parameter = field.GetName(),
+                    guid,
+                    heading = field.ColumnHeading,
+                    width_feet = field.GridColumnWidth,
+                    hidden = field.IsHidden,
+                });
+            }
+            return columns;
         }
 
         private static string DdmShortList(List<string> names)
@@ -759,6 +882,9 @@ namespace /*NAMESPACE*/
             }
 
             public static string Key(DdmSchedule spec, string role) => spec.Guid + "|" + role;
+
+            /// <summary>The UniqueIds of every Revit schedule in the record.</summary>
+            public HashSet<string> RecordedIds() => new HashSet<string>(_ids.Values);
 
             /// <summary>The recorded Revit schedule, or null if none or it has been deleted.</summary>
             public ViewSchedule? Find(string key)

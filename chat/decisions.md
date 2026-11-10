@@ -16,6 +16,20 @@ Standing rules that every design has to meet. Check new work against them.
   to the families that need it. Anything that would add a project parameter needs the user's approval
   first, for that specific case.
 
+## Column widths from Revit (user, 2026-11-09)
+- **Accepting a typical width changes the parameter's Default Column Width** (user): schedules without their
+  own width follow it; existing schedule widths stay, except ones equal to the new default, which are cleared.
+- **Only schedules the app didn't build count** (user): the macro's `3D - X`, `X - Working` and `X` echo the
+  database. Found by the tracking record, with the names as a fallback. Hidden columns don't count.
+- **Typical = the most common width among adjusted columns** (user): columns at Revit's width for a new field
+  are left out. That width is assumed 1" (`REVIT_DEFAULT_COLUMN_WIDTH_IN`); check it on the first real export.
+  Ties go to the wider width (my call). Widths compare in 1/16" steps (my call).
+- **Columns match by shared parameter GUID first, then name** (my call), so renamed parameters with kept GUIDs count.
+- **Nothing starts selected in the review** (my call, as in the sync review).
+- **Dragging a column edge sets this schedule's width, snapped to 1/16"** (user); back at the parameter's width
+  it clears the override. Dragging only works in the Schedule Builder, where columns are now drawn at their
+  true width (no 1.5" minimum; at least 1/4") so the drag shows what it sets (my call).
+
 ## Schedule sections
 - **A section is a catalog definition that schedules link to, not a copy** (user asked for a data
   structure; link is my call): the 130 imported schedules show copies drift, e.g. `MOTOR DATA` has 18

@@ -1,4 +1,4 @@
-"""The Sections tab's windows: define a section, pick its schedules and preview what changes."""
+"""The Schedule Sections tab's windows: define a section, pick its schedules and preview what changes."""
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -729,7 +729,7 @@ class SectionWindows:
         ]
         if not choices:
             messagebox.showinfo(
-                "Add Section", "There's no section left to add. Make sections on the Sections tab.", parent=parent,
+                "Add Section", "There's no section left to add. Make sections on the Schedule Sections tab.", parent=parent,
             )
             return None
 

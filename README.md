@@ -171,6 +171,23 @@ Linking families doesn't change the Revit macro: Revit finds a schedule's elemen
 The import replaces the open database but saves nothing until you click **Save**. Anything that
 was fixed or skipped is listed in Messages.
 
+## Column Widths From Revit
+
+Your own Revit schedules show how wide each column really needs to be. To take those widths:
+
+1. **Save** here: it installs the macros, including `ExportScheduleWidths`.
+2. In each Revit project with schedules worth learning from, run **ExportScheduleWidths** from the
+   Macro Manager. It changes nothing in Revit, and writes `<project>.widths.json` to a `revit-widths`
+   folder next to the database. Schedules this app's macro builds are left out: they only repeat the
+   database's widths.
+3. On the Parameters tab, click **Column Widths From Revit...**. Each parameter found shows its current
+   Default Column Width, its **typical** width in Revit, how many columns agree, and the other widths
+   used. Typical is the most common width among columns someone adjusted: columns still at Revit's
+   width for a newly added field (1") and hidden columns don't count, and a tie goes to the wider width.
+4. Check **Accept** on the ones to take (or **Select All**; **Show Unchanged** lists the ones that
+   already match), then **Accept Selected** and **Save**. Schedules without their own width follow the
+   new default; a schedule's own width equal to it is cleared; other schedule widths stay.
+
 ## Revit Schedule Macro
 
 Saving the database also writes a Revit macro, `CreateSchedulesFromDatabase`. A copy always goes
@@ -272,7 +289,7 @@ add a parameter to the Revit project.
 - **What a section decides:** which columns travel together, their order, their header groups and
   which columns are hidden. Headers and widths still come from each parameter, and a schedule can
   still override a header.
-- **Sections tab:** click **Add Section...**, or double-click a section. The window lays out its columns
+- **Schedule Sections tab:** click **Add Section...**, or double-click a section. The window lays out its columns
   like the Schedule Builder: Group Level rows, column headers, a Hidden Column row, where each column is
   included from, and the parameters' defaults. On the right, tick the schedules that use it; those with
   the most of its columns are listed first.
@@ -443,7 +460,9 @@ Value, and a Family Default Value beats the Parameter Default Value. If you clea
   schedule, an **Add Parameter to Family** button adds the missing parameter to the family, and
   **Add All Parameters** under the family's name adds every column it's missing at once.
 - **Column Width (in)** (Schedule Builder, Schedule section): this column's width in this schedule
-  only. It's gray while it's the parameter's; clear it to go back to that.
+  only. It's gray while it's the parameter's; clear it to go back to that. You can also **drag a
+  column's right edge** in the header rows: the columns are drawn at their true width, the width snaps
+  to 1/16" (at least 1/4"), and dragging back to the parameter's width clears the schedule's own.
 - **Default Column Width (in)** (Schedule Builder, Parameter section): the parameter's own width, used
   by every schedule that doesn't set its own.
 - **Default Header** (schedule window, Parameter section): the parameter's own header text, which
