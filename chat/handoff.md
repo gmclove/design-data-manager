@@ -36,12 +36,12 @@ one: stay away from project parameters, and add parameters to families instead.
 - A new machine needs its own SSH key added at https://github.com/settings/keys.
 
 ## State (2026-11-05)
-- Schedule sections and combined parameters are merged into `dev` (2026-11-09), not `main`. The live `database.ddm.json` now has them (user, 2026-11-09): format 4, 31 sections, TAG on 100 schedules, `Exhaust Equip` using `Equipment Tag`. The test copy was merged into it and removed. The released `.exe` (from `main`) can't open format 4 until `dev` goes to `main` and the `.exe` is rebuilt.
+- Schedule sections and combined parameters are in `main` since 2026-11-09 (`dev` merged into `main`; `.exe` rebuilt with the live database, format 4). The live `database.ddm.json` now has them (user, 2026-11-09): format 4, 31 sections, TAG on 100 schedules, `Exhaust Equip` using `Equipment Tag`. The test copy was merged into it and removed. The `.exe` in `dist/` (built 2026-11-09 from `29c60f0`) opens it; the older beta `.exe` testers have doesn't.
 - The user's `reference code/equipment-inventory.zip` was reviewed and then deleted with the user's approval (2026-11-08): ideas taken, no code ported, see [decisions.md](decisions.md) and the roles entry in [plan.md](plan.md).
 - Next time the user saves in the GUI, the `.txt`, `.rfps` and `.cs` in `ddm-data` pick up the
   `IPS_SPACE_AirReq_DuctLeak_PRCNT` rename (GUID kept). In Revit it keeps the old name until its
   shared parameter is updated. Fix it in the workbook too; import corrects it either way.
-- `dev` is ahead of `main` (merge when asked; build the `.exe` then); `v0.1.0-beta` tags `82727d5`. The beta `.exe` is shared with
+- `main` = `dev` as of 2026-11-09 (merge `dev` into `main` when asked; build the `.exe` then); `v0.1.0-beta` tags `82727d5`. The beta `.exe` is shared with
   testers outside GitHub (the repo is public and the `.exe` holds the master database).
 - Latest work (see [changelog.md](changelog.md)): unsaved-changes warning (close / Load / Import);
   Families tab: Category 1/2 + codes, Category Code (2D/3D per Revit category), Family Name Builder
@@ -55,6 +55,7 @@ one: stay away from project parameters, and add parameters to families instead.
 - Parameter Name Builder added, with the same Use / Prefix / Suffix / Order table as the Family Name
   Builder (uncommitted); every parameter now has recorded name terms. The database file gets the
   new term shape at the next Save; loading upgrades it.
+- Revit add-in: planned on its own branch `revit-addin` (user, 2026-11-09), off `dev`; see the plan in [plan.md](plan.md).
 - Rename All Families would now only rename 2 families: see Known issues in [plan.md](plan.md).
 - 2026-11-09: HUM fixed, Basis Of Design on all 92 schedules, family categories filled (live database; see
   [changelog.md](changelog.md)). Quickbase is the lowest priority (user).

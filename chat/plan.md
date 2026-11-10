@@ -70,6 +70,19 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
       Column Widths From Revit... and Accept. First check Revit's width for a newly added field is 1"
       (`REVIT_DEFAULT_COLUMN_WIDTH_IN` in `revit_widths.py`); if not, change it before trusting the review.
 
+## Revit add-in (user, 2026-11-09), branch `revit-addin` off `dev`
+A compiled C# add-in with a Design Data ribbon tab, plus the existing desktop app (which the ribbon opens).
+First scope: Build Schedules, reading `<database>.schedules.json` that Save writes from `schedule_specs`, so users
+no longer need a macro module, the .NET SDK or the Macro Manager. Revit 2025+, one DLL per year, installed per
+user from the app (Install Revit Add-in...). Same Extensible Storage tracking schema as the macro, so it updates
+the schedules the macro made. The macro stays until the user verifies the add-in in Revit.
+- [ ] Save writes `<database>.schedules.json` (`generate_schedule_data`).
+- [ ] `revit-addin/` project: ribbon, Build Schedules command, ported routine, JSON reader.
+- [ ] `build_addin.py` (per installed Revit year; .NET fallback as in `revit_macro_module`), bundled in the `.exe`.
+- [ ] `revit_addin.py` install to `%APPDATA%\Autodesk\Revit\Addins\<year>`, and the GUI button.
+- [ ] Needs the user, in Revit: install, Build Schedules on a project the macro built and on a new one.
+- [ ] Then retire the macro; later move ExportScheduleWidths and Send into the add-in.
+
 ## From the claude.ai plan (medium and long term)
 Already done since that plan: CSV and Excel import, shared parameter file export, main-tab search,
 unsaved-changes prompts.
