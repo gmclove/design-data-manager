@@ -44,7 +44,7 @@ LINK_OVERRIDE_COLUMNS = {
 }
 ENTRY_COLUMNS = [
     "family_name", "group_name", "parameter_name", "header_text_override",
-    "grid_column_width_override", "hidden", "override_entry", "schedule_filter", "itemize",
+    "grid_column_width_override", "hidden", "override_entry", "schedule_filter", "itemize", "sorting",
     "view_template", "schedule_guid", "status", "validation_message",
 ]
 CSV_COLUMNS = [
@@ -53,8 +53,9 @@ CSV_COLUMNS = [
     "country", "country_code", "category", "category_code", "category_1", "category_1_code", "category_2",
     "category_2_code", "description", "family_name", "parameter_name", "group_name",
     "header_text_override", "grid_column_width_override", "hidden", "override_entry",
-    "schedule_filter", "itemize", "view_template", "schedule_guid", "caption",
+    "schedule_filter", "itemize", "sorting", "view_template", "schedule_guid", "caption",
     "parameter_names", "top_row", "bottom_row", "hidden_parameter_names", "parts", "header_groups",
+    "linker_tag_set", "linker_role_setting",
 ] + PARAM_TERM_COLUMNS
 _CSV_RECORD_TYPES = {
     "parameter": "params",
@@ -171,6 +172,7 @@ def _load_sections(catalog, rows, issues):
                 guid=text(row.get("guid")) or None,
                 catalog=catalog,
                 header_groups=_json_names(row.get("header_groups"), f"section '{name}'"),
+                linker_tag_set=bool(text(row.get("linker_tag_set"))) and parse_bool(row.get("linker_tag_set")),
             )
         except ValueError as exc:
             issues.append(f"Section '{name}': {exc} Skipped.")
@@ -265,6 +267,7 @@ def _load_families(catalog, family_rows, link_rows, issues):
             category_2=text(row.get("category_2")) or None,
             description=text(row.get("description")) or None,
             category=category,
+            linker_role=text(row.get("linker_role_setting")).lower() or None,
         )
 
     seen = set()
@@ -333,7 +336,7 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
         entry = schedules.setdefault(schedule_name, {
             # Fields keep the order they first appear in: the schedule's column order.
             "families": [], "fields": {}, "headers": {}, "widths": {}, "values": [], "hidden": set(),
-            "filter": "", "itemize": True, "view_template": "", "guid": "",
+            "filter": "", "itemize": True, "view_template": "", "guid": "", "sorting": None,
         })
         # Schedule-wide settings repeat on every row of the schedule; the first one given wins.
         if not entry["filter"]:
@@ -347,6 +350,14 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
                 entry["itemize"] = entry["itemize"] and parse_bool(row.get("itemize"))
             except ValueError:
                 issues.append(f"Schedule '{schedule_name}': Itemize must be true or false; itemized.")
+        if entry["sorting"] is None and text(row.get("sorting")):
+            try:
+                entry["sorting"] = json.loads(text(row.get("sorting")))
+                if not isinstance(entry["sorting"], dict):
+                    raise ValueError
+            except ValueError:
+                entry["sorting"] = {}
+                issues.append(f"Schedule '{schedule_name}': Sorting/Grouping isn't readable; not sorted.")
         # A row without a family is a schedule column on its own (a schedule can stand alone).
         if family_name:
             fam = catalog.get_family(family_name)
@@ -393,6 +404,18 @@ def _load_schedules(catalog, entry_rows, header_groups, issues):
             view_template=entry["view_template"] or None,
             guid=entry["guid"] or None,
         )
+        sorting = entry["sorting"] or {}
+        if sorting:
+            try:
+                schedule.set_sorting(
+                    sorting.get("sort_group_fields", []),
+                    sorting.get("show_grand_total", False),
+                    sorting.get("show_grand_total_title", True),
+                    sorting.get("show_grand_total_count", True),
+                    sorting.get("grand_total_title"),
+                )
+            except (ValueError, TypeError) as exc:
+                issues.append(f"Schedule '{schedule_name}': Sorting/Grouping: {exc} Not sorted.")
         for family_name, param_name, value in entry["values"]:
             fam = catalog.get_family(family_name)
             if param_name not in {param.name for param in fam.params}:
@@ -489,6 +512,14 @@ def links_table(catalog):
     return pd.DataFrame(rows, columns=LINK_COLUMNS)
 
 
+def sorting_text(schedule):
+    """The schedule's Sorting/Grouping (but Itemize) as JSON for its table rows; blank when it has none."""
+    data = schedule.sorting_dict()
+    if not data["sort_group_fields"] and not data["show_grand_total"]:
+        return ""
+    return json.dumps(data, sort_keys=True)
+
+
 def _schedule_rows(catalog, columns):
     """With ``columns``, one row per schedule column in column order (no family);
     otherwise one row per family and column (the schedule's families)."""
@@ -505,6 +536,7 @@ def _schedule_rows(catalog, columns):
             "hidden": param_name in schedule.hidden_field_names,
             "schedule_filter": _blank(schedule.filter_value),
             "itemize": schedule.itemize,
+            "sorting": sorting_text(schedule),
             "view_template": _blank(schedule.view_template),
             "schedule_guid": schedule.guid,
             "override_entry": _blank(value),
@@ -557,6 +589,9 @@ def write_database_csv(catalog, csv_path):
         ("schedule_entry", entries_table(catalog)),
     ):
         for row in table.to_dict(orient="records"):
+            if record_type == "family":
+                # A Linker role chosen by hand; blank works it out.
+                row["linker_role_setting"] = catalog.get_family(row["name"]).linker_role or ""
             records.append({"record_type": record_type, **row})
     for schedule_name, groups in header_groups_by_schedule(catalog).items():
         for group in groups:
@@ -578,6 +613,7 @@ def write_database_csv(catalog, csv_path):
             "parameter_names": json.dumps(section.members),
             "hidden_parameter_names": json.dumps(section.to_dict()["hidden_parameter_names"]),
             "header_groups": json.dumps(section.to_dict()["header_groups"]) if section.header_groups else "",
+            "linker_tag_set": "true" if section.linker_tag_set else "",
         })
     for combined in catalog.combined_params:
         records.append({

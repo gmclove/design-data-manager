@@ -944,13 +944,14 @@ def test_schedule_table_shows_each_level_and_where_values_come_from(monkeypatch)
     assert cells(rows, "Default Value", "Apply to All Families") == [("(Varies)", "inherited", True)]
     assert cells(rows, "Default Value", "F1") == [("5", "inherited", True)]
     assert cells(rows, "Default Value", "F2") == [("9", "set", True)]
-    assert cells(rows, "Default Value", "F3") == [("1", "inherited", True)]
+    # F3's formula sets its value, so there's no value to show or edit.
+    assert cells(rows, "Default Value", "F3") == [("Formula in Use", "inherited", False)]
     # Formula and group under belong to the family; in a schedule they set the family's own.
     assert cells(rows, "Default Formula", "F3") == [("Height * 2", "set", True)]
     assert cells(rows, "Default Group Under", "F3") == [("", "inherited", True)]
 
-    # Bold marks the value the schedule uses: F1's own (family) and F2's schedule value; F3 uses
-    # the parameter's, so the Parameter cell is bold too.
+    # Bold marks the value the schedule uses: F1's own (family) and F2's schedule value; F3's
+    # formula sets its own, so no family uses the Parameter Default Value.
     def bold(label, section):
         current = None
         for row in rows:
@@ -959,7 +960,7 @@ def test_schedule_table_shows_each_level_and_where_values_come_from(monkeypatch)
                 return [cell.get("bold", False) for cell in row["cells"]]
 
     assert [bold("Default Value", section) for section in ("F1", "F2", "F3")] == [[True], [True], [False]]
-    assert bold("Default Value", "Parameter") == [True]
+    assert bold("Default Value", "Parameter") == [False]
     assert bold("Default Value", "Apply to All Families") == [False]
     assert bold("Default Formula", "F3") == [True] and bold("Default Formula", "Parameter") == [True]
     assert bold("Default Header", "Parameter") == [True]
@@ -1120,9 +1121,9 @@ def test_schedule_builder_default_column_width_edits_the_parameter_everywhere():
     table.typed = "2.5"
     row = next(i for i, r in enumerate(table.rows) if r["label"] == "Default Column Width (in)")
     column = table.parameter_names.index("Width")
-    gui._edit_table_cell(table, rows_builder, "S1", row, column, on_columns_changed=lambda: changed.append("columns"))
+    gui._edit_table_cell(table, rows_builder, "S1", row, column, on_columns_changed=changed.append)
     assert param.grid_column_width == 2.5
-    assert changed == ["columns"]  # the columns are drawn at their width, so the window reopens
+    assert changed == ["grid_column_width"]  # the columns are redrawn at their width
     assert gui._get_schedule_grid_column_width(schedule, "Width") == 2.5
 
     table.typed = "wide"
@@ -1130,7 +1131,7 @@ def test_schedule_builder_default_column_width_edits_the_parameter_everywhere():
     original = gui_module.messagebox.showerror
     gui_module.messagebox.showerror = lambda title, message, **_kw: errors.append(message)
     try:
-        gui._edit_table_cell(table, rows_builder, "S1", row, column, on_columns_changed=lambda: changed.append("columns"))
+        gui._edit_table_cell(table, rows_builder, "S1", row, column, on_columns_changed=changed.append)
     finally:
         gui_module.messagebox.showerror = original
     assert errors and param.grid_column_width == 2.5
@@ -1209,7 +1210,7 @@ def test_schedule_window_parameter_section_edits_the_parameter_itself(monkeypatc
         table = fake_table(rows_builder(), ["Width"])
         table.typed = typed
         row = next(i for i, r in enumerate(table.rows) if r["label"] == label and r.get("param_field"))
-        gui._edit_table_cell(table, rows_builder, "S1", row, 0, on_columns_changed=lambda: changed.append(label))
+        gui._edit_table_cell(table, rows_builder, "S1", row, 0, on_columns_changed=lambda field: changed.append(field))
         return table.edits[-1]
 
     assert edit("Default Value", "4")["placeholder"] == "Sets the Parameter for Every Family and Schedule"
@@ -1233,13 +1234,13 @@ def test_schedule_window_parameter_section_edits_the_parameter_itself(monkeypatc
     assert (param.group_under, param.formula) == ("Dimensions", "Height * 2")
     assert changed == []  # the table refreshes in place
 
-    # The header and name redraw the column headers, so the window reopens.
+    # The header and name redraw the column headers.
     assert edit("Default Header", "WIDTH")["value"] == ""
     assert param.header_text == "WIDTH"
     monkeypatch.setattr(gui, "_confirm_param_rename", lambda old, new: True)
     assert edit("Name", "Breite")["value"] == "Width"
     assert gui.catalog.get_param("Breite") is param
-    assert changed == ["Default Header", "Name"]
+    assert changed == ["header_text", "name"]
 
     errors = []
     monkeypatch.setattr(gui_module.messagebox, "showerror", lambda title, message, **_kw: errors.append(message))
@@ -1713,6 +1714,27 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         gui._add_schedule_header_group("Schedule A", ["Length", "Width"], "Dimensions")
         table.set_groups(schedule.header_groups)
 
+        # One click on a group's caption edits its name in place; Escape leaves it as it was.
+        group_y = table.group_row_height // 2
+        table.selected_indices = set()
+        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[1] + 10, y=group_y, state=0))
+        root.update()
+        entry, finish = table._cell_editor
+        assert entry.master is table and entry.get() == "Dimensions"
+        assert table.get_selected_parameter_names() == []  # the click doesn't select headers
+        entry.delete(0, tk.END)
+        entry.insert(0, "Size")
+        finish(True)
+        assert schedule.header_groups[0]["caption"] == "Size"
+        assert table.group_layout[0][3]["caption"] == "Size"
+        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 10, y=group_y, state=0))
+        entry, finish = table._cell_editor
+        entry.delete(0, tk.END)
+        finish(False)
+        assert schedule.header_groups[0]["caption"] == "Size"
+        schedule.rename_header_group(["Length", "Width"], "Dimensions")
+        table.set_groups(schedule.header_groups)
+
         assert cells(table.rows, "Default Value", "Family_A")[1] == ("Override Width", "set", True)
 
         # One click on Family_A's Width value edits it; type a new one and save.
@@ -1970,6 +1992,77 @@ def test_parameter_list_edits_in_place_on_one_click_and_pops_up_on_two(tmp_path,
         root.destroy()
 
 
+def test_a_default_value_set_by_a_formula_shows_formula_in_use_and_cant_be_edited():
+    gui = make_test_gui()
+    schedule = next(s for s in gui.catalog.schedules if s.fams and gui._get_schedule_parameter_names(s))
+    names = gui._get_schedule_parameter_names(schedule)
+    fam = schedule.fams[0]
+    name = next(n for n in names if n in schedule.family_param_names(fam) and gui.catalog.get_param(n)
+                and not gui.catalog.get_param(n).formula)
+    column = names.index(name)
+    param = gui.catalog.get_param(name)
+
+    def value_cells(rows):
+        return [row["cells"][column] for row in rows
+                if row.get("param_field") == "default_value" or row.get("attribute") == "value"]
+
+    def formula_in_use(cell):
+        return cell["text"] == gui_module.FORMULA_IN_USE and cell["state"] == "inherited" and not cell["editable"]
+
+    assert not any(formula_in_use(cell) for cell in value_cells(gui._schedule_table_rows(schedule)))
+
+    # A Family Default Formula grays that family's values, in the schedule and in Family Details.
+    fam.override_param(name, formula="1")
+    rows = gui._schedule_table_rows(schedule)
+    family_value = next(row for row in rows if row.get("family") == fam.name and row.get("attribute") == "value")
+    assert formula_in_use(family_value["cells"][column]) and not family_value["cells"][column].get("bold")
+    family_rows = gui._family_window_rows(fam)
+    family_column = [p.name for p in fam.custom_params].index(name)
+    assert any(formula_in_use(row["cells"][family_column]) for row in family_rows if row.get("attribute") == "value")
+
+    # A Parameter Default Formula grays every Default Value of the column.
+    param.formula = "1"
+    cells = value_cells(gui._schedule_table_rows(schedule))
+    assert all(formula_in_use(cell) for cell in cells if cell["state"] != "none")
+    # The Parameters tab shows it too, and won't edit it.
+    row_id = str(gui.catalog.params.index(param))
+    assert gui._value_set_by_formula("params", row_id, "default_value")
+    assert not gui._value_set_by_formula("params", row_id, "header_text")
+
+
+def test_parameter_list_formula_opens_the_formula_builder_on_one_click_or_two(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.geometry("1200x800")
+    try:
+        gui = DDMGUI(root)
+        gui.notebook.select(gui.params_tab)
+        root.update()
+        tree = gui.param_tree
+        row_id = tree.get_children()[0]
+        param = gui.catalog.params[int(row_id)]
+        column = gui._get_table_columns("params").index("formula")
+        tree.see(row_id)
+        tree.xview_moveto(1.0)  # the Default Formula column may be off to the right
+        root.update()
+        x, y, width, height = tree.bbox(row_id, f"#{column + 1}")
+        click = SimpleNamespace(x=x + width // 2, y=y + height // 2)
+
+        opened = []
+        monkeypatch.setattr(gui, "open_formula_builder", lambda *args, **kwargs: opened.append(kwargs))
+        gui._on_tree_click(click, "params")
+        root.after(gui._single_click_delay_ms + 50, root.quit)
+        root.mainloop()
+        gui._on_tree_click(click, "params")
+        gui._on_tree_double_click(click, "params")
+        root.update()
+        assert [kwargs["param_name"] for kwargs in opened] == [param.name, param.name]
+        assert not [w for w in root.winfo_children()
+                    if isinstance(w, tk.Toplevel) and w.title() == "Edit Default Formula"]
+    finally:
+        root.destroy()
+
+
 def test_override_windows_have_an_override_rules_button(tmp_path, monkeypatch):
     monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
     root = tk.Tk()
@@ -2201,6 +2294,7 @@ def test_database_paths_are_configured_under_data_directory():
         "rfps": DATA_DIR / "database.rfps",
         "rfps_schedules": DATA_DIR / "database_schedules.rfps",
         "shared_parameters": DATA_DIR / "database.txt",
+        "schedule_data": DATA_DIR / "database.schedules.json",
     }
 
 
@@ -2249,17 +2343,17 @@ def test_schedule_settings_box_saves_filter_itemize_and_view_template(tmp_path, 
         form = find_window(root, f"Schedule Builder: {schedule.name}")
         box = next(w for w in descendants(form) if isinstance(w, ttk.LabelFrame) and w.cget("text") == "Schedule Settings")
         labels = [w.cget("text") for w in descendants(box) if isinstance(w, ttk.Label)]
-        assert labels == ["Schedule Filter", "IPS_GROUP_Schedule_Name =", "View Template"]
+        assert labels == ["Schedule Filter", "IPS_GROUP_Schedule_Name =", "Sorting/Grouping",
+                          "Not Sorted; Itemized", "View Template"]
         filter_entry, template_entry = [w for w in descendants(box) if isinstance(w, gui_module.PlaceholderEntry)]
-        itemize = next(w for w in descendants(box) if isinstance(w, ttk.Checkbutton))
-        assert itemize.cget("text") == "Itemize Every Instance"
+        # Itemize Every Instance moved into the Sorting/Grouping window, as in Revit.
+        assert not [w for w in descendants(box) if isinstance(w, ttk.Checkbutton)]
         assert filter_entry.get() == "" and filter_entry.placeholder.startswith(schedule.name)
 
         filter_entry.insert(0, "FILTER A")
         template_entry.insert(0, "IPS Schedules")
         box.save()
-        itemize.invoke()  # on by default; one click turns it off and saves
-        assert (schedule.filter_value, schedule.itemize, schedule.view_template) == ("FILTER A", False, "IPS Schedules")
+        assert (schedule.filter_value, schedule.itemize, schedule.view_template) == ("FILTER A", True, "IPS Schedules")
         fam = schedule.fams[0]
         assert schedule.resolved_family_param(fam, "IPS_GROUP_Schedule_Name").value == "FILTER A"
 
@@ -2268,6 +2362,79 @@ def test_schedule_settings_box_saves_filter_itemize_and_view_template(tmp_path, 
         filter_entry.insert(0, schedule.name)
         box.save()
         assert schedule.filter_value is None
+    finally:
+        root.destroy()
+
+
+def test_sorting_grouping_window_works_like_revits(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        gui = DDMGUI(root)
+        schedule = gui.catalog.schedules[0]
+        gui._open_detail_window("schedule", schedule.name)
+        root.update()
+        form = find_window(root, f"Schedule Builder: {schedule.name}")
+        box = next(w for w in descendants(form) if isinstance(w, ttk.LabelFrame) and w.cget("text") == "Schedule Settings")
+        find_button(box, "Sorting/Grouping...").invoke()
+        root.update()
+        window = find_window(root, "Sorting/Grouping")
+        levels = window.levels
+        first, second = levels[0], levels[1]
+        columns = list(first["combo"].cget("values"))
+        assert columns[0] == "(none)" and columns[1:] == [
+            name for name in gui._get_schedule_parameter_names(schedule) if name in schedule.sortable_column_names()]
+        # Revit's wording.
+        texts = {w.cget("text") for w in descendants(window) if isinstance(w, (ttk.Label, ttk.Checkbutton, ttk.Radiobutton, ttk.Button))}
+        assert {"Sort by:", "Then by:", "Ascending", "Descending", "Header", "Footer:", "Blank line", "Grand totals:",
+                "Custom grand total title:", "Itemize every instance", "OK", "Cancel"} <= texts
+
+        # Nothing chosen: only Sort by itself is available; Then by waits for it.
+        assert first["combo"].instate(["!disabled"]) and first["ascending"].instate(["disabled"])
+        assert second["combo"].instate(["disabled"])
+        first["parameter"].set(columns[1])
+        assert first["ascending"].instate(["!disabled"]) and second["combo"].instate(["!disabled"])
+        assert first["footer_combo"].instate(["disabled"])  # until Footer is ticked
+        first["footer"].set(True)
+        assert first["footer_combo"].instate(["!disabled"])
+        first["footer_option"].set("Count and totals")
+        first["header"].set(True)
+        second["parameter"].set(columns[2])
+        second["order"].set("descending")
+        second["blank_line"].set(True)
+        window.grand_var.set(True)
+        window.grand_option.set("Title and totals")
+        window.grand_title.set("TOTAL")
+        window.itemize_var.set(False)
+        window.ok()
+        root.update()
+
+        assert schedule.sort_group_fields == [
+            {"parameter": columns[1], "descending": False, "show_header": True, "show_footer": True,
+             "show_footer_title": False, "show_footer_count": True, "show_blank_line": False},
+            {"parameter": columns[2], "descending": True, "show_header": False, "show_footer": False,
+             "show_footer_title": True, "show_footer_count": True, "show_blank_line": True},
+        ]
+        assert (schedule.show_grand_total, schedule.show_grand_total_title, schedule.show_grand_total_count,
+                schedule.grand_total_title, schedule.itemize) == (True, True, False, "TOTAL", False)
+        assert box.sorting_label.cget("text") == (
+            f"Sort by {columns[1]}, Then by {columns[2]} (Descending); Grand Totals; Not Itemized")
+
+        # Reopened, it shows what was saved; (none) on Sort by drops every level below it.
+        find_button(box, "Sorting/Grouping...").invoke()
+        root.update()
+        window = find_window(root, "Sorting/Grouping")
+        assert window.levels[1]["parameter"].get() == columns[2]
+        assert window.levels[0]["footer_option"].get() == "Count and totals"
+        window.levels[0]["parameter"].set("(none)")
+        assert window.levels[1]["combo"].instate(["disabled"])
+        window.ok()
+        assert schedule.sort_group_fields == []
+        # Removing a column takes its sort level with it.
+        schedule.set_sorting([{"parameter": columns[1]}])
+        gui._remove_schedule_parameters(schedule.name, [columns[1]])
+        assert schedule.sort_group_fields == []
     finally:
         root.destroy()
 
@@ -2457,6 +2624,8 @@ def test_schedule_window_adds_parameters_after_the_selected_column_and_adds_fami
         picker.add()
         root.update()
         assert [fam.name for fam in schedule.fams] == before + [target.name]
+        # The Schedules tab updates on Apply.
+        find_window(root, f"Schedule Builder: {schedule.name}").builder_buttons.apply()
         assert gui.group_tree.item(gui.group_tree.get_children()[0], "values")[1] == str(len(before) + 1)
         table, _bar = schedule_window_parts(root, schedule)
         assert target.name in table._family_names()
@@ -2511,6 +2680,7 @@ def test_schedule_window_title_renames_the_schedule(tmp_path, monkeypatch):
         entry.rename()
         root.update()
         assert schedule.name == "Renamed Schedule"
+        find_window(root, "Schedule Builder: Renamed Schedule").builder_buttons.apply()  # the Schedules tab
         assert gui.group_tree.item(gui.group_tree.get_children()[0], "values")[0] == "Renamed Schedule"
         assert name_entry("Renamed Schedule").get() == "Renamed Schedule"
         assert schedule.resolved_filter_value == "Renamed Schedule"  # a blank filter follows the name
@@ -3081,7 +3251,7 @@ def test_schedule_builder_lays_out_close_and_buttons_before_the_table(tmp_path, 
         root.update()
         form = find_window(root, "Schedule Builder: Schedule A")
         order = form.pack_slaves()
-        close = find_button(form, "Close")
+        close = find_button(form, "Close").master  # the Apply / Discard Changes / Close bar
         table_box = next(
             widget for widget in order
             if isinstance(widget, ttk.LabelFrame) and widget.cget("text").startswith("Schedule Default Values")
@@ -3090,6 +3260,187 @@ def test_schedule_builder_lays_out_close_and_buttons_before_the_table(tmp_path, 
         # Packed before the table, at the bottom: a short window shrinks the table, not these.
         assert order.index(close) < order.index(buttons) < order.index(table_box)
         assert close.pack_info()["side"] == buttons.pack_info()["side"] == "bottom"
+    finally:
+        root.destroy()
+
+
+def open_builder(monkeypatch, tmp_path, name="Schedule A"):
+    """A GUI with the Schedule Builder open on ``name``, counting full database checks."""
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    gui = DDMGUI(root)
+    checks = []
+    original = gui.catalog.validate
+    monkeypatch.setattr(gui.catalog, "validate", lambda: checks.append(1) or original())
+    gui._open_detail_window("schedule", name)
+    root.update()
+    return root, gui, checks
+
+
+def test_schedule_builder_holds_edits_until_apply(tmp_path, monkeypatch):
+    root, gui, checks = open_builder(monkeypatch, tmp_path)
+    try:
+        form = find_window(root, "Schedule Builder: Schedule A")
+        apply_button = find_button(form, "Apply")
+        assert apply_button.instate(["disabled"])  # nothing to apply yet
+        schedule = gui.catalog.get_schedule("Schedule A")
+        name = schedule.params[0].name
+        gui._set_schedule_column_hidden("Schedule A", name, True)
+        gui._set_schedule_column_hidden("Schedule A", name, False)
+        # Edits show in the Builder at once, but the whole-database check waits for Apply.
+        assert checks == []
+        assert gui._builder_session()["pending"] and not apply_button.instate(["disabled"])
+        form.builder_buttons.apply()
+        assert checks == [1]
+        assert not gui._builder_session()["pending"] and apply_button.instate(["disabled"])
+    finally:
+        root.destroy()
+
+
+def test_schedule_builder_discard_puts_the_database_back(tmp_path, monkeypatch):
+    root, gui, _checks = open_builder(monkeypatch, tmp_path)
+    try:
+        before = gui.catalog.to_dict()
+        schedule = gui.catalog.get_schedule("Schedule A")
+        gui._set_schedule_column_hidden("Schedule A", schedule.params[0].name, True)
+        # Adding a column reopens the window; the held edits (and the snapshot) carry over.
+        _table, bar = schedule_window_parts(root, schedule)
+        picker = bar.add_parameters()
+        picker.listbox.selection_set(0)
+        picker.add()
+        root.update()
+        assert gui.catalog.to_dict() != before
+        form = find_window(root, "Schedule Builder: Schedule A")
+        assert gui._builder_session()["pending"]
+        form.builder_buttons.discard()
+        root.update()
+        assert gui.catalog.to_dict() == before
+        assert gui.catalog.get_schedule("Schedule A") is not schedule  # restored, not patched
+        find_window(root, "Schedule Builder: Schedule A")  # reopened on the restored schedule
+        assert not gui._builder_session()["pending"]
+    finally:
+        root.destroy()
+
+
+def test_closing_the_schedule_builder_with_unapplied_edits_asks(tmp_path, monkeypatch):
+    for choice in (None, "discard", "apply"):
+        root, gui, checks = open_builder(monkeypatch, tmp_path)
+        try:
+            before = gui.catalog.to_dict()
+            form = find_window(root, "Schedule Builder: Schedule A")
+            name = gui.catalog.get_schedule("Schedule A").params[0].name
+            gui._set_schedule_column_hidden("Schedule A", name, True)
+            asked = []
+            monkeypatch.setattr(gui, "_ask_builder_close", lambda parent: asked.append(1) or choice)
+            form.builder_buttons.close()
+            root.update()
+            assert asked == [1]
+            if choice is None:  # Keep Editing
+                assert form.winfo_exists() and gui._builder_session()["pending"]
+                continue
+            assert not form.winfo_exists() and gui._builder_session() is None
+            hidden = name in gui.catalog.get_schedule("Schedule A").hidden_field_names
+            if choice == "discard":
+                assert gui.catalog.to_dict() == before and not hidden
+            else:
+                assert hidden and checks
+        finally:
+            root.destroy()
+
+
+def test_closing_the_schedule_builder_without_edits_doesnt_ask(tmp_path, monkeypatch):
+    root, gui, _checks = open_builder(monkeypatch, tmp_path)
+    try:
+        monkeypatch.setattr(gui, "_ask_builder_close", lambda parent: pytest.fail("asked"))
+        form = find_window(root, "Schedule Builder: Schedule A")
+        form.builder_buttons.close()
+        assert gui._builder_session() is None
+        # And after the Builder closes, edits are checked at once again.
+        gui.validate_all()
+    finally:
+        root.destroy()
+
+
+def test_schedule_builder_default_header_edit_redraws_in_place(tmp_path, monkeypatch):
+    root, gui, _checks = open_builder(monkeypatch, tmp_path)
+    try:
+        form = find_window(root, "Schedule Builder: Schedule A")
+        table = next(widget for widget in descendants(form) if isinstance(widget, OverrideTable))
+        param = gui.catalog.get_param(table.parameter_names[0])
+        for label, typed in (("Default Header", "NEW HEADER"), ("Default Column Width (in)", "2.25")):
+            row = next(i for i, r in enumerate(table.rows) if r["label"] == label and r.get("param_field"))
+            monkeypatch.setattr(table, "start_cell_edit",
+                                lambda r, c, current, on_commit, **kw: on_commit(typed))
+            table.on_cell_double_click(row, 0)
+            root.update()
+            # The same window and table: no reopen.
+            assert find_window(root, "Schedule Builder: Schedule A") is form and table.winfo_exists()
+        assert param.header_text == "NEW HEADER" and param.grid_column_width == 2.25
+        assert gui._builder_session()["pending"]
+        # A rename sets the columns again, in the same window; the column stays selected.
+        monkeypatch.setattr(gui, "_confirm_param_rename", lambda old, new: True)
+        table.selected_indices = {0}
+        row = next(i for i, r in enumerate(table.rows) if r.get("param_field") == "name")
+        monkeypatch.setattr(table, "start_cell_edit", lambda r, c, current, on_commit, **kw: on_commit("Renamed Col"))
+        table.on_cell_double_click(row, 0)
+        root.update()
+        assert find_window(root, "Schedule Builder: Schedule A") is form and table.winfo_exists()
+        assert table.parameter_names[0] == "Renamed Col" and table.get_selected_parameter_names() == ["Renamed Col"]
+    finally:
+        root.destroy()
+
+
+def test_column_and_family_changes_redraw_the_builder_in_place(tmp_path, monkeypatch):
+    root, gui, _checks = open_builder(monkeypatch, tmp_path)
+    try:
+        monkeypatch.setattr(gui_module.messagebox, "askyesno", lambda *args, **kwargs: True)
+        schedule = gui.catalog.get_schedule("Schedule A")
+        form = find_window(root, "Schedule Builder: Schedule A")
+        table, bar = schedule_window_parts(root, schedule)
+        root.geometry("600x400")
+        form.geometry("700x600")
+        root.update()
+        table.xview_moveto(0.3)
+        root.update()
+        view = table.canvasx(0)  # in pixels: a fraction changes as the table widens
+        assert view > 0
+
+        def same_window():
+            root.update()
+            assert find_window(root, "Schedule Builder: Schedule A") is form
+            assert schedule_window_parts(root, schedule) == (table, bar)
+            assert table.parameter_names == [param.name for param in schedule.params]
+            assert table.rows == gui._schedule_table_rows(schedule)
+
+        picker = bar.add_parameters()
+        picker.listbox.selection_set(0)
+        picker.add()
+        same_window()
+        assert table.canvasx(0) == view  # the scroll position stays
+
+        first = table.parameter_names[0]
+        table.selected_indices = {0}
+        bar.move(1)
+        same_window()
+        assert table.parameter_names[1] == first and table.get_selected_parameter_names() == [first]
+
+        table.selected_indices = {1}
+        bar.remove_parameters()
+        same_window()
+        assert first not in table.parameter_names
+
+        picker = bar.add_families()
+        added = picker.listbox.get(0)
+        picker.listbox.selection_set(0)
+        picker.add()
+        same_window()
+        assert added in table._family_names()
+
+        table.selected_families = {added}
+        bar.remove_families()
+        same_window()
+        assert added not in table._family_names()
     finally:
         root.destroy()
 
@@ -3224,9 +3575,11 @@ def test_schedule_builder_copies_and_pastes_cells(tmp_path, monkeypatch):
         form = find_window(root, "Schedule Builder: Schedule A")
         table = next(widget for widget in descendants(form) if isinstance(widget, OverrideTable))
         name_row = next(i for i, row in enumerate(table.rows) if row.get("param_field") == "name")
-        value_row = next(
-            i for i, row in enumerate(table.rows)
+        # A family value cell that can be typed in (not one a formula sets).
+        value_row, value_column = next(
+            (i, j) for i, row in enumerate(table.rows)
             if row.get("attribute") == "value" and row.get("family") and not row.get("all_families")
+            for j, cell in enumerate(row["cells"]) if cell["editable"]
         )
 
         # Copy a read-only-looking cell: the parameter's name.
@@ -3241,17 +3594,18 @@ def test_schedule_builder_copies_and_pastes_cells(tmp_path, monkeypatch):
 
         # Paste into a family's value: the same as typing it there. Only the first value of an Excel block.
         family = table.rows[value_row]["family"]
-        table.current_cell = (value_row, 0)
+        table.current_cell = (value_row, value_column)
         root.clipboard_clear()
         root.clipboard_append("42\t43\n44\t45\n")
         assert table.paste()
-        param_name = table.parameter_names[0]
+        param_name = table.parameter_names[value_column]
         assert gui.catalog.get_schedule("Schedule A").family_overrides[family][param_name]["value"] == "42"
 
         # Right-click offers Copy and Paste for that cell. (Showing a menu waits for a click on Windows.)
         monkeypatch.setattr(tk.Menu, "tk_popup", lambda *args, **kwargs: None)
         table._on_right_click(SimpleNamespace(
-            x=table.column_offsets[0] + 5, y=table.body_top + value_row * table.row_height + 5, x_root=0, y_root=0,
+            x=table.column_offsets[value_column] + 5, y=table.body_top + value_row * table.row_height + 5,
+            x_root=0, y_root=0,
         ))
         assert [table._context_menu.entrycget(i, "label") for i in range(2)] == ["Copy", "Paste"]
         assert table._context_menu.entrycget(1, "state") == "normal"
@@ -3414,7 +3768,9 @@ def test_column_widths_from_revit_takes_only_the_accepted_typical_widths(tmp_pat
         root.destroy()
 
 
-def test_dragging_a_column_edge_in_the_schedule_builder_sets_its_width(monkeypatch, tmp_path):
+def test_schedule_builder_widths_are_entered_not_dragged(monkeypatch, tmp_path):
+    # Dragging a column edge to set its width is parked (chat/parked/); widths are typed in the
+    # Column Width row. A press and drag on a header edge only selects, and sets no width.
     monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
     root = tk.Tk()
     root.withdraw()
@@ -3422,40 +3778,15 @@ def test_dragging_a_column_edge_in_the_schedule_builder_sets_its_width(monkeypat
         gui = DDMGUI(root)
         schedule = gui.catalog.schedules[0]
         name = schedule.params[0].name
-        default = schedule.params[0].grid_column_width
         gui._open_detail_window("schedule", schedule.name)
         root.update()
         form = find_window(root, f"Schedule Builder: {schedule.name}")
         table = next(widget for widget in descendants(form) if isinstance(widget, OverrideTable))
-        ppi = table.pixels_per_inch
         edge_y = table.header_top + 5
-
-        def drag(to_inches):
-            right = table.column_offsets[0] + table.column_widths[0]
-            table._on_mouse_down(SimpleNamespace(x=right + 2, y=edge_y, state=0))
-            x = table.column_offsets[0] + to_inches * ppi
-            table._on_mouse_drag(SimpleNamespace(x=x, y=edge_y, state=0))
-            assert table.width_cells[0]["text"] == f"{to_inches:g}"  # shows the width while dragging
-            table._on_mouse_up(SimpleNamespace(x=x, y=edge_y, state=0))
-
-        drag(default + 0.5)
-        assert schedule.grid_column_width_overrides == {name: default + 0.5}
-        assert table.column_widths[0] == round((default + 0.5) * ppi)
-        assert table.get_selected_parameter_names() == []  # a drag on the edge doesn't select
-
-        # Not quite on a sixteenth: snapped.
         right = table.column_offsets[0] + table.column_widths[0]
-        table._on_mouse_down(SimpleNamespace(x=right, y=edge_y, state=0))
-        table._on_mouse_drag(SimpleNamespace(x=table.column_offsets[0] + (default + 1.03) * ppi, y=edge_y, state=0))
-        table._on_mouse_up(None)
-        assert schedule.grid_column_width_overrides == {name: default + 1.0}
-
-        # Back to the parameter's width: the schedule's own width goes.
-        drag(default)
+        table._on_mouse_down(SimpleNamespace(x=right - 2, y=edge_y, state=0))
+        table._on_mouse_drag(SimpleNamespace(x=right + 60, y=edge_y, state=0))
         assert schedule.grid_column_width_overrides == {}
-
-        # Away from an edge, a header click still selects the column.
-        table._on_mouse_down(SimpleNamespace(x=table.column_offsets[0] + 20, y=edge_y, state=0))
-        assert table.get_selected_parameter_names() == [name]
+        assert name in table.get_selected_parameter_names()
     finally:
         root.destroy()

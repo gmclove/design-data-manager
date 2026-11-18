@@ -2,6 +2,105 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-17: Linker ID (primary and linked elements)
+- Sections get **Linker Tag Set** (`ScheduleSection.linker_tag_set`, JSON and CSV `linker_tag_set`; a checkbox in the
+  section window). `Catalog.linker_families()`: a family with `IPS_LINKER_ID` is **primary** when it is a Detail
+  Item with parameters beyond its tag-set and common (`IPS_GROUP_...`) parameters, else **linked**; a family's
+  `linker_role` (Auto / Primary / Linked, for exceptions such as the PFD Distribution generic boxes) overrides it.
+  Prefix = Category 2 code, else Category 1, else ITEM. Families tab: **Linker Role** column, a dropdown (family
+  detail window too, which also now shows its Schedules instead of "None").
+- The schedules file has an optional `"linker"` block (parameter, GUID, families with role, prefix, tag parameters
+  with GUIDs); specs unchanged, version still 1.
+- Add-in: `Shared/LinkerPlan.cs` (Revit-free rules: next ID per prefix, duplicates, orphans, values to copy),
+  `src/Linker.cs` (reads elements, applies plans; Assign IDs, Link Elements, Sync Linked Elements on a new Linker
+  panel), `src/LinkerWatcher.cs` (asks Sync Now / Later when a project opens). The check program prints the plan
+  for a JSON list of elements, tested from `tests/test_revit_addin.py`.
+- README: stray carriage return in the add-in build path fixed.
+
+## 2026-11-11: Rename header groups in place
+- One click on a header group's caption in the Schedule Builder opens an in-place box over it (Enter or
+  clicking away saves, Escape cancels). `Schedule.rename_header_group(parameter_names, caption)`;
+  `OverrideTable` gets `on_group_click`, `_group_at` and `group_bbox`. Section-made groups say to rename
+  them in the section. Held until Apply like other Builder edits.
+
+## 2026-11-11: Schedule Builder no longer flashes on column and family changes
+- Add/Remove Parameter, Move Left/Right, Add/Remove Family, Add Section and parameter renames used to destroy
+  and rebuild the whole Builder window (`reopen`), which flashed. They now call `refresh_columns`, which gives
+  the same `OverrideTable` its new columns and rows (`set_columns`, one draw), keeping scroll and selection.
+  `reopen` remains for schedule rename, Discard Changes and an empty schedule's first column.
+
+## 2026-11-11: Sorting/Grouping
+- Schedule Settings has a **Sorting/Grouping...** button (Itemize moved into it), opening a copy of Revit's
+  Sorting/Grouping tab: Sort by + 3 Then by (column, Ascending/Descending, Header, Footer with Revit's four
+  choices, Blank line), Grand totals (choice + custom title), Itemize every instance; OK / Cancel.
+- Model mirrors Revit's API: `Schedule.sort_group_fields` (ScheduleSortGroupField: parameter, descending,
+  show_header, show_footer, show_footer_title, show_footer_count, show_blank_line), `show_grand_total`,
+  `show_grand_total_title`, `show_grand_total_count`, `grand_total_title`. Settings that don't apply are
+  normalized to Revit's defaults (both sides) so they compare. Renames and removed columns carry through;
+  sorting by a missing column is a validation error. Saved in JSON and as a `sorting` JSON column in the CSV.
+- Revit: the schedules file and macro carry `sorting` (only when set, so unsorted specs and old last-sync
+  records still match); the add-in clears and re-adds sort levels on all three schedules, sets grand totals,
+  compares sorting in DdmMatches, and sends it for Review Revit Changes (new Sorting/Grouping row).
+- Add-in project: compile items exclude `obj\**` and `bin\**` (an editor's Debug build broke the per-year build).
+
+## 2026-11-11: Schedule Builder: Apply button, faster checks, fewer reopens
+- The Builder holds its edits: the whole-database check (`validate_all`), main tabs and messages wait for
+  **Apply**. **Discard Changes** restores a snapshot (`catalog.to_dict()` taken on open and on each Apply);
+  **Close** with unapplied edits asks Apply / Discard Changes / Keep Editing. A reopen (columns, families,
+  schedule rename) keeps the session. Closing the window any other way applies.
+- Default Header and Default Column Width edits in the Parameter section redraw in place (no reopen).
+- Speed: `get_dtype_row` is a dict lookup (was a pandas filter, ~60% of check time); `formula.tokenize` is
+  cached and matches names by length, not by scanning every name; `Catalog.known_names()` returns a frozenset.
+  Live DB (351 families, 113 schedules): full check 8.9 s -> 0.86 s; a Builder edit 9.5 s -> ~0.25 s
+  (held), Apply ~0.8 s.
+
+## 2026-11-10: Formula Builder from every formula cell; Formula in Use
+- Bug: double-clicking a Default Formula on the Parameters tab opened a plain text box, not the Formula Builder.
+  Every other formula entry (single click, paste, Schedule Builder, Family Details) already opened it.
+- A Default Value set by a formula (Parameter, Family or Schedule level; Apply to All Families when every family
+  uses one) shows "Formula in Use", grayed out and not editable. On the Parameters tab it's the text only (a
+  Treeview can't gray out a single cell). A family using a formula no longer makes the Parameter Default Value bold.
+
+## 2026-11-10: Schedule Builder widths typed again (drag parked)
+- Took out dragging a column edge to set its width; widths are entered in the Column Width row as before, and
+  columns are drawn with the usual 110 px minimum again. The drag code, its test and README text are kept in
+  `chat/parked/schedule-builder-drag-column-width.patch` (`git apply` restores them).
+
+## 2026-11-10: Families from the family folder; split header group fix
+- Live DB: added the family folder's root families (ACC `X - SMART Workflow Templates\Project Files\Families`;
+  skipped `in progress`, `_ss`, `Vendor` and `.0001` backups), read from each .rfa's PartAtom: 120 new families
+  (category, name terms, 63 shared type parameters linked by GUID, 44 Family Default Values where every type
+  agrees), 19 database families renamed to their file's name (EQUIP_AIR-TERM -> DUCT_AIR-TERM, AHU-SECT -> AHU,
+  spelling fixes). 351 families now. `IPS_STD_Tag-Duct_System` has no category (Duct Tags isn't in the list).
+- Bug: `Schedule.add_columns` could put new columns inside a header group, splitting it; the save then couldn't
+  be loaded ("Header group parameters must be contiguous"). It happened to `_SPACES - Air Balance` (Transfer
+  01-15 inside AIRFLOW REQUIREMENTS); repaired by widening that group. Columns added inside a group now join it.
+
+## 2026-11-10: Two-way schedule sync in the add-in (branch `revit-addin`)
+- Brought in the `revit-schedule-sync` work: `revit_sync.py` and Review Revit Changes (now `ddm_revit_sync.py`, a
+  mixin); Send is in the shared routine (`SendSchedules`), and the macro's `SendSchedulesToDatabase` wraps it.
+- Last sync per schedule: a second Extensible Storage schema (`DdmScheduleSynced`) on the tracking element maps
+  schedule GUID to the spec last built or accepted; Send includes it; `schedule_differences` labels each change
+  Revit changed or Both changed, and counts database-only changes.
+- The ribbon's Design Data Manager button sends a snapshot marked for review and opens or wakes the app, which
+  checks every 2 s and opens the review once per snapshot.
+- `SyncWatcher`: the add-in watches the schedules file; after a Save, Revit asks Apply / Review / Later for the
+  schedules changed only in the database; ones changed in both are left for the review; ones Revit already
+  matches just move their last sync.
+- Ribbon icons (`RibbonIcons.cs`, drawn in code at 16 and 32 px, no image files): a schedule table for Build
+  Schedules, a database cylinder for Design Data Manager.
+- Not yet verified in Revit.
+
+## 2026-11-09: Revit add-in, first build (branch `revit-addin`)
+- `revit-addin/`: a C# add-in with a Design Data ribbon tab (Build Schedules, Design Data Manager). Builds against
+  Revit 2025 (.NET 10, read from RevitAPI.dll) with no warnings.
+- The schedule routine moved out of the Python string into `revit-addin/Shared/ScheduleRoutine.cs` and
+  `ScheduleData.cs`; the generated macro now wraps those files, so the add-in and the macro run the same code.
+- Save writes `<database>.schedules.json` and records `schedule_data_path`; the app records `app_command` at
+  startup, for the ribbon's button. Install Revit Add-in... installs per user for each Revit 2025+.
+- Tests: install, manifest, settings, and a slow test that builds the add-in and reads a real schedules file with
+  its own C# reader (`revit-addin/tests/ScheduleDataCheck`).
+
 ## 2026-11-09: Column widths from Revit, drag to resize
 - `ExportScheduleWidths` in the generated macro: writes every non-DDM schedule's column widths (with shared
   parameter GUIDs) to `revit-widths/<project>.widths.json` next to the database. Builds against Revit 2025.

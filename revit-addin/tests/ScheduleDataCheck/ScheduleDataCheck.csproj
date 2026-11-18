@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Reads a schedules file with the add-in's own reader (Shared/ScheduleData.cs, which needs no
+    Revit) and prints what it read, one line per schedule. tests/test_revit_addin.py runs it on a
+    file Save wrote, so the reader and schedule_specs can't drift apart.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net$(NETCoreAppMaximumVersion)</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Shared\ScheduleData.cs" Link="ScheduleData.cs" />
+    <Compile Include="..\..\Shared\LinkerPlan.cs" Link="LinkerPlan.cs" />
+  </ItemGroup>
+</Project>

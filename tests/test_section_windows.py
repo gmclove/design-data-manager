@@ -426,3 +426,51 @@ def test_deleting_an_included_section_keeps_its_header_groups(app, hierarchy):
 	pump = app.catalog.add_section('Pump', ['Linker', {'section': electrical.guid}])
 	app.catalog.remove_section('Electrical Data')
 	assert pump.bands() == [('ELEC DATA', ELECTRICAL)]
+
+
+def test_linker_tag_set_checkbox_saves_and_sets_linker_roles_on_the_families_tab(app):
+	from revit_parameter_manager import LINKER_PARAMETER
+	catalog = app.catalog
+	catalog.add_param(LINKER_PARAMETER, 'Text')
+	catalog.set_code('category_2', 'Pump', 'PUMP')
+	catalog.add_family('Pump 2D', [LINKER_PARAMETER, 'Tag', 'Flow'], category='Detail Item', category_2='Pump')
+	catalog.add_family('Pump Copy 2D', [LINKER_PARAMETER, 'Tag'], category='Detail Item', category_2='Pump')
+
+	def roles():
+		app.validate_all()
+		tree = app.family_tree
+		names = app._get_table_columns('families')
+		return {
+			tree.item(item, 'values')[names.index('name')]: tree.item(item, 'values')[names.index('linker_role')]
+			for item in tree.get_children()
+			if tree.item(item, 'values')[names.index('name')].startswith('Pump ')
+		}
+
+	# With no tag set, Tag is design data, so both are primaries.
+	assert roles() == {'Pump 2D': 'Primary (PUMP)', 'Pump Copy 2D': 'Primary (PUMP)'}
+
+	window = define(app, set(), name='Equipment Tag', caption='', names=['Tag'])
+	assert window.linker_var.get() is False
+	window.linker_var.set(True)
+	window.preview()  # no schedules use it, so it saves at once
+	section = catalog.get_section('Equipment Tag')
+	assert section.linker_tag_set is True
+	assert roles() == {'Pump 2D': 'Primary (PUMP)', 'Pump Copy 2D': 'Linked'}
+
+	# The column sets a role by hand (Auto works it out again), e.g. for a generic distribution box.
+	row = catalog.families.index(catalog.get_family('Pump 2D'))
+	app._apply_cell_value('families', row, 'linker_role', 'Linked')
+	assert catalog.get_family('Pump 2D').linker_role == 'linked'
+	assert roles()['Pump 2D'] == 'Linked (Set)'
+	app._apply_cell_value('families', row, 'linker_role', 'Auto')
+	assert catalog.get_family('Pump 2D').linker_role is None
+	assert app._dropdown_values('linker_role') == ['Auto', 'Primary', 'Linked']
+	with pytest.raises(ValueError, match='Auto, Primary or Linked'):
+		app._apply_cell_value('families', row, 'linker_role', 'Sometimes')
+
+	window = app.open_section_window(section)
+	assert window.linker_var.get() is True
+	window.linker_var.set(False)
+	window.preview()
+	assert section.linker_tag_set is False
+	assert roles()['Pump Copy 2D'] == 'Primary (PUMP)'

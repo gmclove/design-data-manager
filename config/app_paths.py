@@ -13,6 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # working data lives in a "data" folder next to the .exe.
 FROZEN = getattr(sys, "frozen", False)
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
+# The Revit add-in, built per Revit year (build_addin.py): bundled into the .exe, else in dist/.
+ADDIN_BUILD_DIR = BUNDLE_DIR / "revit-addin-build" if FROZEN else PROJECT_ROOT / "dist" / "revit-addin"
 # Each user's settings: their Revit macro module, and where their working database lives.
 USER_SETTINGS_PATH = Path(os.environ.get("APPDATA", Path.home())) / "DesignDataManager" / "settings.json"
 
@@ -61,6 +63,8 @@ def get_database_output_paths(database_path):
         "rfps": base_path.with_name(f"{stem}.rfps"),
         "rfps_schedules": base_path.with_name(f"{stem}_schedules.rfps"),
         "shared_parameters": base_path.with_name(f"{stem}.txt"),
+        # What the Revit add-in builds schedules from.
+        "schedule_data": base_path.with_name(f"{stem}.schedules.json"),
     }
 
 
@@ -68,3 +72,8 @@ def get_revit_widths_folder(database_path):
     """Where the macro's ExportScheduleWidths writes, one file per Revit project: a ``revit-widths``
     folder next to the database. Revit writes these files, so they aren't Save outputs."""
     return Path(database_path).parent / "revit-widths"
+
+def get_revit_sync_path(database_path):
+    """Where the add-in (or the SendSchedulesToDatabase macro) writes a snapshot of a Revit project's
+    schedules for this database. Not a Save output."""
+    return get_database_output_paths(database_path)["macro"].with_suffix(".revit-sync.json")

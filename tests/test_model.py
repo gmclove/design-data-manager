@@ -67,6 +67,37 @@ def test_tokenize_kinds():
 	]
 
 
+def test_tokenize_is_cached_but_follows_the_names():
+	first = formula.tokenize('Rough Width + Width', frozenset({'Width', 'Rough Width'}))
+	again = formula.tokenize('Rough Width + Width', {'Width', 'Rough Width'})
+	assert first == again and first is not again  # each caller gets its own list
+	first.clear()
+	assert formula.tokenize('Rough Width + Width', {'Width', 'Rough Width'}) == again
+	# Different known names give a different answer, not the cached one.
+	assert [t.kind for t in formula.tokenize('Rough Width + Width', {'Width'})] == [
+		formula.NAME, formula.PARAM, formula.OP, formula.PARAM]
+	# A known name inside a longer word isn't a reference.
+	assert [t.kind for t in formula.tokenize('Widths', {'Width'})] == [formula.NAME]
+
+
+def test_dtype_lookup_finds_each_type_by_name_and_api_name():
+	from config.revit_dtype_definitions import REVIT_DTYPE_TABLE, get_dtype_row
+	for _index, row in REVIT_DTYPE_TABLE.iterrows():
+		for key in (row['Data Types'], row['Revit API Name']):
+			first = REVIT_DTYPE_TABLE[(REVIT_DTYPE_TABLE['Data Types'] == key)
+									  | (REVIT_DTYPE_TABLE['Revit API Name'] == key)].iloc[0]
+			assert get_dtype_row(key).equals(first)
+	assert get_dtype_row('Not A Type') is None and get_dtype_row(['unhashable']) is None
+
+
+def test_known_names_follow_a_rename(catalog):
+	catalog.add_param('Width', 'Length')
+	assert 'Width' in catalog.known_names()
+	catalog.get_param('Width').name = 'Breite'
+	names = catalog.known_names()
+	assert 'Breite' in names and 'Width' not in names
+
+
 @pytest.mark.parametrize('text', [
 	'Width * Height',
 	'IF(Width > 1, "a", "b")',
@@ -420,6 +451,25 @@ def test_catalog_rename_moves_schedule_overrides_and_header_groups(catalog):
 	assert header['PanelWidth'] == 'W'
 
 
+def test_rename_header_group_changes_only_its_caption(catalog):
+	catalog.add_param('Width', 'Length')
+	catalog.add_param('Height', 'Length')
+	catalog.add_family('F', ['Width', 'Height'])
+	schedule = catalog.add_schedule('S', ['F'])
+	schedule.add_header_group('Size', ['Width', 'Height'])
+
+	renamed = schedule.rename_header_group(['Width', 'Height'], '  Overall Size ')
+
+	assert renamed['caption'] == 'Overall Size'
+	assert schedule.header_groups == [
+		{'caption': 'Overall Size', 'parameter_names': ['Width', 'Height'], 'top_row': 0, 'bottom_row': 0}]
+	with pytest.raises(ValueError, match='caption is required'):
+		schedule.rename_header_group(['Width', 'Height'], '  ')
+	with pytest.raises(ValueError, match='No header group'):
+		schedule.rename_header_group(['Width'], 'W')
+	assert schedule.header_groups[0]['caption'] == 'Overall Size'
+
+
 def test_catalog_round_trip_keeps_schedule_headers(catalog, tmp_path):
 	catalog.add_param('Width', 'Length', header_text='Overall Width', grid_column_width=1.5)
 	catalog.add_param('Height', 'Length')
@@ -635,6 +685,23 @@ def test_schedule_columns_move_left_and_right_without_splitting_header_groups(sc
 	assert schedule.move_columns(['Height', 'Depth'], 1) and names() == ['Width', 'Height', 'Depth']
 
 
+def test_columns_added_inside_a_header_group_join_it(scheduled):
+	schedule = scheduled.get_schedule('S1')
+	names = lambda: [param.name for param in schedule.params]  # noqa: E731
+	schedule.add_header_group('Pair', ['Width', 'Height'])
+	# After the group's last column: outside the group.
+	schedule.add_columns(['Depth'], after='Height')
+	assert names() == ['Width', 'Height', 'Depth']
+	assert schedule.header_groups[0]['parameter_names'] == ['Width', 'Height']
+	schedule.remove_columns(['Depth'])
+	# After a column in the middle: the group takes it in, and the schedule still loads.
+	schedule.add_columns(['Depth'], after='Width')
+	assert names() == ['Width', 'Depth', 'Height']
+	assert schedule.header_groups[0]['parameter_names'] == ['Width', 'Depth', 'Height']
+	reloaded = Catalog.from_dict(scheduled.to_dict()).get_schedule('S1')
+	assert reloaded.header_groups[0]['parameter_names'] == ['Width', 'Depth', 'Height']
+
+
 def test_hidden_columns_follow_renames_removals_and_round_trip(scheduled):
 	schedule = scheduled.schedules[0]
 	names = [param.name for param in schedule.params]
@@ -654,6 +721,75 @@ def test_hidden_columns_follow_renames_removals_and_round_trip(scheduled):
 	schedule.set_field_hidden(names[1], True)
 	scheduled.remove_param(names[1])
 	assert schedule.hidden_field_names == set()
+
+
+# --- Sorting/Grouping --------------------------------------------------------
+
+def test_sorting_round_trips_and_follows_renames_and_removals(scheduled):
+	schedule = scheduled.schedules[0]
+	names = [param.name for param in schedule.params]
+	assert schedule.sorting_dict() == {
+		'sort_group_fields': [], 'show_grand_total': False, 'show_grand_total_title': True,
+		'show_grand_total_count': True, 'grand_total_title': 'Grand total',
+	}
+	schedule.set_sorting(
+		[{'parameter': names[0], 'descending': True, 'show_footer': True, 'show_footer_count': False},
+		 {'parameter': names[1], 'show_blank_line': True}],
+		show_grand_total=True, show_grand_total_title=False, grand_total_title='Ignored',
+	)
+	assert schedule.sort_group_fields[0] == {
+		'parameter': names[0], 'descending': True, 'show_header': False, 'show_footer': True,
+		'show_footer_title': True, 'show_footer_count': False, 'show_blank_line': False,
+	}
+	# A title that isn't shown stays at Revit's default.
+	assert schedule.grand_total_title == 'Grand total'
+
+	restored = Catalog.from_dict(json.loads(json.dumps(scheduled.to_dict()))).schedules[0]
+	assert restored.sorting_dict() == schedule.sorting_dict()
+	copy = scheduled.duplicate_schedule(schedule.name, 'Copy')
+	assert copy.sorting_dict() == schedule.sorting_dict()
+
+	scheduled.rename_param(names[0], 'Renamed', keep_guid=True)
+	assert schedule.sort_group_fields[0]['parameter'] == 'Renamed'
+	schedule.remove_columns(['Renamed'])
+	assert [field['parameter'] for field in schedule.sort_group_fields] == [names[1]]
+	scheduled.remove_param(names[1])
+	assert schedule.sort_group_fields == []
+
+
+def test_sorting_only_by_the_schedules_own_columns(scheduled):
+	schedule = scheduled.schedules[0]
+	names = [param.name for param in schedule.params]
+	with pytest.raises(ValueError, match="Can't sort by 'Ghost'"):
+		schedule.set_sorting([{'parameter': 'Ghost'}])
+	with pytest.raises(ValueError, match='at most 4 levels'):
+		schedule.set_sorting([{'parameter': names[0]}] * 5)
+	with pytest.raises(ValueError, match='needs a column'):
+		schedule.set_sorting([{'parameter': ' '}])
+	# Revit can't sort by a combined parameter.
+	scheduled.add_combined_param('TAG', names[:2])
+	schedule.add_columns(['TAG'])
+	assert 'TAG' not in schedule.sortable_column_names()
+	with pytest.raises(ValueError, match="Can't sort by 'TAG'"):
+		schedule.set_sorting([{'parameter': 'TAG'}])
+	# A loaded schedule sorting by something it no longer has shows as an error.
+	data = scheduled.to_dict()
+	data['schedules'][0]['sort_group_fields'] = [{'parameter': 'Ghost'}]
+	loaded = Catalog.from_dict(data).schedules[0]
+	loaded.validate()
+	assert loaded.status == 'Error' and "Sorts by Ghost, which isn't a column" in loaded.validation_message
+
+
+def test_sorting_round_trips_through_the_csv(scheduled, tmp_path):
+	from ddm_tables import catalog_from_tables, read_database_csv, write_database_csv
+	schedule = scheduled.schedules[0]
+	names = [param.name for param in schedule.params]
+	schedule.set_sorting([{'parameter': names[0], 'show_header': True}], show_grand_total=True)
+	write_database_csv(scheduled, tmp_path / 'db.csv')
+	tables, header_groups = read_database_csv(tmp_path / 'db.csv')
+	loaded, issues = catalog_from_tables(header_groups=header_groups, **tables)
+	assert not [issue for issue in issues if 'Sorting' in issue]
+	assert loaded.get_schedule(schedule.name).sorting_dict() == schedule.sorting_dict()
 
 
 # --- schedules without families --------------------------------------------
@@ -868,3 +1004,59 @@ def test_family_validation_reports_a_loop(catalog):
 
 	assert fam.status == 'Error'
 	assert 'Formulas go round in a loop: A → B → A.' in fam.validation_message
+
+
+# --- Linker ID ----------------------------------------------------------------
+
+def test_linker_roles_prefixes_and_tag_sets_come_from_families_and_sections(linker_catalog):
+	from revit_parameter_manager import LINKER_PARAMETER, linker_role_text
+	catalog = linker_catalog
+
+	assert catalog.linker_tag_parameter_names() == ['Seq', 'TAG', 'Space Name']
+	families = catalog.linker_families()
+	assert families == {
+		'AHU 2D': {'role': 'primary', 'prefix': 'AHU', 'tag_parameters': ['Seq', 'TAG'], 'set': False},
+		# Not a Detail Item, so linked, though it has CFM.
+		'AHU 3D': {'role': 'linked', 'prefix': 'AHU', 'tag_parameters': ['Seq', 'TAG'], 'set': False},
+		'Space 2D': {'role': 'primary', 'prefix': 'SPACE', 'tag_parameters': ['Space Name'], 'set': False},
+		'Odd 2D': {'role': 'primary', 'prefix': 'ITEM', 'tag_parameters': [], 'set': False},  # no codes at all
+		# A Detail Item with its own data, set to Linked by hand.
+		'PFD Distribution 2D': {'role': 'linked', 'prefix': 'EQUIP', 'tag_parameters': ['TAG'], 'set': True},
+	}
+	assert [linker_role_text(families.get(name)) for name in ('AHU 2D', 'AHU 3D', 'PFD Distribution 2D', 'Plain')] == [
+		'Primary (AHU)', 'Linked', 'Linked (Set)', '']
+
+	# A Detail Item with nothing but tag values is a linked copy; unmarking the tag set makes its
+	# values design data, so it becomes a primary.
+	catalog.add_family('AHU Copy 2D', [LINKER_PARAMETER, 'TAG', 'Seq'], category='Detail Item',
+					   category_1='Equipment', category_2='Air Handling Unit')
+	assert catalog.linker_families()['AHU Copy 2D']['role'] == 'linked'
+	catalog.update_section(catalog.get_section('Equipment Tag'), linker_tag_set=False)
+	assert catalog.get_section('Equipment Tag').linker_tag_set is False
+	assert catalog.linker_families()['AHU Copy 2D']['role'] == 'primary'
+
+	# A role set by hand wins, and round-trips; Auto isn't stored.
+	catalog.get_family('AHU 3D').linker_role = 'primary'
+	assert catalog.linker_families()['AHU 3D']['role'] == 'primary'
+	assert Catalog.from_dict(catalog.to_dict()).get_family('AHU 3D').linker_role == 'primary'
+	assert 'linker_role' not in catalog.get_family('AHU 2D').to_dict()
+
+
+def test_linker_tag_set_round_trips_through_json_and_csv(linker_catalog, tmp_path):
+	from ddm_tables import catalog_from_tables, read_database_csv, write_database_csv
+	catalog = linker_catalog
+
+	loaded, _ = Catalog.load(catalog.save(tmp_path / 'catalog.json'))
+	assert {section.name: section.linker_tag_set for section in loaded.sections} == {
+		'Equipment Tag': True, 'Space Tag': True, 'Airflow': False}
+	assert Catalog.from_dict({**catalog.to_dict(), 'sections': [
+		{key: value for key, value in section.to_dict().items() if key != 'linker_tag_set'}
+		for section in catalog.sections]}).sections[0].linker_tag_set is False  # older files
+
+	path = tmp_path / 'catalog.csv'
+	write_database_csv(catalog, path)
+	tables, header_groups = read_database_csv(path)
+	from_csv, issues = catalog_from_tables(header_groups=header_groups, **tables)
+	assert not issues
+	assert from_csv.linker_families() == catalog.linker_families()
+	assert from_csv.get_family('PFD Distribution 2D').linker_role == 'linked'

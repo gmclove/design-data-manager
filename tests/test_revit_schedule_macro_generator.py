@@ -1,4 +1,5 @@
 import glob
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,8 +11,16 @@ from ddm_tables import catalog_from_tables, read_database_csv, write_database_cs
 from revit_macro_module import MacroModule, build_module
 from revit_parameter_manager import Catalog
 from revit_schedule_macro_generator import (
+    FILTER_PARAMETER,
     GENERATED_HEADER,
     MACRO_FILE_NAME,
+    MODEL_PREFIX,
+    SCHEDULE_DATA_VERSION,
+    SHARED_SOURCE_DIR,
+    TRACKING_SCHEMA_GUID,
+    WIDTHS_EXPORT_VERSION,
+    WORKING_SUFFIX,
+    generate_schedule_data,
     generate_schedule_macro_source,
     install_macro,
     revit_schedule_names,
@@ -102,15 +111,49 @@ def test_columns_carry_headers_widths_in_feet_and_hidden_flags():
     assert 'new DdmColumn("DDM_Airflow", "Design Airflow", 2, false),' in source
     assert 'new DdmColumn("DDM_Notes", "DDM_Notes", 0.0833333333333, true),' in source
     assert 'new DdmHeaderGroup("Performance", new[] { "DDM_Airflow", "DDM_Capacity" }),' in source
+    assert ", new DdmSorting(" not in source  # not sorted: the schedule's default
+    assert "sorting" not in specs[0]
+
+
+def test_sorting_goes_to_revit_on_the_schedules_columns():
+    catalog = make_catalog()
+    schedule = catalog.schedules[0]
+    # Sorting by a hidden column is fine: Revit sorts by any field.
+    schedule.set_sorting(
+        [{"parameter": "DDM_Notes", "show_footer": True, "show_footer_title": False},
+         {"parameter": "DDM_Airflow", "descending": True, "show_blank_line": True}],
+        show_grand_total=True, show_grand_total_count=False, grand_total_title="All Units",
+    )
+    specs, _notes = schedule_specs(catalog)
+    assert specs[0]["sorting"] == {
+        "sort_group_fields": [
+            {"parameter": "DDM_Notes", "descending": False, "show_header": False, "show_footer": True,
+             "show_footer_title": False, "show_footer_count": True, "show_blank_line": False},
+            {"parameter": "DDM_Airflow", "descending": True, "show_header": False, "show_footer": False,
+             "show_footer_title": True, "show_footer_count": True, "show_blank_line": True},
+        ],
+        "show_grand_total": True, "show_grand_total_title": True, "show_grand_total_count": False,
+        "grand_total_title": "All Units",
+    }
+    source = generate_schedule_macro_source(catalog)
+    assert ('new DdmSorting(new[] { new DdmSortLevel("DDM_Notes", false, false, true, false, true, false), '
+            'new DdmSortLevel("DDM_Airflow", true, false, false, true, true, true) }, true, true, false, "All Units")'
+            ) in source
+    # A schedule that only has grand totals still gets them.
+    schedule.set_sorting([], show_grand_total=True)
+    assert "new DdmSorting(Array.Empty<DdmSortLevel>(), true, true, true, \"Grand total\")" in (
+        generate_schedule_macro_source(catalog))
 
 
 def test_the_macro_asks_what_to_build_and_whether_to_override():
     source = generate_schedule_macro_source(make_catalog())
-    assert "DdmChoice? choice = DdmAskWhatToBuild(doc, tracker, MainWindowHandle);" in source
+    assert "DdmChoice? choice = DdmAskWhatToBuild(doc, tracker, owner, preselected);" in source
+    # The macro runs the add-in's shared routine, over Revit's main window.
+    assert ".CreateSchedules(ActiveUIDocument?.Document, MainWindowHandle);" in source
     assert '"Rebuild All Schedules ({names.Count})"' in source
     assert '"Rebuild Selected Schedules:"' in source
     assert '"Override Existing Schedules", Checked = true' in source
-    assert "DdmSchedules.Where(spec => choice.Names.Contains(spec.Name))" in source
+    assert "DdmBuild(doc, tracker, DdmSchedules.Where(spec => choice.Names.Contains(spec.Name)), choice.OverrideExisting)" in source
     # With override off, a schedule that already exists is left as it is.
     assert "if (existing != null && !overrideExisting)" in source
     # Windows Forms comes in under an alias, so its names can't clash with Revit's.
@@ -261,6 +304,10 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
     schedule.filter_value = "FILTER"
     schedule.itemize = False
     schedule.view_template = "IPS Schedules"
+    # Sorting/Grouping, with a quote in the grand total title.
+    schedule.set_sorting([{"parameter": names[0], "descending": True, "show_footer": True},
+                          {"parameter": names[1], "show_header": True}],
+                         show_grand_total=True, grand_total_title='Total "All"')
     # And a section on another schedule: a caption with a quote, a hidden column and added columns.
     other = next(other for other in demo.schedules if other is not schedule and other.status == "Ready")
     spare = [param.name for param in demo.params if param.name not in {p.name for p in other.params}][:2]
@@ -294,3 +341,42 @@ def test_demo_macro_compiles_against_the_revit_api(tmp_path):
     assert not succeeded
     assert messages[0].startswith("Generated.cs(") and ": error CS" in messages[0]
     assert messages[-1].startswith("The Macro module failed to build")
+
+
+def test_the_schedules_file_for_the_addin_holds_the_macros_specs():
+    catalog = make_catalog()
+    data = generate_schedule_data(catalog, "db.ddm.json", saved_at="2026-11-09 12:00")
+    specs, notes = schedule_specs(catalog)
+    assert data == {"version": 1, "source": "db.ddm.json", "saved_at": "2026-11-09 12:00",
+                    "notes": notes, "schedules": specs,
+                    "linker": {"parameter": "IPS_LINKER_ID", "guid": "", "families": {}}}
+    json.dumps(data)  # it's plain JSON
+
+
+def test_the_shared_csharp_matches_the_python_constants():
+    """The add-in's routine hard-codes what the generator and the database also use."""
+    routine = (SHARED_SOURCE_DIR / "ScheduleRoutine.cs").read_text(encoding="utf-8")
+    data = (SHARED_SOURCE_DIR / "ScheduleData.cs").read_text(encoding="utf-8")
+    assert f'DdmFilterParameter = "{FILTER_PARAMETER}";' in routine
+    assert f'DdmModelPrefix = "{MODEL_PREFIX}";' in routine
+    assert f'DdmWorkingSuffix = "{WORKING_SUFFIX}";' in routine
+    assert f'new Guid("{TRACKING_SCHEMA_GUID}")' in routine
+    assert f"DdmWidthsVersion = {WIDTHS_EXPORT_VERSION};" in routine
+    assert f"public const int Version = {SCHEDULE_DATA_VERSION};" in data
+
+
+def test_schedule_data_carries_the_linker_families_with_guids(linker_catalog):
+    from revit_parameter_manager import LINKER_PARAMETER
+    data = generate_schedule_data(linker_catalog, "linker.ddm.json", saved_at="2026-11-17 09:00")
+    guid = {param.name: param.guid for param in linker_catalog.params}
+
+    linker = data["linker"]
+    assert linker["parameter"] == LINKER_PARAMETER and linker["guid"] == guid[LINKER_PARAMETER]
+    assert sorted(linker["families"]) == ["AHU 2D", "AHU 3D", "Odd 2D", "PFD Distribution 2D", "Space 2D"]  # not Plain
+    assert linker["families"]["PFD Distribution 2D"]["role"] == "linked"
+    assert linker["families"]["AHU 3D"] == {
+        "role": "linked", "prefix": "AHU",
+        "tag_parameters": [{"name": "Seq", "guid": guid["Seq"]}, {"name": "TAG", "guid": guid["TAG"]}],
+    }
+    # Linking doesn't touch the schedule specs (or their last-sync records).
+    assert data["schedules"] == schedule_specs(linker_catalog)[0]

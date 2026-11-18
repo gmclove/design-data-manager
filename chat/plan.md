@@ -65,10 +65,19 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [x] Override Formula and Group Under (family and parameter level) in the override tables.
 
 ## Column widths from Revit (user, 2026-11-09)
-- [x] `ExportScheduleWidths` macro, typical widths review, drag to resize in the Schedule Builder.
+- [x] `ExportScheduleWidths` macro, typical widths review.
+- [ ] Parked, possible later development (user, 2026-11-10): drag a column's right edge in the Schedule Builder
+      to set its width (1/16" snap, at least 1/4", columns drawn at true width). Built and tested 2026-11-09,
+      then taken out; widths are typed in the Column Width row again. To bring it back:
+      `git apply chat/parked/schedule-builder-drag-column-width.patch` (ddm_gui.py, its test, README).
 - [ ] Needs the user, in Revit: Save (installs the macro), run ExportScheduleWidths in several projects, then
       Column Widths From Revit... and Accept. First check Revit's width for a newly added field is 1"
       (`REVIT_DEFAULT_COLUMN_WIDTH_IN` in `revit_widths.py`); if not, change it before trusting the review.
+- [ ] Future development (user, 2026-11-10): remove this import/export width interface once it has done its job
+      (the one-off harvest of typical widths) and two-way sync carries widths. Keep it for now. To remove:
+      `ExportScheduleWidths` (shared routine and macro wrapper, `WIDTHS_EXPORT_VERSION`, `widths_folder`),
+      `revit_widths.py`, `ddm_widths.py`, the Parameters tab's Column Widths From Revit... button,
+      `get_revit_widths_folder`, their tests and README section. Drag to resize stays.
 
 ## Revit add-in (user, 2026-11-09), branch `revit-addin` off `dev`
 A compiled C# add-in with a Design Data ribbon tab, plus the existing desktop app (which the ribbon opens).
@@ -76,12 +85,63 @@ First scope: Build Schedules, reading `<database>.schedules.json` that Save writ
 no longer need a macro module, the .NET SDK or the Macro Manager. Revit 2025+, one DLL per year, installed per
 user from the app (Install Revit Add-in...). Same Extensible Storage tracking schema as the macro, so it updates
 the schedules the macro made. The macro stays until the user verifies the add-in in Revit.
-- [ ] Save writes `<database>.schedules.json` (`generate_schedule_data`).
-- [ ] `revit-addin/` project: ribbon, Build Schedules command, ported routine, JSON reader.
-- [ ] `build_addin.py` (per installed Revit year; .NET fallback as in `revit_macro_module`), bundled in the `.exe`.
-- [ ] `revit_addin.py` install to `%APPDATA%\Autodesk\Revit\Addins\<year>`, and the GUI button.
+- [x] Save writes `<database>.schedules.json` (`generate_schedule_data`) and records its path in settings.json.
+- [x] `revit-addin/` project: ribbon, Build Schedules command, the routine (now shared with the macro), JSON reader.
+- [x] `build_addin.py` (per installed Revit year; .NET version read from RevitAPI.dll), bundled in the `.exe`.
+- [x] `revit_addin.py` install to `%APPDATA%\Autodesk\Revit\Addins\<year>`, and the GUI button.
 - [ ] Needs the user, in Revit: install, Build Schedules on a project the macro built and on a new one.
 - [ ] Then retire the macro; later move ExportScheduleWidths and Send into the add-in.
+
+### Linker ID (user, 2026-11-13; built 2026-11-17)
+- [x] Linker Tag Set on sections, roles and prefixes in the database, Linker Role column, `"linker"` in the
+      schedules file, Assign IDs / Link Elements / Sync Linked Elements and the check on open in the add-in.
+- [ ] User, in the app: tick Linker Tag Set on Equipment Tag, make a Space Tag section, add `IPS_LINKER_ID` to the
+      linker families that lack it (the five `IPS-US_EQUIP_PFD Distribution - ..._2D` families don't list it,
+      though their schedules have the column), set those five to Linked, and check the Linker Role column.
+- [ ] User, in Revit: reinstall the add-in; Assign IDs, Link Elements on a copy and the 3D element, change a tag
+      and Sync, copy-paste a primary then Assign IDs, reopen with a stale copy.
+- [ ] Open: should data schedules filter to primaries only (so 3D elements and diagram copies never show in
+      them)? Today the Detail Items schedules filter on `IPS_GROUP_Schedule_Name` only.
+- [ ] Future development (user, 2026-11-17): link to primaries in **other models**. A linked element's
+      primary isn't always in the same model: distribution diagram boxes can stand for equipment drawn in
+      another model. For now their tag values are entered by hand. Later: read the primary's tag values
+      from a Revit link (`RevitLinkInstance.GetLinkDocument()`, matched on `IPS_LINKER_ID`) and copy them
+      as for a primary in the same model. To settle then:
+      - **Telling them apart:** how to know an element's primary is in another model. Today Sync lists it as
+        unlinked (no primary found); the check on open ignores those, so it doesn't nag.
+      - **Unloaded links:** what to do when the link isn't loaded.
+      - **Unique IDs across models:** IDs are numbered per project today, so two models can both have
+        `AHU-0001`. This may need a model prefix, or numbering across models.
+
+### Why the add-in: two-way sync (user, 2026-11-10)
+Opening the app from Revit should go straight to reviewing and accepting the schedule changes made in Revit;
+saving in the app should bring its changes into the open Revit project. Then the same for a folder of families.
+
+**Phase A: two-way schedule sync** (first; verify in Revit before Phase B)
+- [x] A1. Bring in the `revit-schedule-sync` work (`revit_sync.py`, the Review Revit Changes window); Send moves
+      into the shared routine (`SendSchedules`), the macro keeps a thin wrapper.
+- [x] A2. Remember the last sync per schedule in the project (the tracking record gets a `Synced` map: schedule
+      GUID to the spec last applied or accepted). The review becomes three-way: Revit changed, Database changed,
+      Both changed (choose). Schedules with no last sync fall back to a plain comparison.
+- [x] A3. Opening from Revit starts the review: the ribbon's Design Data Manager button sends a snapshot of the
+      project and opens (or wakes) the app on Review Revit Changes.
+- [x] A4. Saving in the app reaches Revit: the add-in watches `schedules.json`; on a save, Revit asks
+      "Database saved: N schedules changed" with Apply / Review / Later. Schedules the database now matches
+      move their last sync up silently.
+- [ ] A5. Needs the user, in Revit: width changed in Revit shows in the review; header changed in the app is
+      offered on save; both sides changed asks to choose.
+
+**Phase B: the family folder** (after A)
+- [ ] B1. A Family Folder setting; families match `.rfa` files by file name; Families tab shows each file and lists
+      gaps both ways.
+- [ ] B2. Read families into the database: the add-in opens each `.rfa` in the background, reads its parameters
+      (GUID, Instance or Type, Group Under, formula, values) and the app reviews them as links to accept.
+- [ ] B3. Push the database into families: add missing shared parameters (from the shared parameter file Save
+      writes), set formulas, values, Group Under and Instance or Type, save. Option, off by default: delete
+      parameters not in the database. Parameters go into families, never the project.
+- [ ] B4. Future development: reload changed families into projects properly, with an option to delete old
+      parameters (Revit keeps parameters a family no longer has, by default) (user). Also remember the last
+      sync per family, as for schedules.
 
 ## From the claude.ai plan (medium and long term)
 Already done since that plan: CSV and Excel import, shared parameter file export, main-tab search,
@@ -92,6 +152,25 @@ unsaved-changes prompts.
       the defaults are `DEFAULT_TABLE_VIEW` in `table_view.py`, and nothing carries over a restart.
 - [ ] Richer validation: units and data types in formulas (Length × Length = Area), naming conventions
       such as the `IPS_` prefix. Circular references are done (2026-11-09).
+- [ ] Low priority, possible future development (user, 2026-11-10): make the Schedule Builder match Revit's
+      scale and header line breaks. Today they don't:
+      - Scale: the Builder draws 72 px per inch (`OverrideTable.pixels_per_inch`), a fixed screen scale not
+        tied to Revit's printed inches or screen DPI. Columns have a 110 px minimum, so columns narrower than
+        about 1.5" show too wide.
+      - Font: headers use the table view's heading font (Segoe UI 11 bold) and cells Segoe UI 9, screen fonts.
+        Revit uses the schedule's header, body and title text types (font such as Arial, height such as
+        3/32", width factor), set by the view template; the database doesn't know them.
+      - Wrapping: the Builder wraps a header by word at the column width less 14 px in its font; Revit wraps at
+        the width less its cell margins in the header text type, so breaks can differ at the same width.
+      Possible approach: read each schedule's text types from a project through the add-in
+      (`ViewSchedule.HeaderTextTypeId`, `BodyTextTypeId`, `TitleTextTypeId`: `TEXT_FONT`, `TEXT_SIZE`,
+      `TEXT_WIDTH_SCALE`) and keep them in the database per view template (e.g. `IPS_Schedule_Standard`);
+      draw headers and cells in that font at Revit's size (pixel size = text height × `pixels_per_inch` ÷ the
+      font's cap-height ratio, width factor applied), with Revit's cell margins and minimum width; wrap like
+      Revit. Check against schedule images exported from Revit (`ImageExport` or PDF) and an automated test
+      of computed breaks against headers measured in Revit. Risk: Tk's and Revit's font metrics differ, so the
+      realistic goal is the same breaks in the common cases, not an exact match; the font may also be missing
+      where the app runs.
 - [x] Recheck: demo data linking families to parameters that don't exist (`RValue`, `FinishCode`).
       Checked 2026-11-09: both are defined as parameters in `data/test_data/demo_data.ddm.csv`.
 - [ ] Add missing parameters to families, not the project (design criterion, see

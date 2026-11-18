@@ -16,6 +16,22 @@ Standing rules that every design has to meet. Check new work against them.
   to the families that need it. Anything that would add a project parameter needs the user's approval
   first, for that specific case.
 
+## Revit add-in (user, 2026-11-09)
+- **A compiled C# add-in plus the existing desktop app** (user), not a WPF rewrite or pyRevit. First scope: Build
+  Schedules (user). Revit 2025+, per-user install from the app (user). Its own branch, `revit-addin` (user).
+- **The add-in reads `<database>.schedules.json`, made by `schedule_specs`** (my call): sections, combined parameters
+  and overrides are resolved in Python once, not again in C#.
+- **One copy of the routine** (my call): it lives in `revit-addin/Shared/*.cs`; the macro generator copies those files
+  into the macro, instead of keeping the C# in a Python string. The macro stays until the add-in is verified.
+- **Same Extensible Storage schema as the macro** (my call), so the add-in updates the schedules the macro made.
+- **The .NET version comes from RevitAPI.dll** (my call): Revit 2025.5's API targets .NET 10, so the add-in does too.
+- **Two-way sync remembers the last sync per schedule** (user, 2026-11-10): each change is labelled Revit changed,
+  Database changed or Both changed; only Both changed asks to choose.
+- **A save in the app makes Revit ask before applying** (user): Apply / Review / Later; the model never changes
+  without a click.
+- **Families: read them into the database and push the database into them** (user); reloading into projects, with
+  an option to delete old parameters, is future development (user). Schedules sync first (user).
+
 ## Column widths from Revit (user, 2026-11-09)
 - **Accepting a typical width changes the parameter's Default Column Width** (user): schedules without their
   own width follow it; existing schedule widths stay, except ones equal to the new default, which are cleared.
@@ -29,6 +45,8 @@ Standing rules that every design has to meet. Check new work against them.
 - **Dragging a column edge sets this schedule's width, snapped to 1/16"** (user); back at the parameter's width
   it clears the override. Dragging only works in the Schedule Builder, where columns are now drawn at their
   true width (no 1.5" minimum; at least 1/4") so the drag shows what it sets (my call).
+  **Reversed 2026-11-10 (user):** drag taken out, widths are typed in the Column Width row again; the drag
+  work is kept as `chat/parked/schedule-builder-drag-column-width.patch` for possible later use.
 
 ## Schedule sections
 - **A section is a catalog definition that schedules link to, not a copy** (user asked for a data
@@ -171,6 +189,11 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   flagging it at validation.
 - **Schedules pick their columns** (`Schedule.field_names`), ordered alphabetically when loaded
   from schedule entries, as the GUI always showed them.
+- **The Schedule Builder holds its edits until Apply (user, 2026-11-11).** Edits go into the live
+  catalog at once (the Builder and the setters' immediate checks need them), but `validate_all()` only
+  refreshes the open schedule while a Builder session is open. Apply runs the full check; Discard
+  Changes rebuilds the catalog from the snapshot. Close with unapplied edits asks Apply / Discard /
+  Keep Editing (user's choice over discarding silently or keeping without asking).
 
 ## Parameter GUIDs and renames
 - **Renaming a parameter assigns a new GUID by default.** The user is warned that Revit labels
@@ -217,6 +240,11 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   schedule override of that parameter is ignored inside the schedule.
 - **Itemize Every Instance defaults to on** (user). **View template** is a name typed in the
   GUI (the database can't see the Revit project); applied to all three Revit schedules last.
+- **Sorting/Grouping copies Revit's tab verbatim (user, 2026-11-11):** its own window named
+  Sorting/Grouping, Revit's wording (sentence case, an exception to the Title Case style guide), four
+  levels, Itemize moved into it. The data mirrors the API (ScheduleSortGroupField + the definition's grand
+  totals). Levels sort only by the schedule's own columns, not combined parameters; Revit-only fields
+  (Family and Type, Count, ...) aren't offered. Applied to all three Revit schedules.
 
 ## Excel import (user, 2026-11-03)
 - **Schedules stand alone**: the workbook doesn't link families to schedules or parameters, so
@@ -253,6 +281,27 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   projects, and the macro can't write back to it. One `DataStorage` element holds the whole map.
 - **Records for schedules no longer in the database don't block a name match** (my call), so
   re-importing the workbook, which makes new GUIDs, takes over the same Revit schedules by name.
+
+## Linker ID (user, 2026-11-13 to 2026-11-17)
+- **A Text ID the add-in assigns, not the Revit element ID** (user): users must be able to link an element that was
+  deleted and recreated.
+- **Single-line Text, not Multi-line** (user, on my recommendation): IDs never need line breaks; multi-line text is
+  poorly supported in tags and schedules.
+- **Format `PREFIX-NNNN`, prefix = Category 2 code, else Category 1** (user): readable and sortable before tagging;
+  covers spaces and rooms (no Category 2). Next number per prefix in the project; zero-padded to 4, grows past
+  9999. Never renumbered except to split a copy-pasted duplicate (oldest keeps it).
+- **The primary is decided by its family** (user): a **Detail Item** family (user, 2026-11-17: the primary is
+  almost always a detail item) with parameters beyond the tag set. Copies use separate tag-only families, so no
+  role flag parameter. The common parameters (`IPS_GROUP_...`) don't count (my call: every family has them).
+- **Exceptions are set per family** (user, 2026-11-17: the generic boxes on utility flow distribution diagrams
+  are detail items but not primaries): `Fam.linker_role` = Auto (None) / Primary / Linked, edited in the Families
+  tab's Linker Role column, saved in JSON (`linker_role`, only when set) and CSV (`linker_role_setting`). My call
+  over detecting them by name, which would be fragile.
+- **Tag set = sections marked Linker Tag Set** (user), by membership, not by which sections a schedule uses
+  (my call: e.g. Pump lists the Equipment Tag parameters as plain columns).
+- **Copy on a button plus a check on open, not automatically** (user): predictable, one undo step each.
+- **Matching in Revit by shared-parameter GUID, then name** (my call), so renamed parameters still match.
+- **Linker logic only in the add-in, not the macro** (my call); the macro builds schedules only.
 
 ## Table view template (user, 2026-11-05)
 - **One set of defaults in code, `DEFAULT_TABLE_VIEW`; nothing is stored** (user). A saved template is

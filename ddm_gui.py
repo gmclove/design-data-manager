@@ -1,6 +1,8 @@
+import copy
 import json
 import os
 import pickle
+import sys
 import threading
 import tkinter.font as tkfont
 import urllib.parse
@@ -22,6 +24,7 @@ from config.app_paths import (
     NEW_ISSUE_URL,
     STARTER_DATABASE_PATH,
     get_database_output_paths,
+    get_revit_sync_path,
     get_revit_widths_folder,
 )
 
@@ -51,19 +54,22 @@ from ddm_tables import (
 from ddm_clipboard import context_menu, copy_text, install_mouse_wheel, paste_text, rows_as_text
 from ddm_combined import CombinedParamWindows
 from ddm_formula import FormulaBuilderWindows
+from ddm_revit_sync import RevitSyncWindows
 from ddm_widths import WidthReviewWindows
-from revit_widths import snap_width
 from formula import scan_references
 from ddm_sections import SectionWindows
 from excel_import import import_workbook
 from revit_parameter_manager import (
     CODE_KINDS, CODE_LABELS, CODED_KINDS, COMMON_PARAM_NAMES, FAMILY_NAME_TERMS, PARAM_NAME_COMPANY, PARAM_NAME_LONG_LENGTH,
-    PARAM_NAME_TERMS, SCHEDULE_FILTER_PARAM, Catalog, Param, Schedule, build_param_name, guid_change_warning,
+    MAX_SORT_GROUP_FIELDS, PARAM_NAME_TERMS, SCHEDULE_FILTER_PARAM, TOTALS_OPTIONS, Catalog, Param, Schedule,
+    build_param_name, guid_change_warning, linker_role_text, normalized_sorting, totals_option,
 )
+from revit_addin import install_all
 from revit_macro_module import (
     MACROS_ROOT, USER_SETTINGS_PATH, build_module, choose_module, chosen_module, find_macro_modules,
+    load_settings, save_settings,
 )
-from revit_schedule_macro_generator import generate_schedule_macro_source, install_macro
+from revit_schedule_macro_generator import generate_schedule_data, generate_schedule_macro_source, install_macro
 from table_view import (
     DEFAULT_TABLE_VIEW,
     ColumnResizer,
@@ -119,6 +125,8 @@ def _wrap_text_segment(text, max_width, font):
 ALL_FAMILIES = "All Families"
 # The schedule table section whose rows set every family at once.
 ALL_FAMILIES_SECTION = "Apply to All Families"
+# Shown in place of a Default Value that a formula sets; Revit doesn't take a value then.
+FORMULA_IN_USE = "Formula in Use"
 
 # Last choice in the Client and Country dropdowns; opens a dialog to add one that isn't listed.
 ADD_NEW = "Add New..."
@@ -182,11 +190,6 @@ OVERRIDE_RULES = (
 )
 
 
-# Dragging a column edge: how close (pixels) the pointer must be, and the narrowest width (inches).
-EDGE_GRAB_PX = 4
-MIN_DRAG_WIDTH_IN = 0.25
-
-
 class OverrideTable(tk.Canvas):
     """A grid of default values: header rows, then labelled rows of cells.
 
@@ -232,16 +235,10 @@ class OverrideTable(tk.Canvas):
                  show_header=True, on_header_double_click=None, on_cell_double_click=None,
                  grid_column_widths=None, on_cell_action=None, hidden_names=None, on_hidden_toggle=None,
                  edit_on_click=False, on_family_action=None, width_cells=None, on_width_click=None,
-                 header_label="Schedule", on_width_drag=None):
+                 header_label="Schedule", on_group_click=None):
         super().__init__(master, background="#ffffff", highlightthickness=0)
-        # Dragging a column's right edge in the header rows calls ``on_width_drag(column_index,
-        # inches)``. Columns are then drawn at their true width, so the drag shows what it sets.
-        self.on_width_drag = on_width_drag
-        if on_width_drag is not None:
-            self.min_column_width = int(self.pixels_per_inch * MIN_DRAG_WIDTH_IN)
-        # The column being resized: ``(column_index, width in inches)``; ``None`` when not dragging.
-        self._resizing = None
-        self.inch_widths = []
+        # Called with a header group (its dict) when its caption is clicked.
+        self.on_group_click = on_group_click
         # Names the header rows on the left: what they belong to.
         self.header_label = header_label
         self.parameter_names = list(parameter_names)
@@ -282,7 +279,6 @@ class OverrideTable(tk.Canvas):
         self.current_cell = None
         self.bind("<Button-1>", self._on_mouse_down)
         self.bind("<B1-Motion>", self._on_mouse_drag)
-        self.bind("<ButtonRelease-1>", self._on_mouse_up)
         self.bind("<Double-Button-1>", self._on_double_click)
         self.bind("<Motion>", self._on_motion)
         for key in ("<Control-c>", "<Control-C>"):
@@ -318,7 +314,11 @@ class OverrideTable(tk.Canvas):
         return self.width_row_top + self.width_row_height
 
     def set_grid_column_widths(self, widths_in_inches):
-        self.inch_widths = [float(width) for width in widths_in_inches]
+        self._layout_columns(widths_in_inches)
+        self._draw_grid()
+
+    def _layout_columns(self, widths_in_inches):
+        """Each column's width and left edge, from its width in inches (no drawing)."""
         self.column_widths = [
             max(self.min_column_width, int(float(width) * self.pixels_per_inch)) for width in widths_in_inches
         ]
@@ -330,7 +330,6 @@ class OverrideTable(tk.Canvas):
         for width in self.column_widths:
             self.column_offsets.append(offset)
             offset += width
-        self._draw_grid()
 
     def _wrap_header_segment(self, text, max_width):
         return _wrap_text_segment(text, max_width, self.header_font)
@@ -339,6 +338,11 @@ class OverrideTable(tk.Canvas):
         return self._wrap_header_segment(self.header_texts.get(parameter_name, parameter_name), max_width)
 
     def set_groups(self, groups):
+        self._layout_groups(groups)
+        self._draw_grid()
+
+    def _layout_groups(self, groups):
+        """Which lane (Group Level row) each header group sits in (no drawing)."""
         self.groups = [dict(group) for group in groups]
         parameter_indices = {name: index for index, name in enumerate(self.parameter_names)}
         candidates = []
@@ -363,6 +367,26 @@ class OverrideTable(tk.Canvas):
             self.header_top = max(1, len(lane_ends)) * self.group_row_height
         else:
             self.header_top = 0
+
+    def set_columns(self, parameter_names, rows, header_texts=None, groups=(), hidden_names=None,
+                    width_cells=None, grid_column_widths=None, selected_names=()):
+        """Show another set of columns (and rows) in place, drawn once: the window, its scroll
+        position and the selected columns (by name) stay, so nothing flashes."""
+        self.finish_cell_edit(commit=False)
+        self.parameter_names = list(parameter_names)
+        self.rows = list(rows)
+        self.header_texts = dict(header_texts or {})
+        if self.hidden_names is not None and hidden_names is not None:
+            self.hidden_names = set(hidden_names)
+        if self.width_cells is not None and width_cells is not None:
+            self.width_cells = list(width_cells)
+        selected = set(selected_names)
+        self.selected_indices = {index for index, name in enumerate(self.parameter_names) if name in selected}
+        self.selected_families &= set(self._family_names())
+        self.selection_anchor = self.family_anchor = None
+        self.current_cell = None
+        self._layout_columns(grid_column_widths or [1.0] * len(self.parameter_names))
+        self._layout_groups(groups)
         self._draw_grid()
 
     def set_header_texts(self, header_texts):
@@ -439,36 +463,6 @@ class OverrideTable(tk.Canvas):
                 return index
         return None
 
-    def _edge_at(self, event):
-        """The column whose right edge, in the header rows, is under the event, when columns can be
-        resized by dragging; else ``None``."""
-        if self.on_width_drag is None or not self.show_header or not self.parameter_names:
-            return None
-        if not 0 <= self._cy(event) < self.body_top:
-            return None
-        canvas_x = self._cx(event)
-        if canvas_x < self.left:
-            return None
-        for index, (left, width) in enumerate(zip(self.column_offsets, self.column_widths)):
-            if abs(canvas_x - (left + width)) <= EDGE_GRAB_PX:
-                return index
-        return None
-
-    def _drag_width(self, event):
-        """The width the column being resized would have with its right edge at the pointer."""
-        index = self._resizing[0]
-        inches = (self._cx(event) - self.column_offsets[index]) / self.pixels_per_inch
-        return max(MIN_DRAG_WIDTH_IN, snap_width(inches))
-
-    def _on_mouse_up(self, _event):
-        if self._resizing is None:
-            return None
-        index, inches = self._resizing
-        self._resizing = None
-        if self.on_width_drag is not None and index < len(self.parameter_names):
-            self.on_width_drag(index, inches)
-        return "break"
-
     def _parameter_index_at(self, event):
         """The column whose header was clicked, or ``None`` outside the header row."""
         canvas_y = self._cy(event)
@@ -511,6 +505,33 @@ class OverrideTable(tk.Canvas):
         if not self.width_row_top <= self._cy(event) < self.body_top:
             return None
         return self._column_at(self._cx(event))
+
+    def _group_at(self, event):
+        """The header group whose caption box is under the event, or ``None``."""
+        if not self.show_header or not self.group_layout:
+            return None
+        canvas_y = self._cy(event)
+        if canvas_y >= self.header_top:
+            return None
+        lane = int(canvas_y // self.group_row_height)
+        column = self._column_at(self._cx(event))
+        if column is None:
+            return None
+        for group_lane, start_index, end_index, group in self.group_layout:
+            if group_lane == lane and start_index <= column <= end_index:
+                return group
+        return None
+
+    def group_bbox(self, group):
+        """``(left, top, width, height)`` of a header group's caption box in canvas coordinates,
+        where it shows now (the header rows are frozen), or ``None`` when it isn't drawn."""
+        for lane, start_index, end_index, laid_out in self.group_layout:
+            if laid_out is group or laid_out["parameter_names"] == group["parameter_names"]:
+                left = self.column_offsets[start_index]
+                right = self.column_offsets[end_index] + self.column_widths[end_index]
+                top = lane * self.group_row_height + self._frozen_offset[1]
+                return left, top, right - left, self.group_row_height
+        return None
 
     def _cell_at(self, event):
         """``(row_index, column_index)`` of the body cell under the event, or ``None``."""
@@ -601,10 +622,6 @@ class OverrideTable(tk.Canvas):
         self.finish_cell_edit(commit=True)
         # Keys go to the table, for Ctrl+C and Ctrl+V; an editor opened below takes them instead.
         self.focus_set()
-        edge = self._edge_at(event)
-        if edge is not None:
-            self._resizing = (edge, self.inch_widths[edge])
-            return
         self.current_cell = self._cell_at(event)
         family_action = self._family_action_at(event)
         if family_action is not None:
@@ -625,6 +642,11 @@ class OverrideTable(tk.Canvas):
         if width_cell is not None:
             if self.on_width_click is not None:
                 self.on_width_click(width_cell)
+            return
+        group = self._group_at(event)
+        if group is not None:
+            if self.on_group_click is not None:
+                self.on_group_click(group)
             return
         family = self._family_at(event)
         if family is not None:
@@ -668,17 +690,6 @@ class OverrideTable(tk.Canvas):
         self._draw_grid()
 
     def _on_mouse_drag(self, event):
-        if self._resizing is not None:
-            index = self._resizing[0]
-            inches = self._drag_width(event)
-            if inches != self._resizing[1]:
-                self._resizing = (index, inches)
-                widths = list(self.inch_widths)
-                widths[index] = inches
-                if self.width_cells is not None:
-                    self.width_cells[index] = dict(self.width_cells[index], text=f"{inches:g}")
-                self.set_grid_column_widths(widths)
-            return
         index = self._selectable_column_at(event)
         if index is None or self.selection_anchor is None:
             return
@@ -931,9 +942,6 @@ class OverrideTable(tk.Canvas):
         )
 
     def _on_motion(self, event):
-        if self._edge_at(event) is not None:
-            self.configure(cursor="sb_h_double_arrow")
-            return
         clickable = any(found is not None for found in (
             self._family_action_at(event),
             self._action_at(event), self._hidden_toggle_at(event), self._family_at(event),
@@ -1091,7 +1099,7 @@ class PlaceholderEntry(ttk.Entry):
         return None
 
 
-class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthReviewWindows):
+class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthReviewWindows, RevitSyncWindows):
     """Tkinter review/edit GUI over a parameter ``Catalog``.
 
     The catalog is the source of truth. The tables are views rebuilt from it after
@@ -1105,8 +1113,12 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         "params": list(PARAM_COLUMNS),
         # Schedules: the schedules each family is on (shown only; link families in the Schedule Builder).
         "families": [column for column in FAMILY_COLUMNS if column != "status"][:-1]
-        + ["schedules", "status", "validation_message"],
+        + ["schedules", "linker_role", "status", "validation_message"],
     }
+    # Worked out from the database, so shown but never edited.
+    _shown_only_columns = {"status", "validation_message", "guid", "schedules"}
+    # The Families tab's Linker Role choices: Auto works the role out (Catalog.linker_family).
+    _linker_role_choices = ["Auto", "Primary", "Linked"]
 
     _display_labels = {
         "name": "Name",
@@ -1127,6 +1139,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         "description": "Description",
         "family_name": "Family Name",
         "schedules": "Schedules",
+        "linker_role": "Linker Role",
         "parameter_name": "Parameter Name",
         "group_name": "Group Name",
         "override_entry": "Override Entry",
@@ -1218,6 +1231,12 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         ttk.Button(
             toolbar, text="Revit Macro Settings", command=self.open_macro_settings, style="Action.TButton",
         ).pack(side="left")
+        ttk.Button(
+            toolbar, text="Install Revit Add-in...", command=self.install_revit_addin, style="Action.TButton",
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            toolbar, text="Review Revit Changes...", command=self.open_revit_changes, style="Action.TButton",
+        ).pack(side="left", padx=(8, 0))
         ttk.Button(toolbar, text="Create GitHub Ticket", command=self.open_new_ticket).pack(side="right")
 
         self.notebook = ttk.Notebook(self.root)
@@ -1290,6 +1309,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             source = generate_schedule_macro_source(
                 self.catalog, Path(self.checkpoint_path).name,
                 widths_folder=get_revit_widths_folder(Path(self.checkpoint_path).resolve()),
+                sync_path=get_revit_sync_path(Path(self.checkpoint_path).resolve()),
                 **({"namespace": module.namespace} if module else {}),
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1404,6 +1424,41 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         )
         return None
 
+    # --- Revit add-in ---------------------------------------------------------------
+
+    def install_revit_addin(self):
+        """Install Revit Add-in...: install the add-in for each Revit here that this copy has a build for."""
+        installed, messages = install_all()
+        for message in messages:
+            self._append_message(message)
+        show = messagebox.showinfo if installed else messagebox.showwarning
+        show("Install Revit Add-in", "\n\n".join(messages), parent=getattr(self, "root", None))
+        return installed
+
+    @staticmethod
+    def _app_command():
+        """How to start this app again: the .exe, or Python running this script."""
+        if FROZEN:
+            return [sys.executable]
+        python = Path(sys.executable)
+        windowed = python.with_name("pythonw.exe")
+        return [str(windowed if windowed.exists() else python), str(Path(__file__).resolve())]
+
+    def _addin_setting(self, key):
+        """A value the app shares with the Revit add-in in settings.json, or ``None``."""
+        return load_settings(USER_SETTINGS_PATH).get(key)
+
+    def _record_for_revit_addin(self, **values):
+        """Tell the Revit add-in where things are, in the settings file it shares with the app."""
+        try:
+            settings = load_settings(USER_SETTINGS_PATH)
+            if all(settings.get(key) == value for key, value in values.items()):
+                return
+            settings.update(values)
+            save_settings(settings, USER_SETTINGS_PATH)
+        except (OSError, ValueError):
+            pass  # the add-in then asks for the file itself
+
     def open_macro_settings(self, modules=None):
         """Ask which macro module gets the schedule macro. Returns the chosen module, or ``None``."""
         if modules is None:
@@ -1504,6 +1559,30 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         self._append_message(f"Generated RF Tools parameter scheduler file (families): {output_path}")
         self._append_message(f"Generated RF Tools parameter scheduler file (schedules): {schedules_path}")
 
+    def _generate_schedule_data_file(self):
+        """The schedules file the Revit add-in builds from, next to the save."""
+        try:
+            output_path = get_database_output_paths(self.checkpoint_path)["schedule_data"]
+            data = generate_schedule_data(self.catalog, Path(self.checkpoint_path).name)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Through a temporary file, so the add-in never reads a half-written one.
+            temporary = output_path.with_name(output_path.name + ".tmp")
+            temporary.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(output_path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(
+                "Schedules File Export Failed",
+                f"The database was saved, but the schedules file for the Revit add-in "
+                f"could not be written:\n{exc}",
+                parent=getattr(self, "root", None),
+            )
+            return
+        self._append_message(f"Generated schedules file for the Revit add-in: {output_path}")
+        self._record_for_revit_addin(
+            schedule_data_path=str(Path(output_path).resolve()),
+            revit_sync_path=str(get_revit_sync_path(Path(self.checkpoint_path).resolve())),
+        )
+
     def _generate_shared_parameter_file(self):
         try:
             output_path = get_database_output_paths(self.checkpoint_path)["shared_parameters"]
@@ -1595,6 +1674,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         self._finish_tree_cell_edit(False)
         field_name = self._get_table_columns(table_name)[column]
         text = text.split("\n")[0].split("\t")[0].strip("\r")
+        if self._value_set_by_formula(table_name, row_id, field_name):
+            return False
         if table_name == "params" and field_name == "formula":
             param = self.catalog.params[int(row_id)]
             # A formula goes through the Formula Builder, which only saves a valid one.
@@ -1616,6 +1697,11 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
 
     def _get_table_columns(self, table_name: str):
         return DDMGUI._table_columns[table_name]
+
+    def _value_set_by_formula(self, table_name: str, row_id, field_name: str) -> bool:
+        """A Parameters tab Default Value its Default Formula sets (shown as Formula in Use): not editable."""
+        return (table_name == "params" and field_name == "default_value"
+                and bool(self.catalog.params[int(row_id)].formula))
 
     def open_new_ticket(self):
         """Open a new GitHub issue in the browser, with the app version filled in."""
@@ -1856,7 +1942,13 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         row_index = int(row_id)
         current_value = tree.item(row_id, "values")[column_number] if column_number < len(tree.item(row_id, "values")) else ""
         field_name = columns[column_number]
-        if field_name in {"status", "validation_message", "guid"}:
+        if field_name in self._shown_only_columns:
+            return
+        if self._value_set_by_formula(table_name, row_id, field_name):
+            return
+        if table_name == "params" and field_name == "formula":
+            # A formula is always entered in the Formula Builder, as on a single click.
+            self._start_tree_cell_edit(tree, table_name, row_id, column_number)
             return
         dropdown_values = self._revit_dropdown_values(field_name)
 
@@ -1915,12 +2007,16 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         params = self.params_df
         # Shown as on the schedule window: Instance or Type, not true / false.
         params["instance_param"] = params["instance_param"].map(lambda value: self._attribute_text("instance_param", value))
+        has_formula = params["formula"].fillna("").astype(str).str.strip() != ""
+        params.loc[has_formula, "default_value"] = FORMULA_IN_USE
         families = self.families_df
         on_schedules = {}
         for schedule in self.catalog.schedules:
             for fam in schedule.fams:
                 on_schedules.setdefault(fam.name, []).append(schedule.name)
         families["schedules"] = families["name"].map(lambda name: "; ".join(on_schedules.get(name, [])))
+        linker = self.catalog.linker_families()
+        families["linker_role"] = families["name"].map(lambda name: linker_role_text(linker.get(name)))
         tables = (
             ("params", self.param_tree, params, self._get_table_columns("params")),
             ("families", self.family_tree, families, self._get_table_columns("families")),
@@ -1983,7 +2079,18 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
     # --- validation -------------------------------------------------------------
 
     def validate_all(self):
-        """Validate the catalog, refresh the tables and list any errors."""
+        """Validate the catalog, refresh the tables and list any errors.
+
+        While the Schedule Builder is open its edits are held: only its schedule's columns are
+        refreshed, and the full check (with the main tabs and messages) waits for Apply.
+        """
+        session = self._builder_session()
+        if session is not None:
+            session["schedule"].refresh_params()
+            session["pending"] = True
+            if session.get("on_pending") is not None:
+                session["on_pending"]()
+            return []
         for schedule in self.catalog.schedules:
             schedule.refresh_params()
         issues = self.catalog.validate()
@@ -2000,6 +2107,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         """Apply a table edit through the model. Raises ``ValueError`` for an invalid edit."""
         if column_name in {"status", "validation_message"}:
             raise ValueError(f"{self._humanize_column_name(column_name)} is generated by validation and cannot be edited.")
+        if column_name == "schedules":
+            raise ValueError(f"{self._humanize_column_name(column_name)} is worked out from the database and cannot be edited.")
 
         if table_name == "params":
             items = self.catalog.params
@@ -2104,6 +2213,18 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             if not getattr(fam, kind):
                 raise ValueError(f"Choose a {CODE_LABELS[kind].lower()} before setting its code.")
             self.catalog.set_code(kind, getattr(fam, kind), value)
+        elif column_name == "linker_role":
+            # Auto (or blank) works the role out; Primary or Linked sets it, e.g. for the generic boxes on
+            # distribution diagrams. Shown text such as "Primary (AHU)" pastes as Primary.
+            choice = value.lower()
+            if choice in {"", "auto"}:
+                fam.linker_role = None
+            elif choice.startswith("primary"):
+                fam.linker_role = "primary"
+            elif choice.startswith("linked"):
+                fam.linker_role = "linked"
+            else:
+                raise ValueError("Linker Role must be Auto, Primary or Linked.")
         else:
             raise ValueError(f"{self._humanize_column_name(column_name)} can't be edited.")
 
@@ -2113,6 +2234,8 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         """Choices for a column's dropdown, or ``None`` for a free-text column."""
         if column_name in CODE_KINDS:
             return self.catalog.names(column_name) + [ADD_NEW]
+        if column_name == "linker_role":
+            return list(self._linker_role_choices)
         return self._revit_dropdown_values(column_name)
 
     def _ask_new_code_entry(self, kind: str, parent=None):
@@ -2741,6 +2864,13 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
     def _table_cell(text, state: str = "set", editable: bool = False) -> dict:
         return {"text": "" if text is None else str(text), "state": state, "editable": editable}
 
+    @classmethod
+    def _formula_in_use_cell(cls) -> dict:
+        """A Default Value cell where a formula sets the value: grayed out and not editable, as in Revit."""
+        cell = cls._table_cell(FORMULA_IN_USE, "inherited")
+        cell["formula_in_use"] = True
+        return cell
+
     # Parameter section rows and the parameter field each one edits.
     _parameter_row_fields = {
         "value": "default_value", "formula": "formula", "group_under": "group_under",
@@ -2799,13 +2929,18 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
                 return param.pattern() if attribute == "formula" else None
             return self._attribute_text(attribute, getattr(param, attribute))
 
+        def formula_in_use(param, attribute):
+            return (attribute == "value" and param is not None and not getattr(param, "is_combined", False)
+                    and bool(param.formula))
+
         for attribute, _term, label in self._override_attributes:
             rows.append({
                 "section": "",
                 "label": label,
                 "param_field": self._parameter_row_fields[attribute],
                 "cells": [
-                    self._table_cell(attribute_text(param, attribute), editable=editable(param))
+                    self._formula_in_use_cell() if formula_in_use(param, attribute)
+                    else self._table_cell(attribute_text(param, attribute), editable=editable(param))
                     for param in definitions
                 ],
             })
@@ -2862,6 +2997,9 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
                         cell["action"] = "Add Parameter to Family"
                     cells.append(cell)
                     continue
+                if attribute == "value" and param.formula:
+                    cells.append(self._formula_in_use_cell())
+                    continue
                 is_set = editable and attribute in set_here.get(name, {})
                 cells.append(self._table_cell(
                     self._attribute_text(attribute, getattr(param, attribute)), "set" if is_set else "inherited", editable
@@ -2901,12 +3039,18 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         "(Varies)" when they differ, and blank when none has one.
         """
         rows = []
+        formulas = {
+            fam.name: {param.name: param.formula for param in fam.resolved_params()} for fam in schedule.fams
+        }
         for attribute, _term, label in self._override_attributes:
             cells = []
             for name in parameter_names:
                 families = [fam for fam in schedule.fams if name in schedule.family_param_names(fam)]
                 if not families:
                     cells.append(self._table_cell(None, "none"))
+                    continue
+                if attribute == "value" and all(formulas[fam.name].get(name) for fam in families):
+                    cells.append(self._formula_in_use_cell())
                     continue
                 values = {
                     self._attribute_text(attribute, (
@@ -2989,11 +3133,14 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             name: [fam for fam in schedule.fams if name in schedule.family_param_names(fam)]
             for name in parameter_names
         }
+        formulas = {
+            fam.name: {param.name: param.formula for param in fam.resolved_params()} for fam in schedule.fams
+        }
         for row in rows:
             field = row.get("param_field")
             for index, cell in enumerate(row["cells"]):
                 name = parameter_names[index]
-                if cell["state"] == "none":
+                if cell["state"] == "none" or cell.get("formula_in_use"):
                     continue
                 if field == "header_text":
                     cell["bold"] = name not in schedule.header_text_overrides
@@ -3002,6 +3149,12 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
                 elif field and field != "name":
                     attribute = next(a for a, f in self._parameter_row_fields.items() if f == field)
                     families = families_with[name]
+                    if attribute == "value":
+                        # A family whose formula sets the value doesn't use the parameter's.
+                        families = [fam for fam in families if not formulas[fam.name].get(name)]
+                        if families_with[name] and not families:
+                            cell["bold"] = False
+                            continue
                     cell["bold"] = not families or any(
                         self._value_source(schedule, fam, name, attribute) == "parameter" for fam in families
                     )
@@ -3031,7 +3184,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
 
         Tab moves on to the next editable cell in the row. A Parameter section cell
         edits the parameter itself; a change to its name, Default Header or Default Column
-        Width calls ``on_columns_changed()`` (the columns need redrawing) instead.
+        Width calls ``on_columns_changed(field)`` (the columns need redrawing) instead.
         """
         row = table.rows[row_index]
         if not row["cells"][column_index].get("editable"):
@@ -3132,7 +3285,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
                 messagebox.showerror("Invalid value", str(exc), parent=table.winfo_toplevel())
                 return
             if field in ("name", "header_text", "grid_column_width") and on_columns_changed is not None:
-                on_columns_changed()
+                on_columns_changed(field)
             else:
                 table.set_rows(rows_builder())
 
@@ -3241,17 +3394,6 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             for name in parameter_names
         ]
 
-    def _drag_schedule_width(self, schedule, parameter_name: str, inches: float, on_changed):
-        """A column edge dragged to ``inches``: this schedule's own width for the column, or none
-        when it's back at the parameter's Default Column Width."""
-        param = self.catalog.get_column(parameter_name)
-        default = getattr(param, "grid_column_width", None)
-        width_text = "" if default is not None and snap_width(default) == inches else f"{inches:g}"
-        self._set_schedule_column(
-            schedule.name, parameter_name, schedule.header_text_overrides.get(parameter_name, ""), width_text,
-        )
-        on_changed()
-
     def _edit_schedule_width(self, table: "OverrideTable", schedule, column_index: int, on_changed):
         """Edit a column's width in this schedule in place. Blank goes back to the parameter's."""
         parameter_name = table.parameter_names[column_index]
@@ -3314,10 +3456,18 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             filter_entry.insert(0, schedule.filter_value)
         filter_entry.grid(row=0, column=2, sticky="ew", pady=2)
 
-        itemize_var = tk.BooleanVar(value=schedule.itemize)
-        ttk.Checkbutton(box, text="Itemize Every Instance", variable=itemize_var).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=2
-        )
+        # Sorting/Grouping (with Itemize Every Instance) is its own window, as in Revit.
+        ttk.Label(box, text="Sorting/Grouping", style="Section.TLabel").grid(row=1, column=0, sticky="w")
+        sorting_row = ttk.Frame(box)
+        sorting_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=2)
+        sorting_label = ttk.Label(sorting_row, text=schedule.sorting_summary())
+        ttk.Button(
+            sorting_row, text="Sorting/Grouping...",
+            command=lambda: self._open_sorting_window(
+                box.winfo_toplevel(), schedule, lambda: sorting_label.configure(text=schedule.sorting_summary())),
+        ).pack(side="left")
+        sorting_label.pack(side="left", padx=(8, 0))
+        box.sorting_label = sorting_label  # for tests
 
         ttk.Label(box, text="View Template", style="Section.TLabel").grid(row=2, column=0, sticky="w")
         template_entry = PlaceholderEntry(box, placeholder="None (Name of a Revit Schedule View Template)")
@@ -3326,19 +3476,180 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         template_entry.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=2)
 
         def save(_event=None):
-            current = (schedule.filter_value or "", schedule.itemize, schedule.view_template or "")
-            wanted = (filter_entry.get().strip(), itemize_var.get(), template_entry.get().strip())
+            current = (schedule.filter_value or "", schedule.view_template or "")
+            wanted = (filter_entry.get().strip(), template_entry.get().strip())
             if wanted[0] == schedule.name:
                 wanted = ("",) + wanted[1:]
             if wanted != current:
-                self._set_schedule_settings(schedule.name, *wanted)
+                self._set_schedule_settings(schedule.name, wanted[0], schedule.itemize, wanted[1])
 
         for entry in (filter_entry, template_entry):
             entry.bind("<Return>", save, add="+")
             entry.bind("<FocusOut>", save, add="+")
-        itemize_var.trace_add("write", lambda *_args: save())
         box.save = save  # for tests
         return box
+
+    def _set_schedule_sorting(self, schedule_name: str, sorting: dict, itemize: bool):
+        """Set a schedule's Sorting/Grouping: its Sort by and Then by levels, grand totals and Itemize."""
+        schedule = self._get_schedule(schedule_name)
+        schedule.set_sorting(
+            sorting["sort_group_fields"], sorting["show_grand_total"], sorting["show_grand_total_title"],
+            sorting["show_grand_total_count"], sorting["grand_total_title"], itemize=itemize,
+        )
+        self.validate_all()
+
+    def _open_sorting_window(self, parent, schedule, on_saved=None):
+        """The Sorting/Grouping window, laid out and worded like Revit's Sorting/Grouping tab.
+
+        Sort by and three Then by levels, each with Ascending or Descending, Header, Footer (with
+        what it shows) and Blank line; Grand totals with its own title; Itemize every instance.
+        A level is available once the one above it sorts by something. OK saves; Cancel doesn't.
+        """
+        none = "(none)"
+        totals_choices = list(TOTALS_OPTIONS)
+        columns = [name for name in self._get_schedule_parameter_names(schedule)
+                   if name in set(schedule.sortable_column_names())]
+
+        window = tk.Toplevel(parent)
+        window.title("Sorting/Grouping")
+        window.transient(parent)
+        window.grab_set()
+        window.resizable(False, False)
+        body = ttk.Frame(window, padding=(12, 12, 12, 0))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+
+        levels = []
+        for index in range(MAX_SORT_GROUP_FIELDS):
+            saved = schedule.sort_group_fields[index] if index < len(schedule.sort_group_fields) else None
+            footer_title = saved["show_footer_title"] if saved else True
+            footer_count = saved["show_footer_count"] if saved else True
+            level = {
+                "parameter": tk.StringVar(value=saved["parameter"] if saved else none),
+                "order": tk.StringVar(value="descending" if saved and saved["descending"] else "ascending"),
+                "header": tk.BooleanVar(value=bool(saved and saved["show_header"])),
+                "footer": tk.BooleanVar(value=bool(saved and saved["show_footer"])),
+                "footer_option": tk.StringVar(value=totals_option(footer_title, footer_count)),
+                "blank_line": tk.BooleanVar(value=bool(saved and saved["show_blank_line"])),
+            }
+            row = index * 2
+            top = 0 if index == 0 else 14
+            level["label"] = ttk.Label(body, text="Sort by:" if index == 0 else "Then by:")
+            level["label"].grid(row=row, column=0, sticky="w", pady=(top, 2))
+            level["combo"] = ttk.Combobox(body, textvariable=level["parameter"], values=[none] + columns,
+                                          state="readonly", width=34)
+            level["combo"].grid(row=row, column=1, columnspan=2, sticky="ew", padx=(8, 12), pady=(top, 2))
+            level["ascending"] = ttk.Radiobutton(body, text="Ascending", variable=level["order"], value="ascending")
+            level["ascending"].grid(row=row, column=3, sticky="w", pady=(top, 2))
+            level["descending"] = ttk.Radiobutton(body, text="Descending", variable=level["order"], value="descending")
+            level["descending"].grid(row=row, column=4, sticky="w", padx=(12, 0), pady=(top, 2))
+            level["header_check"] = ttk.Checkbutton(body, text="Header", variable=level["header"])
+            level["header_check"].grid(row=row + 1, column=0, sticky="w", padx=(16, 0))
+            level["footer_check"] = ttk.Checkbutton(body, text="Footer:", variable=level["footer"])
+            level["footer_check"].grid(row=row + 1, column=1, sticky="w", padx=(8, 0))
+            level["footer_combo"] = ttk.Combobox(body, textvariable=level["footer_option"], values=totals_choices,
+                                                 state="readonly", width=22)
+            level["footer_combo"].grid(row=row + 1, column=2, sticky="ew", padx=(0, 12))
+            level["blank_check"] = ttk.Checkbutton(body, text="Blank line", variable=level["blank_line"])
+            level["blank_check"].grid(row=row + 1, column=4, sticky="w", padx=(12, 0))
+            levels.append(level)
+
+        totals_row = MAX_SORT_GROUP_FIELDS * 2
+        grand_var = tk.BooleanVar(value=schedule.show_grand_total)
+        grand_option = tk.StringVar(value=totals_option(schedule.show_grand_total_title, schedule.show_grand_total_count))
+        grand_title = tk.StringVar(value=schedule.grand_total_title)
+        ttk.Checkbutton(body, text="Grand totals:", variable=grand_var).grid(
+            row=totals_row, column=0, sticky="w", pady=(18, 2))
+        grand_combo = ttk.Combobox(body, textvariable=grand_option, values=totals_choices, state="readonly", width=34)
+        grand_combo.grid(row=totals_row, column=1, columnspan=2, sticky="ew", padx=(8, 12), pady=(18, 2))
+        title_label = ttk.Label(body, text="Custom grand total title:")
+        title_label.grid(row=totals_row + 1, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(6, 2))
+        title_entry = ttk.Entry(body, textvariable=grand_title, width=34)
+        title_entry.grid(row=totals_row + 2, column=1, columnspan=2, sticky="ew", padx=(8, 12))
+        itemize_var = tk.BooleanVar(value=schedule.itemize)
+        ttk.Checkbutton(body, text="Itemize every instance", variable=itemize_var).grid(
+            row=totals_row + 3, column=0, columnspan=3, sticky="w", pady=(18, 12))
+
+        def enable(widget, on, readonly=False):
+            widget.state(["!disabled"] if on else ["disabled"])
+            if on and readonly:
+                widget.state(["readonly"])
+
+        def refresh(*_args):
+            # As in Revit: a level is available once the one above sorts by something; its options
+            # once it sorts by something itself; the footer's choice once Footer is ticked.
+            available = True
+            for level in levels:
+                chosen = available and level["parameter"].get() != none
+                enable(level["label"], available)
+                enable(level["combo"], available, readonly=True)
+                for key in ("ascending", "descending", "header_check", "footer_check", "blank_check"):
+                    enable(level[key], chosen)
+                enable(level["footer_combo"], chosen and level["footer"].get(), readonly=True)
+                available = chosen
+            enable(grand_combo, grand_var.get(), readonly=True)
+            title_on = grand_var.get() and TOTALS_OPTIONS[grand_option.get()][0]
+            enable(title_label, title_on)
+            enable(title_entry, title_on)
+
+        for level in levels:
+            for key in ("parameter", "footer"):
+                level[key].trace_add("write", refresh)
+        for variable in (grand_var, grand_option):
+            variable.trace_add("write", refresh)
+        refresh()
+
+        def chosen_sorting():
+            fields = []
+            for level in levels:
+                parameter = level["parameter"].get()
+                if parameter == none:
+                    break  # the levels below a (none) are unavailable, as in Revit
+                show_title, show_count = TOTALS_OPTIONS[level["footer_option"].get()]
+                fields.append({
+                    "parameter": parameter,
+                    "descending": level["order"].get() == "descending",
+                    "show_header": level["header"].get(),
+                    "show_footer": level["footer"].get(),
+                    "show_footer_title": show_title,
+                    "show_footer_count": show_count,
+                    "show_blank_line": level["blank_line"].get(),
+                })
+            show_title, show_count = TOTALS_OPTIONS[grand_option.get()]
+            return {
+                "sort_group_fields": fields,
+                "show_grand_total": grand_var.get(),
+                "show_grand_total_title": show_title,
+                "show_grand_total_count": show_count,
+                "grand_total_title": grand_title.get(),
+            }
+
+        def ok():
+            sorting = chosen_sorting()
+            unchanged = (
+                normalized_sorting(sorting) == normalized_sorting(schedule.sorting_dict())
+                and itemize_var.get() == schedule.itemize
+            )
+            if not unchanged:
+                try:
+                    self._set_schedule_sorting(schedule.name, sorting, itemize_var.get())
+                except ValueError as exc:
+                    messagebox.showerror("Sorting/Grouping", str(exc), parent=window)
+                    return
+            window.destroy()
+            if not unchanged and on_saved is not None:
+                on_saved()
+
+        buttons = ttk.Frame(window, padding=(12, 8, 12, 12))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="right")
+        ttk.Button(buttons, text="OK", command=ok, style="Action.TButton").pack(side="right", padx=(0, 8))
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.levels = levels  # for tests
+        window.grand_var, window.grand_option, window.grand_title = grand_var, grand_option, grand_title
+        window.itemize_var = itemize_var
+        window.ok = ok
+        return window
 
     # Room left for the taskbar and the window's title bar when fitting a window to the screen.
     _screen_margin = 80
@@ -3590,6 +3901,9 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
                 renaming = False
                 return
             self._show_messages([f"Renamed schedule '{old_name}' to '{new_name}'."])
+            session = self._builder_session()
+            if session is not None:
+                session["form"] = None  # reopened under the new name, keeping the held edits
             form.destroy()
             self._open_schedule_window(new_name)
 
@@ -3748,9 +4062,15 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             ("Add Section...", add_section),
         ):
             ttk.Button(bar, text=text, command=command).pack(side="left", padx=(0, 6))
-        used_sections = [section.name for section, _use in schedule._used_sections()]
-        if used_sections:
-            ttk.Label(bar, text="Sections: " + ", ".join(used_sections)).pack(side="left", padx=(6, 0))
+        sections_label = ttk.Label(bar)
+        sections_label.pack(side="left", padx=(6, 0))
+
+        def refresh_sections():
+            used = [section.name for section, _use in schedule._used_sections()]
+            sections_label.configure(text="Sections: " + ", ".join(used) if used else "")
+
+        refresh_sections()
+        bar.refresh_sections = refresh_sections
         # For tests.
         bar.add_parameters, bar.remove_parameters = add_parameters, remove_parameters
         bar.add_families, bar.remove_families = add_families, remove_families
@@ -3822,6 +4142,11 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         self.validate_all()
         return group
 
+    def _rename_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str], caption: str):
+        group = self._get_schedule(schedule_name).rename_header_group(parameter_names, caption)
+        self.validate_all()
+        return group
+
     def _remove_schedule_header_group(self, schedule_name: str, parameter_names: Sequence[str]):
         group = self._get_schedule(schedule_name).remove_header_group(parameter_names)
         self.validate_all()
@@ -3881,7 +4206,9 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         """Edit one cell of a main table in place: Enter or clicking away saves, Escape cancels."""
         self._finish_tree_cell_edit(False)
         field_name = self._get_table_columns(table_name)[column_number]
-        if field_name in {"status", "validation_message", "guid"} or not tree.exists(row_id):
+        if field_name in self._shown_only_columns or not tree.exists(row_id):
+            return
+        if self._value_set_by_formula(table_name, row_id, field_name):
             return
         if table_name == "params" and field_name == "formula":
             param = self.catalog.params[int(row_id)]
@@ -4005,10 +4332,14 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         row = self.families_df.iloc[row_index]
         entries = {}
         for col in columns:
-            if col in {"status", "validation_message", "schedules"}:
+            if col in self._shown_only_columns:
+                if col == "schedules":
+                    shown = "; ".join(schedule.name for schedule in self.catalog.schedules if fam in schedule.fams)
+                else:
+                    shown = row.get(col)
                 ttk.Label(
                     form,
-                    text=f"{self._humanize_column_name(col)}: {row.get(col)}",
+                    text=f"{self._humanize_column_name(col)}: {shown}",
                     wraplength=920,
                     justify="left",
                 ).pack(anchor="w", padx=12, pady=(6, 0))
@@ -4017,7 +4348,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             dropdown_values = self._dropdown_values(col)
             if dropdown_values:
                 combo = ttk.Combobox(form, values=dropdown_values, state="readonly", width=90)
-                combo.set(str(row.get(col)))
+                combo.set((fam.linker_role or "auto").title() if col == "linker_role" else str(row.get(col)))
                 entries[col] = combo
                 combo.pack(fill="x", padx=12, pady=(0, 4))
                 if col in CODE_KINDS:
@@ -4071,12 +4402,153 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             ),
         )
 
+    # --- Schedule Builder: edits held until Apply ----------------------------------
+
+    def _builder_session(self):
+        """The open Schedule Builder's held edits, or ``None``. A dict: ``snapshot`` (the database
+        before the edits), ``name`` (the schedule's name then), ``schedule``, ``pending``, ``form``
+        and ``on_pending`` (run after each held edit)."""
+        return getattr(self, "_schedule_builder_session", None)
+
+    def _start_builder_session(self, schedule) -> dict:
+        """Hold edits for ``schedule``'s Builder; a reopen keeps the session (and its snapshot)."""
+        session = self._builder_session()
+        if session is None:
+            session = {"pending": False, "on_pending": None, "form": None}
+            self._take_builder_snapshot(session, schedule)
+            self._schedule_builder_session = session
+        session["schedule"] = schedule
+        return session
+
+    def _take_builder_snapshot(self, session: dict, schedule):
+        session["snapshot"] = copy.deepcopy(self.catalog.to_dict())
+        session["name"] = schedule.name
+        session["pending"] = False
+
+    def _apply_schedule_builder(self, keep_open: bool = True):
+        """Apply: check the whole database once and update the main tabs. Returns the issues."""
+        session = self._builder_session()
+        self._schedule_builder_session = None
+        issues = self.validate_all()
+        if session is not None and keep_open:
+            self._take_builder_snapshot(session, session["schedule"])
+            self._schedule_builder_session = session
+        return issues
+
+    def _discard_schedule_builder(self):
+        """Discard Changes: put the database back as it was when the Builder opened (or last applied)."""
+        session = self._builder_session()
+        self._schedule_builder_session = None
+        if session is None:
+            return None
+        self.catalog = Catalog.from_dict(copy.deepcopy(session["snapshot"]))
+        self.validate_all()
+        return session["name"]
+
+    def _ask_builder_close(self, parent) -> Optional[str]:
+        """Closing with unapplied edits: "apply", "discard", or ``None`` to keep editing."""
+        dialog = tk.Toplevel(parent)
+        dialog.title("Unapplied Changes")
+        dialog.transient(parent)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        ttk.Label(
+            dialog, text="Apply Your Schedule Builder Changes Before Closing?", style="Section.TLabel",
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        ttk.Label(
+            dialog, text="Discard puts the database back as it was when the Builder opened (or was last applied).",
+            wraplength=380, justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 10))
+        choice = {"value": None}
+
+        def pick(value):
+            choice["value"] = value
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(buttons, text="Keep Editing", command=lambda: pick(None)).pack(side="right")
+        ttk.Button(buttons, text="Discard Changes", command=lambda: pick("discard")).pack(side="right", padx=(0, 6))
+        ttk.Button(buttons, text="Apply", command=lambda: pick("apply"), style="Action.TButton").pack(
+            side="right", padx=(0, 6))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: pick(None))
+        dialog.wait_window()
+        return choice["value"]
+
+    def _build_builder_buttons(self, form, session: dict, on_applied, on_discarded):
+        """The bottom bar: Unapplied Changes, Apply, Discard Changes and Close."""
+        bar = ttk.Frame(form)
+        status = ttk.Label(bar, text="", foreground="#b45309")
+        status.pack(side="left")
+        close_button = ttk.Button(bar, text="Close", style="Action.TButton")
+        close_button.pack(side="right")
+        discard_button = ttk.Button(bar, text="Discard Changes")
+        discard_button.pack(side="right", padx=(0, 6))
+        apply_button = ttk.Button(bar, text="Apply", style="Action.TButton")
+        apply_button.pack(side="right", padx=(0, 6))
+
+        def show_pending():
+            pending = session["pending"]
+            status.configure(text="Unapplied Changes: Apply Checks the Database and Updates the Main Tabs"
+                             if pending else "")
+            for button in (apply_button, discard_button):
+                button.state(["!disabled"] if pending else ["disabled"])
+
+        def apply():
+            self._apply_schedule_builder()
+            show_pending()
+            on_applied()
+
+        def discard():
+            geometry = form.geometry()
+            session["form"] = None
+            form.destroy()
+            name = self._discard_schedule_builder()
+            on_discarded(name, geometry)
+
+        def close():
+            choice = "apply"
+            if session["pending"]:
+                choice = self._ask_builder_close(form)
+                if choice is None:
+                    form.grab_set()  # the prompt took the grab; keep editing in the Builder
+                    return
+            session["form"] = None
+            form.destroy()
+            if choice == "discard":
+                self._discard_schedule_builder()
+            else:
+                self._apply_schedule_builder(keep_open=False)
+
+        def on_destroy(event):
+            # Closed some other way (not Close, Discard or a reopen): keep the edits and check them.
+            if event.widget is not form or session.get("form") is not form:
+                return
+            session["form"] = None
+            if self._builder_session() is session:
+                try:
+                    self._apply_schedule_builder(keep_open=False)
+                except tk.TclError:
+                    self._schedule_builder_session = None  # the app itself is closing
+
+        apply_button.configure(command=apply)
+        discard_button.configure(command=discard)
+        close_button.configure(command=close)
+        form.protocol("WM_DELETE_WINDOW", close)
+        form.bind("<Destroy>", on_destroy, add="+")
+        session["form"] = form
+        session["on_pending"] = show_pending
+        show_pending()
+        bar.apply, bar.discard, bar.close = apply, discard, close  # for tests
+        return bar
+
     def _open_schedule_window(self, selected_name: str, view=None):
         """The schedule window. ``view`` (from a reopen) restores its place, size, scrolling
         and selected columns: ``{"geometry", "xview", "yview", "selected"}``."""
         schedule = self.catalog.get_schedule(selected_name)
         if schedule is None:
             return
+        session = self._start_builder_session(schedule)
 
         form = tk.Toplevel(self.root)
         form.title(f"Schedule Builder: {selected_name}")
@@ -4092,8 +4564,17 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         self._build_schedule_name_entry(title_bar, form, schedule).pack(
             side="left", fill="x", expand=True, padx=(8, 12)
         )
-        ttk.Label(form, text=f"Status: {schedule.status}", style="Section.TLabel").pack(anchor="w", padx=12, pady=(0, 6))
-        ttk.Label(form, text=f"Validation: {schedule.validation_message or 'None'}", wraplength=1000, justify="left").pack(anchor="w", padx=12, pady=(0, 8))
+        status_label = ttk.Label(form, style="Section.TLabel")
+        status_label.pack(anchor="w", padx=12, pady=(0, 6))
+        validation_label = ttk.Label(form, wraplength=1000, justify="left")
+        validation_label.pack(anchor="w", padx=12, pady=(0, 8))
+
+        def show_status():
+            # The schedule's check result, as of the last Apply (edits are checked on Apply).
+            status_label.configure(text=f"Status: {schedule.status}")
+            validation_label.configure(text=f"Validation: {schedule.validation_message or 'None'}")
+
+        show_status()
         self._build_schedule_settings(form, schedule).pack(fill="x", padx=12, pady=(0, 8))
 
         def reopen(selected_parameters=()):
@@ -4101,8 +4582,33 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             reopened_view = {"geometry": form.geometry(), "selected": list(selected_parameters)}
             if table is not None:
                 reopened_view.update(xview=table.xview()[0], yview=table.yview()[0])
+            session["form"] = None  # a reopen keeps the held edits
             form.destroy()
             self._open_schedule_window(selected_name, reopened_view)
+
+        def refresh_columns(selected_parameters=()):
+            # Adding, removing or moving columns and families redraws the table in place (rebuilding
+            # the window made it flash). Going to or from no columns changes the layout: reopen then.
+            new_names = self._get_schedule_parameter_names(schedule)
+            if table is None or not new_names:
+                reopen(selected_parameters)
+                return
+            parameter_names[:] = new_names
+            table.set_columns(
+                parameter_names, rows_builder(), header_texts=header_texts(), groups=schedule.header_groups,
+                hidden_names=schedule.hidden_field_names,
+                width_cells=self._schedule_width_cells(schedule, parameter_names),
+                grid_column_widths=[self._get_schedule_grid_column_width(schedule, name) for name in parameter_names],
+                selected_names=selected_parameters,
+            )
+            edit_buttons.refresh_sections()
+
+        def reopen_discarded(name, discarded_geometry):
+            if name is not None and self.catalog.get_schedule(name) is not None:
+                self._open_schedule_window(name, {"geometry": discarded_geometry, "selected": []})
+
+        bottom_bar = self._build_builder_buttons(form, session, show_status, reopen_discarded)
+        form.builder_buttons = bottom_bar  # for tests
 
         table = None
 
@@ -4122,8 +4628,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             ttk.Label(table_box, text="No Parameters Yet: Add Parameter... Adds Columns").pack(anchor="w")
             edit_buttons = self._build_schedule_edit_buttons(form, schedule, lambda: table, reopen)
             # Laid out first, at the bottom: when the window is short, the space above gives way.
-            ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(
-                side="bottom", pady=(8, 10), before=table_box)
+            bottom_bar.pack(side="bottom", fill="x", padx=12, pady=(8, 10), before=table_box)
             edit_buttons.pack(side="bottom", fill="x", padx=12, before=table_box)
             self._fit_window(form, edit_buttons, geometry, margin=24)
             return
@@ -4201,6 +4706,49 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             )
             table.set_hidden_names(schedule.hidden_field_names)
 
+        def parameter_changed(field):
+            # A Default Header or Default Column Width edit redraws in place; a rename changes the
+            # column names, so the columns are set again (selection follows the new name).
+            if field == "header_text":
+                table.set_header_texts(header_texts())
+                table.set_rows(rows_builder())
+            elif field == "grid_column_width":
+                refresh_widths()
+            else:
+                old = parameter_names[:]
+                new = self._get_schedule_parameter_names(schedule)
+                renamed = dict(zip(old, new)) if len(old) == len(new) else {}
+                refresh_columns([renamed.get(name, name) for name in table.get_selected_parameter_names()])
+
+        def rename_header_group(group):
+            # One click on a header group's caption edits it in place; Enter or clicking away keeps it.
+            if group.get("section_guid"):
+                section = self.catalog.get_section_by_guid(group["section_guid"])
+                messagebox.showinfo(
+                    "Section Header Group",
+                    "Header group '{}' comes from section '{}'; rename it there.".format(
+                        group["caption"], section.name if section is not None else "a section"),
+                    parent=form,
+                )
+                return
+            bbox = table.group_bbox(group)
+            if bbox is None:
+                return
+            names = list(group["parameter_names"])
+
+            def commit(text):
+                caption = text.strip()
+                if not caption or caption == group["caption"]:
+                    return
+                try:
+                    self._rename_schedule_header_group(selected_name, names, caption)
+                except ValueError as exc:
+                    messagebox.showwarning("Cannot Rename Header Group", str(exc), parent=form)
+                    return
+                table.set_groups(schedule.header_groups)
+
+            table.start_cell_edit(-1, -1, group["caption"], commit, placeholder="Group Name", bbox=bbox)
+
         rows_builder = lambda: self._schedule_table_rows(schedule)  # noqa: E731 - rebuilt after each edit
         table = self._build_override_table(
             table_box,
@@ -4209,16 +4757,15 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             header_texts=header_texts(),
             groups=schedule.header_groups,
             on_header_double_click=edit_schedule_header,
+            on_group_click=rename_header_group,
             hidden_names=schedule.hidden_field_names,
             on_hidden_toggle=toggle_hidden,
             width_cells=self._schedule_width_cells(schedule, parameter_names),
             on_width_click=lambda column_index: self._edit_schedule_width(table, schedule, column_index, refresh_widths),
-            on_width_drag=lambda column_index, inches: self._drag_schedule_width(
-                schedule, parameter_names[column_index], inches, refresh_widths),
             edit_on_click=True,
             on_cell_double_click=lambda row_index, column_index: self._edit_table_cell(
                 table, rows_builder, selected_name, row_index, column_index,
-                on_columns_changed=lambda: reopen(table.get_selected_parameter_names()),
+                on_columns_changed=parameter_changed,
             ),
             on_cell_action=lambda row_index, column_index: self._add_parameter_from_table(
                 table, rows_builder, row_index, column_index
@@ -4238,13 +4785,13 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             table.xview_moveto(view.get("xview", 0))
             table.yview_moveto(view.get("yview", 0))
 
-        # Close and the column and family buttons are laid out first, at the bottom, so a short
-        # window shrinks the table rather than hiding them.
-        ttk.Button(form, text="Close", command=form.destroy, style="Action.TButton").pack(
-            side="bottom", pady=(8, 10), before=table_box)
+        # Apply, Close and the column and family buttons are laid out first, at the bottom, so a
+        # short window shrinks the table rather than hiding them.
+        bottom_bar.pack(side="bottom", fill="x", padx=12, pady=(8, 10), before=table_box)
         group_controls = ttk.Frame(form)
         group_controls.pack(side="bottom", fill="x", padx=12, before=table_box)
-        self._build_schedule_edit_buttons(group_controls, schedule, lambda: table, reopen).pack(side="left")
+        edit_buttons = self._build_schedule_edit_buttons(group_controls, schedule, lambda: table, refresh_columns)
+        edit_buttons.pack(side="left")
 
         def begin_header_group():
             selected_parameters = table.get_selected_parameter_names()
@@ -4341,6 +4888,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         self._append_message(f"Saved readable database CSV to {output_paths['csv']}")
         self._generate_rfps_file()
         self._generate_shared_parameter_file()
+        self._generate_schedule_data_file()
         # Last: the macro module's build is the slow part (in the background with a window).
         self._generate_revit_schedule_macro_file()
         return True
@@ -4575,6 +5123,10 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
 def main():
     root = tk.Tk()
     app = DDMGUI(root)
+    # So the Revit add-in's Design Data Manager button can open the app, or see it's already open.
+    app._record_for_revit_addin(app_command=DDMGUI._app_command(), app_pid=os.getpid())
+    # Opened from Revit (or Revit asked while it was open): review the changes made there.
+    app.start_revit_review_watch()
     root.mainloop()
 
 

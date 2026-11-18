@@ -38,6 +38,18 @@ def build(master_database, console=False):
     conda_bin = Path(sys.base_prefix) / "Library" / "bin"
     if conda_bin.is_dir():
         os.environ["PATH"] = f"{conda_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    # The Revit add-in, built for each Revit here, goes in too, so users can install it without the
+    # .NET SDK; and the C# the schedule macro is made from.
+    from revit_addin import AddinError, build_addin, built_years, installed_revit_years
+
+    addin_builds = PROJECT_ROOT / "dist" / "revit-addin"
+    for year in installed_revit_years():
+        try:
+            build_addin(year, addin_builds)
+        except AddinError as exc:
+            raise SystemExit(str(exc)) from exc
+    if not built_years(addin_builds):
+        print("No Revit 2025 or later here: the .exe won't be able to install the Revit add-in.")
     with tempfile.TemporaryDirectory(prefix="ddm-build-") as work:
         work = Path(work)
         staged = work / "master.ddm.json"
@@ -50,6 +62,8 @@ def build(master_database, console=False):
             "--noconfirm",
             "--clean",
             "--add-data", f"{staged};.",
+            "--add-data", f"{PROJECT_ROOT / 'revit-addin' / 'Shared'};revit-addin/Shared",
+            *(["--add-data", f"{addin_builds};revit-addin-build"] if built_years(addin_builds) else []),
             "--hidden-import", "openpyxl",
             "--exclude-module", "pytest",
             "--workpath", str(work / "build"),

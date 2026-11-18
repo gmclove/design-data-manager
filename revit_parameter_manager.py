@@ -464,6 +464,19 @@ COMMON_PARAMS = (
 	Param('IPS_GROUP_Schedule_Name', 'Text', instance_param=True),
 )
 COMMON_PARAM_NAMES = frozenset(param.name for param in COMMON_PARAMS)
+
+# --- Linker ID: one primary element holds the design data; its copies share its tag values ------
+
+# The parameter that links a primary (the main 2D detail item) to its tag-only copies: other
+# diagrams' detail items and the 3D model element. Text, so it survives delete and recreate.
+LINKER_PARAMETER = 'IPS_LINKER_ID'
+LINKER_PRIMARY = 'primary'
+LINKER_LINKED = 'linked'
+LINKER_ROLES = (LINKER_PRIMARY, LINKER_LINKED)
+# Only this category holds design data; other categories' linker families are linked copies.
+LINKER_PRIMARY_CATEGORY = 'Detail Item'
+# The prefix when a family has neither a Category 2 nor a Category 1 code.
+LINKER_DEFAULT_PREFIX = 'ITEM'
 # Revit's own family parameters that formulas may use (Length: line-based families).
 REVIT_BUILTIN_PARAM_NAMES = frozenset({'Length'})
 # Revit schedules list the elements whose value of this parameter matches the schedule's filter.
@@ -472,8 +485,11 @@ SCHEDULE_FILTER_PARAM = 'IPS_GROUP_Schedule_Name'
 
 class Fam(object):
 	def __init__(self, name=None, client=None, country=None, description=None,
-				 category=None, params=None, overrides=None, catalog=None, category_1=None, category_2=None):
+				 category=None, params=None, overrides=None, catalog=None, category_1=None, category_2=None,
+				 linker_role=None):
 		self._name = name
+		# The Linker role set by hand ('primary' or 'linked'); None works it out (Catalog.linker_family).
+		self.linker_role = linker_role if linker_role in LINKER_ROLES else None
 		self.client = client
 		self.country = country
 		self.category_1 = category_1
@@ -700,6 +716,7 @@ class Fam(object):
 			'param_names': [param.name for param in self.custom_params if param.catalog is not None],
 			'custom_params': [param.to_dict() for param in self.custom_params if param.catalog is None],
 			'overrides': {name: dict(overrides) for name, overrides in self.overrides.items()},
+			**({'linker_role': self.linker_role} if self.linker_role else {}),
 		}
 
 	@classmethod
@@ -721,6 +738,7 @@ class Fam(object):
 			params=params,
 			overrides=data.get('overrides', {}),
 			catalog=catalog,
+			linker_role=data.get('linker_role'),
 		)
 
 	def _find_param(self, param_name):
@@ -1010,8 +1028,10 @@ class ScheduleSection(object):
 	"""
 
 	def __init__(self, name, members=(), caption=None, hidden_parameter_names=(), guid=None, catalog=None,
-				 header_groups=()):
+				 header_groups=(), linker_tag_set=False):
 		self.catalog = None
+		# Its parameters are tag values: Revit copies them from a primary to its linked elements.
+		self.linker_tag_set = bool(linker_tag_set)
 		self.guid = _clean_optional(guid) or str(uuid.uuid4())
 		self._name = None
 		self.name = name
@@ -1147,6 +1167,7 @@ class ScheduleSection(object):
 		fields = dict(
 			name=self.name, members=self.members, caption=self.caption,
 			hidden_parameter_names=self.own_hidden, guid=self.guid, header_groups=self.header_groups,
+			linker_tag_set=self.linker_tag_set,
 		)
 		fields.update(changes)
 		proposed = ScheduleSection(**fields)
@@ -1166,6 +1187,7 @@ class ScheduleSection(object):
 				{'caption': group['caption'], 'parameter_names': list(group['parameter_names'])}
 				for group in self.header_groups
 			],
+			'linker_tag_set': self.linker_tag_set,
 		}
 
 	@classmethod
@@ -1178,6 +1200,7 @@ class ScheduleSection(object):
 			guid=data.get('guid'),
 			catalog=catalog,
 			header_groups=data.get('header_groups', []),
+			linker_tag_set=bool(data.get('linker_tag_set', False)),
 		)
 
 
@@ -1207,6 +1230,83 @@ class SectionChange(object):
 		)
 
 
+def linker_role_text(info):
+	"""The Families tab's Linker Role: "Primary (AHU)", "Linked", "Linked (Set)" (chosen by hand,
+	not worked out) or blank."""
+	if not info:
+		return ''
+	text = 'Primary ({})'.format(info['prefix']) if info['role'] == LINKER_PRIMARY else 'Linked'
+	return text + ' (Set)' if info.get('set') else text
+
+
+# --- Sorting/Grouping: Revit's ScheduleSortGroupField and the definition's grand totals ---------
+
+# Revit's Sort by and three Then by levels.
+MAX_SORT_GROUP_FIELDS = 4
+# The Footer and Grand totals choices, as Revit words them: (show the title, show the count).
+TOTALS_OPTIONS = {
+	'Title, count, and totals': (True, True),
+	'Title and totals': (True, False),
+	'Count and totals': (False, True),
+	'Totals only': (False, False),
+}
+DEFAULT_GRAND_TOTAL_TITLE = 'Grand total'
+
+
+def totals_option(show_title, show_count):
+	"""The Footer or Grand totals choice for the title and count flags."""
+	return next(label for label, flags in TOTALS_OPTIONS.items() if flags == (bool(show_title), bool(show_count)))
+
+
+def sort_group_field(parameter, descending=False, show_header=False, show_footer=False,
+					 show_footer_title=True, show_footer_count=True, show_blank_line=False):
+	"""One Sort by / Then by level, as Revit's ``ScheduleSortGroupField`` holds it."""
+	parameter = _clean_optional(parameter)
+	if parameter is None:
+		raise ValueError('A sort level needs a column to sort by.')
+	return {
+		'parameter': parameter,
+		'descending': bool(descending),
+		'show_header': bool(show_header),
+		'show_footer': bool(show_footer),
+		# Without a footer, its title and count don't apply: kept at Revit's default, so levels that
+		# look the same in Revit compare the same (the add-in's DdmSortLevel does the same).
+		'show_footer_title': not show_footer or bool(show_footer_title),
+		'show_footer_count': not show_footer or bool(show_footer_count),
+		'show_blank_line': bool(show_blank_line),
+	}
+
+
+def normalized_sorting(data):
+	"""Sorting settings (``Schedule.sorting_dict``'s shape, maybe partial or from Revit) with the
+	same defaults and rules as a schedule applies, so two can be compared."""
+	data = data or {}
+	show = bool(data.get('show_grand_total', False))
+	show_title = not show or bool(data.get('show_grand_total_title', True))
+	title = _clean_optional(data.get('grand_total_title'))
+	return {
+		'sort_group_fields': [sort_group_field(**field) for field in data.get('sort_group_fields') or []],
+		'show_grand_total': show,
+		'show_grand_total_title': show_title,
+		'show_grand_total_count': not show or bool(data.get('show_grand_total_count', True)),
+		'grand_total_title': title if title and show and show_title else DEFAULT_GRAND_TOTAL_TITLE,
+	}
+
+
+def sorting_summary(data):
+	"""Sorting settings in a line: "Sort by A, Then by B (Descending); Grand Totals"."""
+	data = normalized_sorting(data)
+	levels = [
+		'{} {}{}'.format('Sort by' if index == 0 else 'Then by', field['parameter'],
+						 ' (Descending)' if field['descending'] else '')
+		for index, field in enumerate(data['sort_group_fields'])
+	]
+	parts = [', '.join(levels) if levels else 'Not Sorted']
+	if data['show_grand_total']:
+		parts.append('Grand Totals')
+	return '; '.join(parts)
+
+
 class Schedule(object):
 	"""Families scheduled together.
 
@@ -1222,7 +1322,9 @@ class Schedule(object):
 	def __init__(self, name=None, fams=None, header_text_overrides=None,
 				 header_groups=None, grid_column_width_overrides=None, catalog=None,
 				 field_names=None, family_overrides=None, hidden_field_names=None,
-				 filter_value=None, itemize=True, view_template=None, guid=None, section_uses=None):
+				 filter_value=None, itemize=True, view_template=None, guid=None, section_uses=None,
+				 sort_group_fields=None, show_grand_total=False, show_grand_total_title=True,
+				 show_grand_total_count=True, grand_total_title=None):
 		self._name = None
 		self.catalog = None
 		# Sections this schedule links to: [{'section_guid', 'excluded': [parameters left out here]}].
@@ -1253,6 +1355,15 @@ class Schedule(object):
 		self.filter_value = _clean_optional(filter_value)
 		# Revit's "Itemize every instance".
 		self.itemize = bool(itemize)
+		# The rest of Revit's Sorting/Grouping tab: Sort by and Then by levels (``sort_group_field``
+		# dicts, on the schedule's columns) and the grand totals.
+		self.sort_group_fields = []
+		self.show_grand_total = False
+		self.show_grand_total_title = True
+		self.show_grand_total_count = True
+		self.grand_total_title = DEFAULT_GRAND_TOTAL_TITLE
+		self._set_sorting_values(sort_group_fields or [], show_grand_total, show_grand_total_title,
+								 show_grand_total_count, grand_total_title)
 		# Name of a Revit schedule view template to apply, if any.
 		self.view_template = _clean_optional(view_template)
 		self.status = 'Ready'
@@ -1313,6 +1424,7 @@ class Schedule(object):
 				group for group in self.header_groups if set(group['parameter_names']) <= kept
 			]
 			self.hidden_field_names &= kept
+			self.sort_group_fields = [field for field in self.sort_group_fields if field['parameter'] in kept]
 		self.refresh_params()
 		self._sync_section_uses()
 		self.validate()
@@ -1341,6 +1453,14 @@ class Schedule(object):
 			position = sum(1 for name in order[:order.index(first)] if name not in block)
 			order = others[:position] + block + others[position:]
 		self._check_section_blocks(order)
+		# Columns added inside a header group join it, as in Revit; a split group can't be loaded.
+		for group in self.header_groups:
+			names = group['parameter_names']
+			span = sorted(order.index(name) for name in names if name in order)
+			inside = [name for name in order[span[0]:span[-1] + 1] if name not in names] if span else []
+			if inside and set(inside) <= set(added):
+				names.extend(inside)
+				names.sort(key=order.index)
 		self.set_field_names(order)
 		self.hidden_field_names |= restored_hidden
 
@@ -1614,6 +1734,57 @@ class Schedule(object):
 		else:
 			self.hidden_field_names.discard(param_name)
 
+	# --- Sorting/Grouping ---------------------------------------------------------
+
+	def sortable_column_names(self):
+		"""Columns a level can sort by: every column, hidden ones too, but not combined parameters
+		(Revit can't sort or group by those)."""
+		return [param.name for param in self.params if not getattr(param, 'is_combined', False)]
+
+	def _set_sorting_values(self, fields, show_grand_total, show_grand_total_title, show_grand_total_count,
+							grand_total_title):
+		# Settings that don't apply stay at Revit's defaults (as the add-in's DdmSorting does).
+		data = normalized_sorting({
+			'sort_group_fields': list(fields), 'show_grand_total': show_grand_total,
+			'show_grand_total_title': show_grand_total_title, 'show_grand_total_count': show_grand_total_count,
+			'grand_total_title': grand_total_title,
+		})
+		if len(data['sort_group_fields']) > MAX_SORT_GROUP_FIELDS:
+			raise ValueError('Revit sorts by at most {} levels.'.format(MAX_SORT_GROUP_FIELDS))
+		self.sort_group_fields = data['sort_group_fields']
+		self.show_grand_total = data['show_grand_total']
+		self.show_grand_total_title = data['show_grand_total_title']
+		self.show_grand_total_count = data['show_grand_total_count']
+		self.grand_total_title = data['grand_total_title']
+
+	def set_sorting(self, sort_group_fields=(), show_grand_total=False, show_grand_total_title=True,
+					show_grand_total_count=True, grand_total_title=None, itemize=None):
+		"""Set the Sorting/Grouping tab: its levels sort by the schedule's own columns."""
+		sortable = set(self.sortable_column_names())
+		for field in sort_group_fields:
+			name = _clean_optional(field.get('parameter'))
+			if name is not None and name not in sortable:
+				raise ValueError("Can't sort by '{}': it isn't a column of schedule '{}' that Revit can sort by."
+								 .format(name, self.name))
+		self._set_sorting_values(sort_group_fields, show_grand_total, show_grand_total_title,
+								 show_grand_total_count, grand_total_title)
+		if itemize is not None:
+			self.itemize = bool(itemize)
+
+	def sorting_dict(self):
+		"""The Sorting/Grouping settings (but Itemize), as saved."""
+		return {
+			'sort_group_fields': [dict(field) for field in self.sort_group_fields],
+			'show_grand_total': self.show_grand_total,
+			'show_grand_total_title': self.show_grand_total_title,
+			'show_grand_total_count': self.show_grand_total_count,
+			'grand_total_title': self.grand_total_title,
+		}
+
+	def sorting_summary(self):
+		"""A line for the Schedule Settings box: "Sort by A, Then by B (Descending); Grand Totals; Itemized"."""
+		return '{}; {}'.format(sorting_summary(self.sorting_dict()), 'Itemized' if self.itemize else 'Not Itemized')
+
 	def family_param_names(self, fam):
 		"""The schedule's columns that ``fam`` has, in schedule order."""
 		names = [param.name for param in fam.params]
@@ -1711,6 +1882,12 @@ class Schedule(object):
 					issues.append("Override for '{}' on family '{}', which doesn't have it".format(
 						param_name, family_name))
 
+		sortable = set(self.sortable_column_names())
+		unsortable = [field['parameter'] for field in self.sort_group_fields if field['parameter'] not in sortable]
+		if unsortable:
+			issues.append('Sorts by {}, which {} a column it can sort by (edit Sorting/Grouping)'.format(
+				', '.join(unsortable), "isn't" if len(unsortable) == 1 else "aren't"))
+
 		if issues:
 			self.status = 'Error'
 			self.validation_message = '; '.join(issues)
@@ -1792,6 +1969,27 @@ class Schedule(object):
 		self.header_groups.append(group)
 		return dict(group)
 
+	def rename_header_group(self, parameter_names, caption):
+		"""Give the header group over exactly ``parameter_names`` a new caption and return it.
+
+		Raises ``ValueError`` for a blank caption, when no group spans exactly those headers, or
+		when the group comes from a section, which names its own header groups.
+		"""
+		clean_caption = '' if caption is None else str(caption).strip()
+		if not clean_caption:
+			raise ValueError('Header group caption is required.')
+		names = list(parameter_names)
+		group = next((group for group in self.header_groups if group['parameter_names'] == names), None)
+		if group is None:
+			raise ValueError('No header group spans exactly those headers.')
+		if group.get('section_guid'):
+			section = self.catalog.get_section_by_guid(group['section_guid']) if self.catalog is not None else None
+			name = section.name if section is not None else 'a section'
+			raise ValueError("Header group '{}' comes from section '{}'; change it there.".format(
+				group['caption'], name))
+		group['caption'] = clean_caption
+		return dict(group)
+
 	def remove_header_group(self, parameter_names):
 		"""Remove the innermost header group around ``parameter_names`` and return it.
 
@@ -1845,6 +2043,7 @@ class Schedule(object):
 			'hidden_field_names': [param.name for param in self.params if param.name in self.hidden_field_names],
 			'filter_value': self.filter_value,
 			'itemize': self.itemize,
+			**self.sorting_dict(),
 			'view_template': self.view_template,
 		})
 		if self.section_uses:
@@ -1880,6 +2079,11 @@ class Schedule(object):
 			itemize=data.get('itemize', True),
 			view_template=data.get('view_template'),
 			guid=data.get('guid'),
+			sort_group_fields=data.get('sort_group_fields', []),
+			show_grand_total=data.get('show_grand_total', False),
+			show_grand_total_title=data.get('show_grand_total_title', True),
+			show_grand_total_count=data.get('show_grand_total_count', True),
+			grand_total_title=data.get('grand_total_title'),
 		)
 
 	def override_param(self, param_name, **overrides):
@@ -1944,6 +2148,9 @@ class Schedule(object):
 			self.hidden_field_names.add(new_name)
 		for use in self.section_uses:
 			use['excluded'] = [new_name if name == old_name else name for name in use['excluded']]
+		for field in self.sort_group_fields:
+			if field['parameter'] == old_name:
+				field['parameter'] = new_name
 
 	def _param_removed(self, param_name):
 		if self.field_names is not None:
@@ -1955,6 +2162,8 @@ class Schedule(object):
 		self.header_text_overrides.pop(param_name, None)
 		self.grid_column_width_overrides.pop(param_name, None)
 		self.hidden_field_names.discard(param_name)
+		# A level can't sort by a column the schedule no longer has.
+		self.sort_group_fields = [field for field in self.sort_group_fields if field['parameter'] != param_name]
 		self.refresh_params()
 		self._sync_section_uses()
 
@@ -2017,7 +2226,7 @@ class Catalog(object):
 		names = self.param_names() | COMMON_PARAM_NAMES | REVIT_BUILTIN_PARAM_NAMES
 		for fam in self.families:
 			names.update(param.name for param in fam.params)
-		return names
+		return frozenset(names)  # hashable: formula tokenizing is cached by it
 
 	def formula_issues(self, formula, param_name=None, families=()):
 		"""Why ``formula`` can't be the formula of parameter ``param_name``; empty when it can.
@@ -2112,6 +2321,59 @@ class Catalog(object):
 		"""Every section with ``section`` inside it, at any depth."""
 		return [other for other in self.sections if section.guid in other.included_guids()]
 
+	def linker_tag_parameter_names(self):
+		"""Every parameter in a section marked Linker Tag Set, in section order."""
+		names = []
+		for section in self.sections:
+			if section.linker_tag_set:
+				names.extend(name for name in section.parameter_names if name not in names)
+		return names
+
+	def linker_family(self, fam, tag_names=None):
+		"""How ``fam`` takes part in linking, or ``None`` when it has no Linker ID parameter:
+		``{'role', 'prefix', 'tag_parameters', 'set'}``.
+
+		The primary, which holds an item's design data, is a Detail Item family with parameters beyond
+		its tag values, the Linker ID and the common parameters. Every other linker family (the 3D
+		model element, a tag-only copy on another diagram) is linked. ``fam.linker_role`` overrides
+		this for exceptions, such as the generic boxes on utility distribution diagrams, which are
+		Detail Items that link to an item's primary; ``set`` says it did.
+		"""
+		names = [param.name for param in fam.params]
+		if LINKER_PARAMETER not in names:
+			return None
+		if tag_names is None:
+			tag_names = self.linker_tag_parameter_names()
+		tags = [name for name in tag_names if name in names]
+		# Every family has the common parameters (schedule name, IPS_GROUP flags); they aren't design data.
+		others = [
+			name for name in names
+			if name != LINKER_PARAMETER and name not in tags and name not in COMMON_PARAM_NAMES
+		]
+		if fam.linker_role in LINKER_ROLES:
+			role = fam.linker_role
+		elif fam.category == LINKER_PRIMARY_CATEGORY and others:
+			role = LINKER_PRIMARY
+		else:
+			role = LINKER_LINKED
+		prefix = (fam.category_2_code or fam.category_1_code or LINKER_DEFAULT_PREFIX).strip().upper()
+		return {
+			'role': role,
+			'prefix': prefix or LINKER_DEFAULT_PREFIX,
+			'tag_parameters': tags,
+			'set': fam.linker_role in LINKER_ROLES,
+		}
+
+	def linker_families(self):
+		"""``{family name: linker_family(...)}`` for every family with the Linker ID parameter."""
+		tag_names = self.linker_tag_parameter_names()
+		found = {}
+		for fam in self.families:
+			info = self.linker_family(fam, tag_names)
+			if info is not None:
+				found[fam.name] = info
+		return found
+
 	def schedules_using(self, section):
 		"""The schedules that use ``section``, directly or through a section that includes it."""
 		return [schedule for schedule in self.schedules if schedule.sections_through(section)]
@@ -2170,6 +2432,7 @@ class Catalog(object):
 		section.members = [dict(member) if isinstance(member, dict) else member for member in proposed.members]
 		section.own_hidden = set(proposed.own_hidden)
 		section.header_groups = [dict(group, parameter_names=list(group['parameter_names'])) for group in proposed.header_groups]
+		section.linker_tag_set = proposed.linker_tag_set
 		for change in changes:
 			change.schedule.apply_section_change(change, (clear_headers or {}).get(change.schedule.name, ()))
 

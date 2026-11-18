@@ -8,6 +8,7 @@ identifier-like text is left over becomes a NAME token (an unknown reference).
 
 import re
 from collections import namedtuple
+from functools import lru_cache
 
 FORMULA_FUNCTIONS = frozenset({
 	'ABS', 'ACOS', 'AND', 'ASIN', 'ATAN', 'CEILING', 'COS', 'EXP',
@@ -42,13 +43,23 @@ def _is_word_char(char):
 	return char.isalnum() or char == '_'
 
 
-def _match_known_name(formula, position, names):
+@lru_cache(maxsize=16)
+def _name_index(names):
+	"""``(names, lengths)``: the names (a frozenset) and their distinct lengths, longest first."""
+	return names, tuple(sorted({len(name) for name in names}, reverse=True))
+
+
+def _match_known_name(formula, position, index):
+	"""The longest known name at ``position``, on identifier boundaries; else ``None``."""
 	if position > 0 and _is_word_char(formula[position - 1]):
 		return None
-	for name in names:
-		end = position + len(name)
-		if formula.startswith(name, position) and (end == len(formula) or not _is_word_char(formula[end])):
-			return name
+	names, lengths = index
+	for size in lengths:
+		end = position + size
+		if end > len(formula):
+			continue
+		if formula[position:end] in names and (end == len(formula) or not _is_word_char(formula[end])):
+			return formula[position:end]
 	return None
 
 
@@ -56,8 +67,14 @@ def tokenize(formula, known_names=()):
 	"""Split a formula into tokens. Known parameter names become PARAM tokens."""
 	if not formula:
 		return []
+	names = known_names if isinstance(known_names, frozenset) else frozenset(known_names)
+	return list(_tokenize(formula, names))
 
-	names = sorted({name for name in known_names if name}, key=len, reverse=True)
+
+@lru_cache(maxsize=4096)
+def _tokenize(formula, known_names):
+	# Cached: validation tokenizes the same formulas with the same names many times over.
+	index = _name_index(frozenset(name for name in known_names if name))
 	tokens = []
 	position = 0
 	length = len(formula)
@@ -83,7 +100,7 @@ def tokenize(formula, known_names=()):
 			position = close + 1
 			continue
 
-		name = _match_known_name(formula, position, names)
+		name = _match_known_name(formula, position, index)
 		if name is not None:
 			tokens.append(Token(PARAM, name, position, position + len(name)))
 			position += len(name)
@@ -103,7 +120,7 @@ def tokenize(formula, known_names=()):
 			tokens.append(Token(kind, char, position, position + 1))
 			position += 1
 
-	return tokens
+	return tuple(tokens)
 
 
 def check_syntax(tokens):

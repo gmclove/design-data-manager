@@ -259,9 +259,16 @@ VALID_DTYPE_API_NAMES = set(REVIT_DTYPE_TABLE["Revit API Name"].tolist())
 VALID_DTYPE_VALUES = VALID_DTYPE_NAMES | VALID_DTYPE_API_NAMES
 
 
+# Each data type's row, by its name and by its Revit API name; the first row wins, as in the table.
+# A dict: this is looked up for every parameter copy, and a pandas filter each time was slow.
+_DTYPE_ROWS = {}
+for _index, _row in REVIT_DTYPE_TABLE.iterrows():
+    _DTYPE_ROWS.setdefault(_row["Data Types"], _row)
+    _DTYPE_ROWS.setdefault(_row["Revit API Name"], _row)
+
+
 def get_dtype_row(dtype):
-    row = REVIT_DTYPE_TABLE[
-        (REVIT_DTYPE_TABLE["Data Types"] == dtype)
-        | (REVIT_DTYPE_TABLE["Revit API Name"] == dtype)
-    ]
-    return row.iloc[0] if not row.empty else None
+    try:
+        return _DTYPE_ROWS.get(dtype)
+    except TypeError:  # unhashable: not a data type
+        return None

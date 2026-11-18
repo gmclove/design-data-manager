@@ -158,7 +158,8 @@ Left**, **Move Right ▶**, **Add Family...** and **Remove Family**:
 - **Group Selected Headers** (above the table, in the Header Groups row) puts a header group over the
   selected columns. **Ungroup Selected
   Headers** removes the innermost group around them; a group that comes from a section is changed
-  in that section instead.
+  in that section instead. To rename a group, click its name once and type over it: Enter or clicking
+  away keeps the new name, Escape cancels.
 - **Add Family...** does the same for families not yet in the schedule. Each linked family is a
   row in the table.
 - **Remove Parameter** and **Remove Family** act on the selection and ask first. A removed column
@@ -187,6 +188,96 @@ Your own Revit schedules show how wide each column really needs to be. To take t
 4. Check **Accept** on the ones to take (or **Select All**; **Show Unchanged** lists the ones that
    already match), then **Accept Selected** and **Save**. Schedules without their own width follow the
    new default; a schedule's own width equal to it is cleared; other schedule widths stay.
+
+## Revit Add-in (In Progress, Branch `revit-addin`)
+
+The add-in puts a **Design Data** tab on Revit's ribbon, so schedules are built without a macro
+module, the .NET SDK or the Macro Manager:
+
+- **Build Schedules:** does what the `CreateSchedulesFromDatabase` macro does, from the schedules
+  file Save writes next to the database (`<database>.schedules.json`). It finds the file from the
+  last Save; if there isn't one, it asks for it and remembers it. It uses the macro's record of which
+  Revit schedule is which, so it updates schedules the macro already made.
+- **Design Data Manager:** sends this project's schedules to the app and opens it (or brings it forward)
+  on **Review Revit Changes**: the changes made in Revit since the last sync, to accept into the database.
+  The app has to have been opened once, so Revit knows where it is.
+
+**Two-way sync.** Each project remembers, per schedule, what was last synced (built from the database, or
+taken back from Revit). So every change knows which side made it:
+
+- **Changed in Revit:** listed in Review Revit Changes; check **Accept**, then Save.
+- **Changed in the database:** after a Save in the app, Revit asks *Database saved: N schedules changed*:
+  **Apply** updates them now, **Review** picks which, **Later** asks again when a project is next opened
+  or switched to. Nothing changes in the model without a click.
+- **Changed on both sides:** the review says so (accept to take Revit's, leave it to keep the database's);
+  Revit leaves those schedules alone until they're reviewed.
+- Accepting a Revit change and saving needs nothing more in Revit: the database now matches it, and the
+  add-in just records that as the last sync.
+
+Schedules built before this (no last sync yet) get a plain side-by-side comparison until they're next built.
+
+**Installing:** click **Install Revit Add-in...** in the app. It installs the add-in for each Revit
+2025 or later on the computer, for you only, in `%APPDATA%\Autodesk\Revit\Addins\<year>`. Then
+start Revit. Close Revit first when reinstalling.
+
+**Building it (developers):** `.conda\python.exe build_addin.py` builds it against each installed
+Revit, 2025 or later, into `dist\revit-addin\<year>`; `build_exe.py` does this too and bundles
+the builds into the `.exe`. It needs the .NET SDK and that Revit installed. The code is in
+`revit-addin/`: `Shared/` holds the schedule routine and the schedules file reader, which the
+generated macro also uses (copied into it), so the add-in and the macro stay the same.
+
+## Linker ID
+
+One item, such as AHU-1, is often drawn several times: on the airflow diagram, on a flow diagram, and
+in the 3D model. Only one of them holds the item's design data. The others show its tag, so their
+tag values must match it. `IPS_LINKER_ID` ties them together.
+
+- **Primary and linked elements:**
+  - The **primary** is the main 2D detail item. It holds the design data, and only it shows in data
+    schedules.
+  - **Linked** elements show the same item elsewhere: on another diagram, or the 3D model element.
+- **How a family's role is worked out:** this applies to families that have `IPS_LINKER_ID`.
+  - **Primary:** a **Detail Item** family with design data, meaning parameters beyond its tag values,
+    `IPS_LINKER_ID` and the common parameters (`IPS_GROUP_...`).
+  - **Linked:** any other family, such as a 3D model family or a tag-only 2D copy.
+- **Linker Role column:** the Families tab shows each family's role, for example **Primary (AHU)** or
+  **Linked**. Click a cell to choose **Auto**, **Primary** or **Linked**.
+  - **Auto** works the role out.
+  - **Primary** or **Linked** sets it by hand, and the column then shows **(Set)**. Use this for
+    exceptions: the generic boxes on utility distribution diagrams (`IPS-US_EQUIP_PFD Distribution -
+    ..._2D`) are Detail Items with their own flow data, but they link to the item's primary, so set
+    them to **Linked**.
+- **Tag values:** these are the parameters in sections ticked **Linker Tag Set**, in the section window.
+  - For equipment, tick **Equipment Tag**.
+  - For spaces, make a **Space Tag** section, for example with `IPS_SPACE_Name`, `IPS_SPACE_Number`
+    and `IPS_LEVEL_Number`, and tick it.
+  - A linked element copies the tag values its own family has. All other design data stays on the
+    primary.
+- **The ID:**
+  - **Format:** a prefix and a number, such as `AHU-0001`, `VALVE-0012` or `SPACE-0004`. The prefix is
+    the primary family's Category 2 code, or its Category 1 code when it has none.
+  - **Numbering:** the add-in gives the next free number for that prefix in the project.
+  - **Stability:** once set, the ID never changes, even when the tag or the family does. The ID is
+    readable and sorts in schedules before the item is tagged.
+  - **Type:** single-line Text. Multi-line Text works poorly in tags and schedules, and an unseen line
+    break would stop two IDs matching.
+- **Why not the Revit element ID:** Revit gives a deleted and recreated element a new element ID. The
+  Linker ID lets you link the new element to its primary yourself.
+- **In Revit,** the **Linker** panel on the Design Data tab has three buttons. Each change is one undo
+  step.
+  - **Assign IDs:** gives every primary without an ID its next one. It also finds primaries that share
+    an ID, usually after a copy and paste. It offers to keep the ID on the oldest and renumber the
+    others.
+  - **Link Elements:** pick the primary, then the elements to link, such as a new or recreated 3D
+    element or a copy on another diagram. You can also select them first. They get the primary's ID
+    and tag values; the primary gets an ID first if it has none.
+  - **Sync Linked Elements:** copies each primary's tag values to its linked elements. It also lists
+    linked elements whose primary can't be found, and offers to select them.
+- **When a project opens,** Revit asks **Sync Now** or **Later** if any linked elements are out of
+  date, or if any primaries have no ID yet.
+- **What the add-in never does:** it never adds parameters to the project. A family without
+  `IPS_LINKER_ID` isn't linked. The add-in names any family that has the parameter but isn't in the
+  database.
 
 ## Revit Schedule Macro
 
@@ -260,7 +351,19 @@ Each schedule in the database becomes three Revit schedules:
   - **Schedule Filter:** the `IPS_GROUP_Schedule_Name` value. It defaults to the schedule's
     name and overrides that parameter for every family in the schedule. Each Revit schedule
     lists only the elements with that value; the filter column itself is hidden.
-  - **Itemize Every Instance:** on by default. It sets Revit's option of the same name.
+  - **Sorting/Grouping...:** opens a window laid out and worded like Revit's Sorting/Grouping tab;
+    a summary next to the button shows what's set.
+    - **Sort by and three Then by levels:** each picks a column of the schedule (hidden columns too;
+      not combined parameters, which Revit can't sort by), Ascending or Descending, and Header,
+      Footer (Title, count, and totals; Title and totals; Count and totals; or Totals only) and
+      Blank line. A level is available once the one above it sorts by something; setting a level
+      to (none) drops the levels below it.
+    - **Grand totals:** with the same choices, and a custom grand total title.
+    - **Itemize every instance:** on by default.
+    - **In Revit:** all three Revit schedules get these settings. A level whose column Revit can't
+      schedule is left out and listed as a problem. Removing or renaming a column updates its level.
+    - **Review Revit Changes:** sorting changed in Revit shows as a Sorting/Grouping row; accepting
+      it takes Revit's settings.
   - **View Template:** the name of a schedule view template in the Revit project. It's applied
     to all three schedules after they're built. If the template controls fields or filters, its
     settings win. A name the project doesn't have is listed as a problem.
@@ -347,8 +450,15 @@ It's only a column: no family holds it, it isn't in the shared parameter file, a
 
 ## Formula Builder
 
-Clicking a formula anywhere (the Default Formula column on the Parameters tab, or a Default
-Formula row in a schedule or family window) opens the **Formula Builder**:
+Clicking (or double-clicking) a formula anywhere (the Default Formula column on the Parameters
+tab, or a Default Formula row in a schedule or family window) opens the **Formula Builder**.
+
+Where a formula is in use, the Default Value shows **Formula in Use** and can't be edited, as in
+Revit, where a formula sets the value. In the schedule and family windows it's grayed out. On the
+Parameters tab only the text changes, because that table can't gray out a single cell. In Apply to
+All Families it shows only when every family uses a formula. Clear the formula to enter a value again.
+
+The Formula Builder:
 
 - Type the formula, or double-click a parameter or function to insert it at the cursor. The
   operator buttons insert `+ - * / ^ = < > & ( ) ,` and **"Text"** a pair of quotation marks.
@@ -460,9 +570,7 @@ Value, and a Family Default Value beats the Parameter Default Value. If you clea
   schedule, an **Add Parameter to Family** button adds the missing parameter to the family, and
   **Add All Parameters** under the family's name adds every column it's missing at once.
 - **Column Width (in)** (Schedule Builder, Schedule section): this column's width in this schedule
-  only. It's gray while it's the parameter's; clear it to go back to that. You can also **drag a
-  column's right edge** in the header rows: the columns are drawn at their true width, the width snaps
-  to 1/16" (at least 1/4"), and dragging back to the parameter's width clears the schedule's own.
+  only. Click it and type a width. It's gray while it's the parameter's; clear it to go back to that.
 - **Default Column Width (in)** (Schedule Builder, Parameter section): the parameter's own width, used
   by every schedule that doesn't set its own.
 - **Default Header** (schedule window, Parameter section): the parameter's own header text, which
@@ -475,6 +583,20 @@ Value, and a Family Default Value beats the Parameter Default Value. If you clea
 
 To edit a cell, click it in the schedule window (double-click it in the family window) and type.
 Enter or clicking away saves, Tab moves to the next cell, and Escape cancels.
+
+**Apply, Discard Changes and Close** (Schedule Builder, bottom):
+- **Edits show at once in the Builder,** and the values you type are checked as you enter them (a bad
+  width, a taken name, a formula that isn't valid). The check of the whole database and the main tabs
+  and messages wait until you click **Apply**; "Unapplied Changes" shows until you do. This keeps the
+  Builder quick.
+- **Discard Changes** puts the database back as it was when the Builder opened, or as of the last Apply,
+  and reopens the Builder.
+- **Close** with unapplied changes asks Apply, Discard Changes or Keep Editing.
+- **Status and Validation** at the top of the Builder show the result of the last Apply.
+- **Changes redraw the table in place:** editing a Default Header or Default Column Width, renaming a
+  parameter, and adding, removing or moving columns and families. The window stays, with its scroll
+  position and selected columns. Only renaming the schedule, Discard Changes, and adding the first column
+  to an empty schedule rebuild the window (keeping its place and your unapplied changes).
 
 **Apply to All Families rows:** in a schedule, these rows are a shortcut, not another level. They set
 every family in the schedule that has that column:

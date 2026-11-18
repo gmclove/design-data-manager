@@ -11,3 +11,7 @@ __pycache__/
 !/data/test_data/**
 /build/
 /dist/
+/revit-addin/**/bin/
+/revit-addin/**/obj/
+/revit-addin/bin/
+/revit-addin/obj/

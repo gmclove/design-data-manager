@@ -123,7 +123,7 @@ class SectionWindows:
             section = self.catalog.add_section(
                 proposed.name, proposed.members, caption=proposed.caption,
                 hidden_parameter_names=proposed.own_hidden, guid=proposed.guid,
-                header_groups=proposed.header_groups,
+                header_groups=proposed.header_groups, linker_tag_set=proposed.linker_tag_set,
             )
         else:
             self.catalog.commit_section_update(section, proposed, kept, clear_headers)
@@ -176,6 +176,11 @@ class SectionWindows:
         ttk.Label(fields, text="Header Group Over All Columns:").pack(side="left", padx=(16, 6))
         ttk.Entry(fields, textvariable=caption_var, width=32).pack(side="left")
         caption_var.trace_add("write", lambda *_args: render_columns())
+        # Tag values: the Revit add-in copies them from a primary element to its linked copies.
+        linker_var = tk.BooleanVar(window, value=bool(section and section.linker_tag_set))
+        ttk.Checkbutton(
+            fields, text="Linker Tag Set (Copies From the Primary to Linked Elements)", variable=linker_var,
+        ).pack(side="left", padx=(16, 0))
 
         bottom = ttk.Frame(window)
         bottom.pack(side="bottom", fill="x", padx=12, pady=(6, 12))
@@ -494,6 +499,7 @@ class SectionWindows:
                 name=name_var.get(), members=list(members), caption=caption_var.get().strip() or None,
                 hidden_parameter_names=set(hidden),
                 header_groups=[dict(group, parameter_names=list(group["parameter_names"])) for group in own_groups],
+                linker_tag_set=linker_var.get(),
             )
             if section is not None:
                 return section.edited(**changes)
@@ -545,6 +551,7 @@ class SectionWindows:
 
         # For tests.
         window.name_var, window.caption_var = name_var, caption_var
+        window.linker_var = linker_var
         window.names, window.hidden = members, hidden
         window.schedule_vars = schedule_vars
         window.only_existing_var = only_existing_var
