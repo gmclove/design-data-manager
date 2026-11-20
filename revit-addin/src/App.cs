@@ -11,6 +11,11 @@ namespace DesignDataManager.Revit
     {
         public const string TabName = "Design Data";
 
+        // The Linker panel and its check on open: on for dev, off for releases (main) until it's tried
+        // in Revit. The app's switch is FEATURES["linker"] in config/app_paths.py. (Not const: the
+        // build treats the unreachable code a const would make as an error.)
+        private static readonly bool LinkerEnabled = true;
+
         // Notices saves in the app and offers them to the open project.
         private SyncWatcher? _sync;
         // Offers to sync linked elements when a project opens.
@@ -47,7 +52,15 @@ namespace DesignDataManager.Revit
             });
             _sync = new SyncWatcher();
             _sync.Start(application);
+            if (LinkerEnabled)
+            {
+                AddLinker(application, assembly);
+            }
+            return Result.Succeeded;
+        }
 
+        private void AddLinker(UIControlledApplication application, string assembly)
+        {
             // Linker ID: link each item's primary (the 2D detail item with the design data) to the
             // elements showing it elsewhere, which share its tag values.
             RibbonPanel linker = application.CreateRibbonPanel(TabName, "Linker");
@@ -81,7 +94,6 @@ namespace DesignDataManager.Revit
             });
             _linker = new LinkerWatcher();
             _linker.Start(application);
-            return Result.Succeeded;
         }
 
         public Result OnShutdown(UIControlledApplication application)

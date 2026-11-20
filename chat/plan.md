@@ -63,6 +63,21 @@ database describes. The macro lives in the Revit 2025 application module `GLoveM
 - [x] Remove parameters, families and schedules from the GUI (Delete buttons on the main tabs, 2026-11-09).
 - [ ] Add families from the GUI (schedules: Duplicate Schedule...).
 - [x] Override Formula and Group Under (family and parameter level) in the override tables.
+- [x] Team database on a new machine (user, 2026-11-20): **Database Location...** (bottom bar) sets `database_folder`
+      and points the add-in at it; INSTALL.md Part 5.
+- [ ] Future development (user, 2026-11-20): **multiple users with role-based access control**. For now every
+      user is an admin (full edit). To settle: the roles (e.g. admin / editor / viewer, or per area: parameters,
+      families, schedules, sections), where users and roles live (in the database, a separate file, or company
+      sign-in via Microsoft Entra ID), and how it's enforced. A shared file on OneDrive can't stop someone saving
+      over it, so real enforcement probably needs a server or database service, with the app as its client.
+- [ ] Future development: **concurrent editing**. For now (user, 2026-11-20) one editor at a time, by agreement
+      (INSTALL.md "One Person at a Time"). A first step: warn on Save when the file changed on disk since it was
+      opened (someone else saved), offering to reload instead of overwriting; later, merging or a server.
+- [ ] Future development (user, 2026-11-20): a button that draws the schedules and schedule sections as a tree,
+      showing how they connect and nest: which sections each schedule uses (and its excluded columns), which
+      sections include other sections, and the schedules reached through an included section. To settle: where
+      the button goes (Schedule Sections tab, Schedules tab, or both), drawn in the app or exported (e.g. an HTML
+      or image file), and whether clicking a node opens that schedule or section.
 
 ## Column widths from Revit (user, 2026-11-09)
 - [x] `ExportScheduleWidths` macro, typical widths review.
@@ -91,6 +106,12 @@ the schedules the macro made. The macro stays until the user verifies the add-in
 - [x] `revit_addin.py` install to `%APPDATA%\Autodesk\Revit\Addins\<year>`, and the GUI button.
 - [ ] Needs the user, in Revit: install, Build Schedules on a project the macro built and on a new one.
 - [ ] Then retire the macro; later move ExportScheduleWidths and Send into the add-in.
+- [x] Coworker installs (user, 2026-11-20: coworkers use Revit 2025): 2025 builds from the `Nice3point.Revit.Api`
+      2025.4.60 reference package for .NET 8, so it loads on every 2025 update (this PC's 2025.5 runs .NET 10).
+- [ ] **Release to main** (user, 2026-11-20: after their test): user reinstalls (Revit closed) and tries the
+      add-in incl. the Linker; then follow README "Releasing an update": merge `dev` into `main`, raise
+      `APP_VERSION` (0.2.0 Beta), build the `.exe`, push, publish GitHub release `v0.2.0` with the .exe attached;
+      coworkers follow INSTALL.md (later versions reach them through the in-app updater).
 
 ### Linker ID (user, 2026-11-13; built 2026-11-17)
 - [x] Linker Tag Set on sections, roles and prefixes in the database, Linker Role column, `"linker"` in the

@@ -13,7 +13,7 @@ from config.app_paths import DEMO_DATA_PATH, PROJECT_ROOT
 from ddm_tables import catalog_from_tables, read_database_csv
 from revit_addin import (
     ADDIN_ASSEMBLY, ADDIN_CLASS, ADDIN_ID, AddinError, build_addin, install_addin, install_all,
-    installed_revit_years, revit_api_dotnet,
+    buildable_years, installed_revit_years, revit_api_dotnet,
 )
 from revit_schedule_macro_generator import generate_schedule_data
 from test_ddm_gui import make_test_gui
@@ -44,6 +44,10 @@ def test_revit_years_and_their_dotnet_come_from_the_installs(tmp_path):
     assert revit_api_dotnet(2025, tmp_path) == 10
     assert revit_api_dotnet(2026, tmp_path) == 8
     assert revit_api_dotnet(2030, tmp_path) is None
+    # 2025 builds from the API package for .NET 8, so it loads on every 2025 update, installed or not.
+    assert revit_addin.API_PACKAGES[2025][1] == 8
+    assert buildable_years(tmp_path) == [2025, 2026]
+    assert buildable_years(tmp_path / "none") == [2025]
 
 
 def test_installing_copies_the_build_and_writes_the_manifest(tmp_path):
@@ -121,11 +125,11 @@ def test_the_install_button_reports_each_revit(monkeypatch):
 
 @pytest.mark.slow
 def test_the_addin_builds_and_reads_the_schedules_file_save_writes(tmp_path):
-    """Build the add-in against the newest Revit here, and read a real schedules file with its own
-    reader (run without Revit), so the C# and schedule_specs agree."""
-    years = installed_revit_years()
-    if not years or shutil.which("dotnet") is None:
-        pytest.skip("needs Revit 2025+ and the .NET SDK installed")
+    """Build the add-in for the newest Revit it can be built for here, and read a real schedules file
+    with its own reader (run without Revit), so the C# and schedule_specs agree."""
+    years = buildable_years()
+    if shutil.which("dotnet") is None:
+        pytest.skip("needs the .NET SDK installed")
 
     output = build_addin(years[-1], tmp_path / "build")
     assert (output / ADDIN_ASSEMBLY).is_file()

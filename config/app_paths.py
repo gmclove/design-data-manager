@@ -6,7 +6,14 @@ import sys
 from pathlib import Path
 
 APP_VERSION = "0.1.0 Beta"
+# Features still being tried out, switched off for releases (main) and on for dev. Read at run time
+# (FEATURES["linker"]), so tests can switch them. The Revit add-in has its own switch (App.LinkerEnabled).
+# - linker: the Linker ID (Families tab Linker Role, the sections' Linker Tag Set, the add-in's Linker panel).
+FEATURES = {"linker": True}
 NEW_ISSUE_URL = "https://github.com/gmclove/design-data-manager/issues/new"
+# Updates: the latest GitHub release (tag v<APP_VERSION>, with DesignDataManager.exe attached).
+LATEST_RELEASE_API_URL = "https://api.github.com/repos/gmclove/design-data-manager/releases/latest"
+RELEASES_PAGE_URL = "https://github.com/gmclove/design-data-manager/releases/latest"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Packaged as a standalone .exe (PyInstaller), bundled files unpack to a temporary folder and

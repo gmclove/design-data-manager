@@ -227,8 +227,10 @@ namespace DesignDataManager.Schedules
 
         private static string DdmFieldName(Document doc, ScheduleField field)
         {
-            // A combined column is named after its combined parameter.
-            return field.FieldType == ScheduleFieldType.CombinedParameter
+            // A combined column is named after its combined parameter, and a calculated one after itself;
+            // Revit has no schedulable field for either (asking throws "not a schedulable field").
+            return field.IsCombinedParameterField || field.IsCalculatedField
+                || field.FieldType == ScheduleFieldType.CombinedParameter
                 ? field.GetName()
                 : field.GetSchedulableField().GetName(doc);
         }
@@ -334,7 +336,8 @@ namespace DesignDataManager.Schedules
                 {
                     continue;
                 }
-                string parameter = field.GetSchedulableField().GetName(doc);
+                // DdmFieldName: a combined column (e.g. TAG) has no schedulable field to ask.
+                string parameter = DdmFieldName(doc, field);
                 names.Add(parameter);
                 columns.Add(new
                 {

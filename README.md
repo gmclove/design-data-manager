@@ -83,6 +83,12 @@ the column, and its column order and widths are the Revit schedule's.
 `dist/DesignDataManager.exe` runs without Python or conda. Copy it into its own folder and
 run it.
 
+- **Database Location...** (bottom left) points the app at a folder holding the database, such as the
+  team's synced OneDrive `ddm-data` folder. It opens the database there, or offers to save the open one
+  there if the folder has none. The app remembers the folder (`database_folder` in
+  `%APPDATA%\DesignDataManager\settings.json`), so later launches and the Revit add-in use it. The
+  bottom bar shows which file Save writes to. For now, one person edits at a time (see
+  [INSTALL.md](INSTALL.md)).
 - **First launch:** it opens the master database built into it.
 - **Saving:** Save writes `data/database.ddm.json` and the exports into a `data` folder next to
   the `.exe`. Later launches open that copy.
@@ -103,6 +109,32 @@ makes the `.exe` about 230 MB. The master database to bundle defaults to
 ```
 
 `--console` builds a version that shows errors in a console window.
+
+**Updates.** Each time the `.exe` starts, it asks GitHub for the repository's latest release. When that
+release is newer than `APP_VERSION` (`config/app_paths.py`), it offers **Update Now**. Then it:
+1. downloads the release's `DesignDataManager.exe`,
+2. renames the running one to `.exe.old` (deleted on the next start) and puts the new one in its place,
+3. restarts.
+
+On its first start, the new version reinstalls the Revit add-in wherever the user already has it. If
+Revit has the add-in open, it says so. **Check for Updates...** on the toolbar does the same check on
+request. Users' installation and update steps are in [INSTALL.md](INSTALL.md).
+
+**Releasing an update (maintainer):**
+1. Merge `dev` into `main`.
+2. Raise `APP_VERSION` in `config/app_paths.py`, e.g. `"0.2.0 Beta"`, and commit it on `main`. The
+   number must go up, or users won't be offered the update.
+3. Build the `.exe` as above. It bundles the add-in.
+4. Push `main`.
+5. On GitHub, open **Releases > Draft a new release**:
+   - **Tag:** `v` plus the version number, e.g. `v0.2.0`, created on `main`.
+   - **Title:** for example `Design Data Manager 0.2.0`.
+   - **Notes:** what's new, in plain words. Users see the first lines in the update box.
+   - **Attachment:** drag in `dist\DesignDataManager.exe`. It must keep exactly that name.
+   - Leave **Set as the latest release** ticked, then click **Publish release**.
+
+Users get the update the next time they open the app. The repository is public, so they need no
+GitHub account.
 
 ## Importing the Excel Master Workbook
 
@@ -140,6 +172,11 @@ copy (it suggests "*name* Copy") and click **Duplicate**. The copy gets everythi
 has: columns, families, overrides, header groups, hidden columns, sections and settings. It goes
 right after the original and opens in the Schedule Builder. It has its own GUID, so the macro
 makes it a new schedule in Revit.
+
+**Standardize Into Schedule Section...** (top right of the Schedule Builder) opens the section window with
+this schedule loaded through **Start From Schedule...** (see **Schedule Sections**). The section is named
+after the schedule; rename it as needed. Saving the section is one of the Builder's held edits:
+**Apply** keeps it, and **Discard Changes** undoes it.
 
 Under the schedule window's table are **Add Parameter...**, **Remove Parameter**, **◀ Move
 Left**, **Move Right ▶**, **Add Family...** and **Remove Family**:
@@ -189,7 +226,7 @@ Your own Revit schedules show how wide each column really needs to be. To take t
    already match), then **Accept Selected** and **Save**. Schedules without their own width follow the
    new default; a schedule's own width equal to it is cleared; other schedule widths stay.
 
-## Revit Add-in (In Progress, Branch `revit-addin`)
+## Revit Add-in
 
 The add-in puts a **Design Data** tab on Revit's ribbon, so schedules are built without a macro
 module, the .NET SDK or the Macro Manager:
@@ -216,13 +253,28 @@ taken back from Revit). So every change knows which side made it:
 
 Schedules built before this (no last sync yet) get a plain side-by-side comparison until they're next built.
 
-**Installing:** click **Install Revit Add-in...** in the app. It installs the add-in for each Revit
-2025 or later on the computer, for you only, in `%APPDATA%\Autodesk\Revit\Addins\<year>`. Then
-start Revit. Close Revit first when reinstalling.
+**Installing:** step-by-step instructions for users, with troubleshooting, are in
+[INSTALL.md](INSTALL.md). In short: click **Install Revit Add-in...** in the app. It installs the add-in for each Revit
+2025 or later on the computer, for you only, in `%APPDATA%\Autodesk\Revit\Addins\<year>`; no admin
+rights or .NET SDK needed. Then start Revit. The first time, Revit asks whether to load an add-in it
+doesn't know (it isn't signed): choose **Always Load**. Close Revit first when reinstalling.
 
-**Building it (developers):** `.conda\python.exe build_addin.py` builds it against each installed
-Revit, 2025 or later, into `dist\revit-addin\<year>`; `build_exe.py` does this too and bundles
-the builds into the `.exe`. It needs the .NET SDK and that Revit installed. The code is in
+**If it says Revit is using the add-in after you closed Revit:** a Revit session can keep running in
+the background after its window closes, for example while it finishes syncing, and it keeps the
+add-in open.
+1. Open Task Manager (Ctrl+Shift+Esc).
+2. End each **Revit** entry that has no window open. Unsaved work in it is lost, but a session
+   without a window has nothing you can still save.
+3. Click **Install Revit Add-in...** again.
+
+Restarting the computer also clears them.
+
+**Building it (developers):** `.conda\python.exe build_addin.py` builds it into
+`dist\revit-addin\<year>`; `build_exe.py` does this too and bundles the builds into the `.exe`. It
+needs the .NET SDK. Revit 2025 builds from a Revit API reference package (`Nice3point.Revit.Api`,
+set in `revit_addin.API_PACKAGES`) for .NET 8, so one build loads on every Revit 2025 update (2025.5
+and later run .NET 10, which still loads it) and Revit 2025 needn't be installed. Later years build
+against that Revit, so it has to be installed. The code is in
 `revit-addin/`: `Shared/` holds the schedule routine and the schedules file reader, which the
 generated macro also uses (copied into it), so the add-in and the macro stay the same.
 
@@ -231,6 +283,15 @@ generated macro also uses (copied into it), so the add-in and the macro stay the
 One item, such as AHU-1, is often drawn several times: on the airflow diagram, on a flow diagram, and
 in the 3D model. Only one of them holds the item's design data. The others show its tag, so their
 tag values must match it. `IPS_LINKER_ID` ties them together.
+
+**Not released yet.** The Linker is switched off on `main`, and so in the `.exe`, until it's been tried in
+Revit. It stays on in `dev`. Two switches control it:
+- **The app:** `FEATURES["linker"]` in `config/app_paths.py` hides the Linker Role column and the Linker Tag
+  Set checkbox.
+- **The add-in:** `LinkerEnabled` in `revit-addin/src/App.cs` hides the Linker panel and the check when a
+  project opens.
+
+Linker data in the database is kept either way.
 
 - **Primary and linked elements:**
   - The **primary** is the main 2D detail item. It holds the design data, and only it shows in data
@@ -396,6 +457,14 @@ add a parameter to the Revit project.
   like the Schedule Builder: Group Level rows, column headers, a Hidden Column row, where each column is
   included from, and the parameters' defaults. On the right, tick the schedules that use it; those with
   the most of its columns are listed first.
+- **Start From Schedule...:** builds a section from an existing schedule. Pick a schedule, and the section gets:
+  - its columns, in its order (columns the section already has stay where they are),
+  - which of them are hidden,
+  - its header groups over them. One over all of the section's columns becomes **Header Group Over All
+    Columns**.
+
+  The schedule is ticked on the right, so saving links it to the section; untick it to leave it alone.
+  Then remove, add or move columns as usual.
 - **Header groups:** **Header Group Over All Columns** is the one over the whole section. For more, click
   headers to select them and **Group Selected Headers**, as in the Schedule Builder; groups can sit inside
   one another but can't overlap. **Ungroup Selected Headers** removes the innermost group around the

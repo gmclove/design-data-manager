@@ -310,3 +310,16 @@ User's rules for GUI text (prompts, checkboxes, window sections, column headings
   the column, its order is the Revit column order, and its widths are the Revit widths.
 - **Columns fit once per database** (my call), so an edit or validation never undoes a dragged width.
 - **A third header click returns to the table's own order** (my call), since that order is otherwise lost.
+- **Revit 2025 add-in builds from an API reference package for .NET 8** (2026-11-20; user: coworkers use Revit 2025).
+  One build then loads on every 2025 update (.NET 8 before 2025.5, .NET 10 after), and needs no Revit installed to build.
+  The package is `Nice3point.Revit.Api` (Autodesk's reference DLLs, community-packaged); Autodesk publishes none.
+- **Unreleased features are switched off on main, not cut out** (2026-11-20; user: keep the Linker on dev, merge the
+  rest). It was in the same commit and files as everything else; removing it on main would make a later dev
+  merge delete it. Main's commit flips the switches to off; dev never touches those lines, so later dev merges keep
+  main's off until it's flipped on main. Don't merge main back into dev without setting them on again.
+- **Coworkers update through GitHub releases, not git** (2026-11-20; user wanted regular updates, via git unless easier).
+  Running from source needs Python, the conda env and the .NET SDK, and the .exe isn't in git; the public repo's
+  releases need no account. The app checks at startup and swaps its own .exe, then refreshes the add-in.
+- **One editor at a time; everyone is an admin for now** (user, 2026-11-20). The team database is one JSON file in a
+  shared OneDrive folder, picked with Database Location...; editing is coordinated by people, not locked. Role-based
+  access is future development (plan.md).

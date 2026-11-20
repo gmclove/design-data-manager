@@ -1648,10 +1648,9 @@ def test_schedule_popup_edits_columns_groups_headers_and_overrides_values(tmp_pa
         tab_texts = [gui.notebook.tab(tab_id, "text") for tab_id in gui.notebook.tabs()]
         assert tab_texts == ["Parameters", "Families", "Schedules", "Schedule Sections", "Combined Parameters"]
         assert gui.file_actions.grid_info()["row"] == 5
-        assert [
-            widget.cget("text")
-            for widget in sorted(gui.file_actions.winfo_children(), key=lambda item: item.grid_info()["column"])
-        ] == ["Load", "Save", "Save As...", "Import Excel..."]
+        location, *buttons = sorted(gui.file_actions.winfo_children(), key=lambda item: item.grid_info()["column"])
+        assert location.winfo_children()[0].cget("text") == "Database Location..."
+        assert [widget.cget("text") for widget in buttons] == ["Load", "Save", "Save As...", "Import Excel..."]
         assert "demo_data.ddm.csv" in gui.warning_text.get("1.0", tk.END)
         assert "Safety and Clearance" in gui._build_schedule_summary_df()["name"].tolist()
 
@@ -3298,6 +3297,31 @@ def test_schedule_builder_holds_edits_until_apply(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_standardize_into_schedule_section_opens_the_section_window_with_the_schedule(tmp_path, monkeypatch):
+    root, gui, _checks = open_builder(monkeypatch, tmp_path)
+    try:
+        schedule = gui.catalog.get_schedule("Schedule A")
+        form = find_window(root, "Schedule Builder: Schedule A")
+        assert find_button(form, "Standardize Into Schedule Section...")
+        window = form.standardize()
+        root.update()
+        assert window.name_var.get() == "Schedule A"
+        assert window.names == [param.name for param in schedule.params]
+        assert window.schedule_vars["Schedule A"].get() is True
+
+        # Saved (unticked here, so it saves at once): one of the Builder's held edits.
+        window.name_var.set("Standard A")
+        window.schedule_vars["Schedule A"].set(False)
+        window.preview()
+        root.update()
+        assert gui.catalog.get_section("Standard A") is not None
+        assert gui._builder_session()["pending"]
+        find_window(root, "Schedule Builder: Schedule A").builder_buttons.discard()
+        assert gui.catalog.get_section("Standard A") is None
+    finally:
+        root.destroy()
+
+
 def test_schedule_builder_discard_puts_the_database_back(tmp_path, monkeypatch):
     root, gui, _checks = open_builder(monkeypatch, tmp_path)
     try:
@@ -3790,3 +3814,43 @@ def test_schedule_builder_widths_are_entered_not_dragged(monkeypatch, tmp_path):
         assert name in table.get_selected_parameter_names()
     finally:
         root.destroy()
+
+
+def test_database_location_opens_or_saves_the_team_database_and_remembers_it(tmp_path, monkeypatch):
+    gui = make_test_gui()
+    team = tmp_path / "ddm-data"
+    team.mkdir()
+    asked = []
+    monkeypatch.setattr(gui_module.messagebox, "askyesno", lambda title, message, **_kw: asked.append(message) or True)
+
+    # An empty folder: offers to save the open database there.
+    assert gui.choose_database_location(str(team))
+    assert "no database" in asked[0]
+    assert (team / "database.ddm.json").exists() and (team / "database.schedules.json").exists()
+    settings = json.loads(gui_module.USER_SETTINGS_PATH.read_text(encoding="utf-8"))
+    assert settings["database_folder"] == str(team.resolve())
+    assert settings["schedule_data_path"] == str((team / "database.schedules.json").resolve())
+    assert settings["revit_sync_path"] == str((team / "database.revit-sync.json").resolve())
+    # The real window shows it at the bottom.
+    monkeypatch.setattr(gui_module, "DEFAULT_CHECKPOINT_PATH", tmp_path / "missing" / "database.ddm.json")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        window_gui = DDMGUI(root)
+        assert window_gui.choose_database_location(str(team))
+        assert window_gui.database_label.cget("text") == f"Database: {(team / 'database.ddm.json').resolve()}"
+    finally:
+        root.destroy()
+
+    # A folder with a database: opens it, without asking.
+    other = make_test_gui()
+    other.catalog.add_param("Only In Other", "Text")
+    other._mark_saved()
+    assert other.choose_database_location(str(team))
+    assert len(asked) == 1
+    assert other.catalog.get_param("Only In Other") is None
+    assert Path(other.checkpoint_path) == (team / "database.ddm.json").resolve()
+
+    # Cancelling the folder picker changes nothing.
+    monkeypatch.setattr(gui_module.filedialog, "askdirectory", lambda **_kw: "")
+    assert other.choose_database_location() is False

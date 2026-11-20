@@ -40,10 +40,10 @@ def build(master_database, console=False):
         os.environ["PATH"] = f"{conda_bin}{os.pathsep}{os.environ.get('PATH', '')}"
     # The Revit add-in, built for each Revit here, goes in too, so users can install it without the
     # .NET SDK; and the C# the schedule macro is made from.
-    from revit_addin import AddinError, build_addin, built_years, installed_revit_years
+    from revit_addin import AddinError, build_addin, buildable_years, built_years
 
     addin_builds = PROJECT_ROOT / "dist" / "revit-addin"
-    for year in installed_revit_years():
+    for year in buildable_years():
         try:
             build_addin(year, addin_builds)
         except AddinError as exc:

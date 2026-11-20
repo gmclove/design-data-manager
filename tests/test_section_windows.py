@@ -428,6 +428,61 @@ def test_deleting_an_included_section_keeps_its_header_groups(app, hierarchy):
 	assert pump.bands() == [('ELEC DATA', ELECTRICAL)]
 
 
+def test_start_from_schedule_copies_its_columns_hidden_columns_and_header_groups(app):
+	fan = app.catalog.get_schedule('Fan')  # Tag, Hertz, Volts
+	fan.add_header_group('POWER', ['Hertz', 'Volts'])
+	fan.hidden_field_names.add('Hertz')
+	window = app.open_section_window(None)
+	window.names[:] = ['Phase']  # already there: kept, and not added twice
+
+	window.use_schedule(['Fan'])
+
+	assert window.names == ['Phase', 'Tag', 'Hertz', 'Volts']
+	assert window.hidden == {'Hertz'}
+	assert window.header_groups == [{'caption': 'POWER', 'parameter_names': ['Hertz', 'Volts']}]
+	assert window.schedule_vars['Fan'].get() is True
+	assert window.schedule_vars['Pump'].get() is False
+	assert window.table().get_selected_parameter_names() == ['Tag', 'Hertz', 'Volts']
+
+	# Picking another adds only what's new; a group over all its columns on an empty section is the caption.
+	app.catalog.get_schedule('Pump').add_header_group('PUMP DATA', ['Tag', 'Volts'])
+	window.use_schedule(['Pump'])
+	assert window.names == ['Phase', 'Tag', 'Hertz', 'Volts']  # Pump's columns were all there
+	other = app.open_section_window(None)
+	other.use_schedule(['Pump'])
+	assert other.names == ['Tag', 'Volts']
+	assert other.caption_var.get() == 'PUMP DATA' and other.header_groups == []
+
+	# Saving makes a normal section.
+	window.name_var.set('Fan Start')
+	window.schedule_vars['Fan'].set(False)
+	window.schedule_vars['Pump'].set(False)  # ticked by picking it; no schedules, so it saves at once
+	window.preview()
+	assert app.catalog.get_section('Fan Start').parameter_names == ['Phase', 'Tag', 'Hertz', 'Volts']
+
+
+def test_the_linker_switch_hides_it_in_the_app(tmp_path, monkeypatch):
+	from config.app_paths import FEATURES
+	monkeypatch.setitem(FEATURES, 'linker', False)  # as the app starts
+	monkeypatch.setattr(gui_module, 'DEFAULT_CHECKPOINT_PATH', tmp_path / 'missing' / 'database.ddm.json')
+	root = tk.Tk()
+	root.withdraw()
+	app = DDMGUI(root)
+
+	assert 'linker_role' not in app._get_table_columns('families')
+	assert 'linker_role' not in app.family_tree['columns']
+	window = app.open_section_window(None)
+
+	def texts(widget):
+		found = [str(widget.cget('text'))] if 'text' in widget.keys() else []
+		for child in widget.winfo_children():
+			found += texts(child)
+		return found
+
+	assert not any(text.startswith('Linker Tag Set') for text in texts(window))
+	root.destroy()
+
+
 def test_linker_tag_set_checkbox_saves_and_sets_linker_roles_on_the_families_tab(app):
 	from revit_parameter_manager import LINKER_PARAMETER
 	catalog = app.catalog

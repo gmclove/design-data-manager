@@ -32,6 +32,14 @@ def no_real_macro_modules(tmp_path, monkeypatch):
     monkeypatch.setattr(ddm_gui, "USER_SETTINGS_PATH", tmp_path / "settings.json")
 
 
+@pytest.fixture(autouse=True)
+def features_on(monkeypatch):
+    """Test every feature, whether or not this branch releases it (config.app_paths.FEATURES)."""
+    from config.app_paths import FEATURES
+    for name in FEATURES:
+        monkeypatch.setitem(FEATURES, name, True)
+
+
 @pytest.fixture
 def linker_catalog():
     """An AHU primary (tag values and design data), its tag-only copy, a space and a family without

@@ -2,6 +2,58 @@
 
 Newest first. One entry per piece of work; link commits where useful.
 
+## 2026-11-20: Database Location... (team database on a new machine)
+- Bottom bar: **Database Location...** and a "Database: <file>" label (refreshed by `_mark_saved` and at startup).
+  `choose_database_location(folder)`: asks about unsaved changes; opens `<folder>/database.ddm.json`, or offers to
+  save the open database there; then records `database_folder`, `schedule_data_path` and `revit_sync_path` in
+  settings.json, so later launches (`DATA_DIR`) and the add-in use it.
+- INSTALL.md Part 5: add the shared ddm-data folder to OneDrive (Always keep on this device), pick it; one editor
+  at a time; troubleshooting for old data. Plan: role-based access and concurrent editing as future development.
+
+## 2026-11-20: Schedule Builder: Standardize Into Schedule Section...
+- Title-bar button (user): opens the section window (modal over the Builder) named after the schedule, with
+  `use_schedule` already run. `open_section_window(on_saved=)` lets the Builder reopen after a save; the save is a
+  held Builder edit (Apply / Discard Changes).
+
+## 2026-11-20: Section window: Start From Schedule...
+- New first button under the section's columns (user). Picks schedules (`_pick_names`); `use_schedule` appends each
+  one's columns the section lacks, in its order, plus its hidden ones and header groups wholly made of the added
+  columns (one over every column becomes the caption; one that `band_issue` rejects is skipped), and ticks it.
+
+## 2026-11-20: Fix: "This ScheduleField is not a schedulable field by type" in Revit
+- The user hit it in the add-in. `DdmDescribeSchedule` (Send: the Design Data Manager button, the sync check) called
+  `GetSchedulableField()` on every non-formula column, which throws for a combined-parameter column such as TAG.
+  It now uses `DdmFieldName`, which also names calculated columns (`IsCalculatedField`) by themselves. Shared
+  code, so the macro gets the fix too. Needs the user to retest in Revit.
+
+## 2026-11-20: Linker switch; release 0.2.0 to main without the Linker
+- `FEATURES["linker"]` (`config/app_paths.py`, read at run time; tests switch every feature on via conftest) hides
+  the Families tab's Linker Role column (`_get_table_columns`, so the detail form too) and the section window's
+  Linker Tag Set checkbox. `App.LinkerEnabled` (static readonly, not const: CS0162 is an error) skips the add-in's
+  Linker panel and LinkerWatcher. On on `dev`, off on `main`. Linker data still loads and saves.
+
+## 2026-11-20: Updates from GitHub releases
+- `app_update.py`: the `.exe` checks the latest GitHub release (tag `v<version>`, asset `DesignDataManager.exe`)
+  at startup (quiet) and from **Check for Updates...** (toolbar, right); Update Now downloads it, checks it's an
+  .exe, renames the running .exe to `.old` (removed next start), swaps the new one in and restarts it
+  (`PYINSTALLER_RESET_ENVIRONMENT`). From source it says to git pull.
+- `revit_addin.refresh_installed`: the first start of a new version reinstalls the add-in where it's installed
+  (settings `addin_app_version`); if Revit has it open, a warning says to close Revit and click Install.
+- INSTALL.md: download from the releases page, Getting Updates; README: how updates work and release steps.
+
+## 2026-11-20: Add-in builds for every Revit 2025 update
+- The user's installed add-in was a 2026-11-09 build, before the ribbon icons (`RibbonIcons.cs`), so no icons
+  showed; a rebuild and reinstall fixes it.
+- Revit 2025 now builds from the `Nice3point.Revit.Api` 2025.4.60 reference package (csproj `RevitApiPackage`;
+  `revit_addin.API_PACKAGES`, `buildable_years`) for .NET 8. Before, it built against this PC's Revit 2025.5
+  for .NET 10, which wouldn't load on coworkers' earlier 2025 updates. `build_addin.py` and `build_exe.py`
+  build 2025 even without it installed. README: Always Load prompt; heading no longer "In Progress".
+- Install troubleshooting (user hit it): Revit sessions left running with no window keep the DLL open, so the
+  install says Revit is using it. README steps (Task Manager, end Revit entries, or restart) and the same hint in
+  the install error message.
+- `INSTALL.md` (user: very detailed, for coworkers with no software background): permanent folder, SmartScreen
+  "Run anyway", Install Revit Add-in..., Revit's Always Load, updating, troubleshooting, removal. Linked from README.
+
 ## 2026-11-17: Linker ID (primary and linked elements)
 - Sections get **Linker Tag Set** (`ScheduleSection.linker_tag_set`, JSON and CSV `linker_tag_set`; a checkbox in the
   section window). `Catalog.linker_families()`: a family with `IPS_LINKER_ID` is **primary** when it is a Detail

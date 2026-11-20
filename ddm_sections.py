@@ -4,6 +4,7 @@ from tkinter import messagebox, ttk
 
 import pandas as pd
 
+from config.app_paths import FEATURES
 from revit_parameter_manager import ScheduleSection
 from table_view import DEFAULT_TABLE_VIEW
 
@@ -146,8 +147,9 @@ class SectionWindows:
 
     # --- section window ---------------------------------------------------------
 
-    def open_section_window(self, section=None):
-        """Define a section (``None`` for a new one) and pick the schedules that use it."""
+    def open_section_window(self, section=None, on_saved=None):
+        """Define a section (``None`` for a new one) and pick the schedules that use it. ``on_saved``
+        is called with the section once it's saved and the window has closed."""
         window = tk.Toplevel(getattr(self, "root", None))
         window.title(f"Section: {section.name}" if section else "Add Section")
         geometry = "1320x820"
@@ -178,9 +180,10 @@ class SectionWindows:
         caption_var.trace_add("write", lambda *_args: render_columns())
         # Tag values: the Revit add-in copies them from a primary element to its linked copies.
         linker_var = tk.BooleanVar(window, value=bool(section and section.linker_tag_set))
-        ttk.Checkbutton(
-            fields, text="Linker Tag Set (Copies From the Primary to Linked Elements)", variable=linker_var,
-        ).pack(side="left", padx=(16, 0))
+        if FEATURES["linker"]:
+            ttk.Checkbutton(
+                fields, text="Linker Tag Set (Copies From the Primary to Linked Elements)", variable=linker_var,
+            ).pack(side="left", padx=(16, 0))
 
         bottom = ttk.Frame(window)
         bottom.pack(side="bottom", fill="x", padx=12, pady=(6, 12))
@@ -264,7 +267,10 @@ class SectionWindows:
             view["table"] = None
             names = resolved_names()
             if not names:
-                ttk.Label(table_box, text="No Columns Yet: Add Parameter... or Add Section... Adds Them").pack(anchor="w")
+                ttk.Label(
+                    table_box,
+                    text="No Columns Yet: Start From Schedule..., Add Parameter... or Add Section... Adds Them",
+                ).pack(anchor="w")
                 refresh_counts()
                 return
             drafted = draft()
@@ -334,6 +340,42 @@ class SectionWindows:
 
             hint = "A section can't include one that already includes it."
             return self._pick_names(window, "Include Sections", choices, add, hint)
+
+        def use_schedule(picked):
+            """Start From Schedule: add each picked schedule's columns (those the section doesn't have
+            yet, in its order), which of them are hidden, and its header groups over them; tick it."""
+            added = []
+            for schedule_name in picked:
+                schedule = self.catalog.get_schedule(schedule_name)
+                present = set(resolved_names())
+                new = [param.name for param in schedule.params if param.name not in present]
+                members.extend(new)
+                added.extend(new)
+                hidden.update(schedule.hidden_field_names & set(new))
+                everything = resolved_names()
+                for group in schedule.header_groups:
+                    names = [name for name in new if name in set(group["parameter_names"])]
+                    if not names or len(names) != len(group["parameter_names"]):
+                        continue  # only groups wholly made of the columns just added
+                    if set(names) == set(everything) and not caption_var.get().strip():
+                        caption_var.set(group["caption"])  # over every column: the section's caption
+                        continue
+                    own_groups.append({"caption": group["caption"], "parameter_names": names})
+                    drafted = draft()
+                    if drafted is None or drafted.band_issue():
+                        own_groups.pop()  # e.g. it would cover the same columns as another
+                if schedule_name in schedule_vars:
+                    schedule_vars[schedule_name].set(True)
+            render_columns(added)
+
+        def start_from_schedule():
+            choices = [
+                (schedule.name, f"{schedule.name} {' '.join(param.name for param in schedule.params)}")
+                for schedule in self.catalog.schedules
+            ]
+            hint = ("Adds the schedule's columns, hidden columns and header groups; columns already in the "
+                    "section are kept as they are.")
+            return self._pick_names(window, "Start From Schedule", choices, use_schedule, hint)
 
         def remove_parameters():
             chosen = selected_members()
@@ -430,7 +472,7 @@ class SectionWindows:
             render_columns(sorted(names, key=resolved_names().index))
 
         for text, command in (
-            ("Add Parameter...", add_parameters), ("Add Section...", add_section), ("Remove", remove_parameters),
+            ("Start From Schedule...", start_from_schedule), ("Add Parameter...", add_parameters), ("Add Section...", add_section), ("Remove", remove_parameters),
             ("◀ Move Left", lambda: move(-1)), ("Move Right ▶", lambda: move(1)),
         ):
             ttk.Button(left_buttons, text=text, command=command).pack(side="left", padx=(0, 6))
@@ -517,8 +559,10 @@ class SectionWindows:
                 return None
 
             def commit():
-                self._commit_section(section, proposed, plan_rows, unchanged)
+                saved = self._commit_section(section, proposed, plan_rows, unchanged)
                 window.destroy()
+                if on_saved is not None:
+                    on_saved(saved)
 
             if not plan_rows and not problems:
                 commit()
@@ -558,6 +602,7 @@ class SectionWindows:
         window.preview, window.delete = preview, delete
         window.add_parameters, window.move, window.toggle_hidden = add_parameters, move, toggle_hidden
         window.add_section = add_section
+        window.start_from_schedule, window.use_schedule = start_from_schedule, use_schedule
         window.render_columns = render_columns
         window.header_groups = own_groups
         window.group_selected, window.ungroup_selected = group_selected, ungroup_selected

@@ -37,7 +37,15 @@
     <Compile Remove="obj\**;bin\**" />
   </ItemGroup>
 
-  <ItemGroup>
+  <!-- Built from a Revit API reference package (build_addin.py sets RevitApiPackage for 2025): the
+       build then targets that year's first .NET, so it loads on every update of that Revit, and
+       doesn't need that Revit installed. Without it, the build uses the installed Revit's DLLs. -->
+  <ItemGroup Condition="'$(RevitApiPackage)' != ''">
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="$(RevitApiPackage)" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="$(RevitApiPackage)" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RevitApiPackage)' == ''">
     <Reference Include="RevitAPI">
       <HintPath>$(RevitPath)\RevitAPI.dll</HintPath>
       <Private>false</Private>

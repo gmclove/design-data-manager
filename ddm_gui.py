@@ -20,6 +20,7 @@ from config.revit_property_pallet_definitions import REVIT_PROPERTY_PALLET_TABLE
 from config.app_paths import (
     APP_VERSION,
     DEFAULT_CHECKPOINT_PATH,
+    FEATURES,
     FROZEN,
     NEW_ISSUE_URL,
     STARTER_DATABASE_PATH,
@@ -64,7 +65,8 @@ from revit_parameter_manager import (
     MAX_SORT_GROUP_FIELDS, PARAM_NAME_TERMS, SCHEDULE_FILTER_PARAM, TOTALS_OPTIONS, Catalog, Param, Schedule,
     build_param_name, guid_change_warning, linker_role_text, normalized_sorting, totals_option,
 )
-from revit_addin import install_all
+from revit_addin import install_all, refresh_installed
+from app_update import UpdateError, available_update, install_update, remove_old_version, restart
 from revit_macro_module import (
     MACROS_ROOT, USER_SETTINGS_PATH, build_module, choose_module, chosen_module, find_macro_modules,
     load_settings, save_settings,
@@ -1180,6 +1182,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         )
         self.load_checkpoint(str(startup_path))
         self.checkpoint_path = DEFAULT_CHECKPOINT_PATH
+        self._show_database_location()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         if startup_path == STARTER_DATABASE_PATH and FROZEN and self.warning_text is not None:
             # The bundled copy unpacks to a temporary folder; say what it is instead.
@@ -1238,6 +1241,7 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             toolbar, text="Review Revit Changes...", command=self.open_revit_changes, style="Action.TButton",
         ).pack(side="left", padx=(8, 0))
         ttk.Button(toolbar, text="Create GitHub Ticket", command=self.open_new_ticket).pack(side="right")
+        ttk.Button(toolbar, text="Check for Updates...", command=self.check_for_updates).pack(side="right", padx=(0, 8))
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
@@ -1271,6 +1275,11 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         self.file_actions = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         self.file_actions.grid(row=5, column=0, sticky="ew")
         self.file_actions.columnconfigure(0, weight=1)
+        location = ttk.Frame(self.file_actions)
+        location.grid(row=0, column=0, sticky="w")
+        ttk.Button(location, text="Database Location...", command=self.choose_database_location).pack(side="left")
+        self.database_label = ttk.Label(location, foreground="#6b7280")
+        self.database_label.pack(side="left", padx=(8, 8))
         ttk.Button(self.file_actions, text="Load", command=self.open_database, style="Action.TButton").grid(
             row=0, column=1, padx=(0, 8)
         )
@@ -1433,7 +1442,102 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
             self._append_message(message)
         show = messagebox.showinfo if installed else messagebox.showwarning
         show("Install Revit Add-in", "\n\n".join(messages), parent=getattr(self, "root", None))
+        if installed:
+            self._record_for_revit_addin(addin_app_version=APP_VERSION)
         return installed
+
+    def refresh_revit_addin(self):
+        """On the first start of a new version: bring the installed add-in up to this version's, so
+        updating the app updates it too. Returns the refreshed Revit years."""
+        if self._addin_setting("addin_app_version") == APP_VERSION:
+            return []
+        refreshed, problems = refresh_installed()
+        if refreshed:
+            self._append_message("Updated the Revit add-in for Revit " + ", ".join(map(str, refreshed)) + ".")
+        if problems:
+            messagebox.showwarning(
+                "Update the Revit Add-in",
+                "The program is updated, but its Revit add-in isn't yet:\n\n" + "\n\n".join(problems)
+                + "\n\nThen click Install Revit Add-in...",
+                parent=getattr(self, "root", None),
+            )
+        else:
+            self._record_for_revit_addin(addin_app_version=APP_VERSION)
+        return refreshed
+
+    # --- updates ------------------------------------------------------------------
+
+    _update_poll_ms = 250
+
+    def _in_background(self, work, done):
+        """Run ``work()`` off the window's thread, then ``done(result, error)`` on it (Tk isn't
+        thread-safe). ``error`` is the ``UpdateError`` message, if any."""
+        outcome = {}
+
+        def run():
+            try:
+                outcome["result"] = work()
+            except UpdateError as exc:
+                outcome["error"] = str(exc)
+            except Exception as exc:  # noqa: BLE001 - shown rather than lost in the thread
+                outcome["error"] = f"Something went wrong: {exc}"
+
+        thread = threading.Thread(target=run, name="update", daemon=True)
+        thread.start()
+
+        def check():
+            if thread.is_alive():
+                self.root.after(self._update_poll_ms, check)
+                return
+            done(outcome.get("result"), outcome.get("error"))
+
+        self.root.after(self._update_poll_ms, check)
+
+    def check_for_updates(self, quiet=False):
+        """Check for Updates...: ask GitHub for a newer release and offer it. ``quiet`` (at startup)
+        says nothing unless there is one."""
+        self._in_background(available_update, lambda release, error: self._offer_update(release, error, quiet))
+
+    def _offer_update(self, release, error, quiet=False):
+        """Returns True when the user chose to update."""
+        root = getattr(self, "root", None)
+        if error:
+            if not quiet:
+                messagebox.showwarning("Check for Updates", error, parent=root)
+            return False
+        if release is None:
+            if not quiet:
+                messagebox.showinfo("Check for Updates", f"You have the latest version ({APP_VERSION}).", parent=root)
+            return False
+        notes = release["notes"]
+        if len(notes) > 1200:
+            notes = notes[:1200].rstrip() + "..."
+        intro = f"Version {release['version']} is available. You have {APP_VERSION}."
+        if not FROZEN:
+            messagebox.showinfo(
+                "Update Available", f"{intro}\n\nYou're running the source code: get it with git pull.", parent=root)
+            return False
+        if not messagebox.askyesno(
+            "Update Available",
+            f"{intro}\n\n{notes + chr(10) + chr(10) if notes else ''}Update now? It downloads the new version "
+            "and restarts the program, which then updates the Revit add-in too. Close Revit first.",
+            parent=root,
+        ):
+            return False
+        if not self._confirm_unsaved_changes("updating"):
+            return False
+        self._append_message(f"Downloading version {release['version']}...")
+        exe_path = Path(sys.executable)
+        self._in_background(lambda: install_update(release, exe_path), self._finish_update)
+        return True
+
+    def _finish_update(self, exe_path, error):
+        if error:
+            messagebox.showwarning("Update", error, parent=getattr(self, "root", None))
+            self._append_message(error)
+            return
+        restart(exe_path)
+        self.root.destroy()
 
     @staticmethod
     def _app_command():
@@ -1696,7 +1800,10 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         return True
 
     def _get_table_columns(self, table_name: str):
-        return DDMGUI._table_columns[table_name]
+        columns = DDMGUI._table_columns[table_name]
+        if not FEATURES["linker"]:
+            columns = [column for column in columns if column != "linker_role"]
+        return columns
 
     def _value_set_by_formula(self, table_name: str, row_id, field_name: str) -> bool:
         """A Parameters tab Default Value its Default Formula sets (shown as Formula in Use): not editable."""
@@ -4610,6 +4717,26 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
         bottom_bar = self._build_builder_buttons(form, session, show_status, reopen_discarded)
         form.builder_buttons = bottom_bar  # for tests
 
+        def standardize():
+            """Standardize Into Schedule Section...: a new section started from this schedule. Saving
+            it is one of the Builder's held edits (Apply or Discard Changes covers it)."""
+            window = self.open_section_window(None, on_saved=lambda _section: reopen())
+            window.transient(form)
+            window.grab_set()
+            window.name_var.set(schedule.name)
+            window.use_schedule([schedule.name])
+
+            def give_back(event):
+                if event.widget is window and form.winfo_exists():
+                    form.grab_set()
+
+            window.bind("<Destroy>", give_back, add="+")
+            return window
+
+        ttk.Button(title_bar, text="Standardize Into Schedule Section...", command=standardize).pack(
+            side="right", padx=(0, 8))
+        form.standardize = standardize  # for tests
+
         table = None
 
         # Header grouping sits above the table; the column and family buttons stay under it.
@@ -4901,6 +5028,53 @@ class DDMGUI(SectionWindows, CombinedParamWindows, FormulaBuilderWindows, WidthR
     def _mark_saved(self):
         """Remember the database as saved (or as loaded): later edits are unsaved changes."""
         self._saved_state = self._catalog_state()
+        self._show_database_location()
+
+    def _show_database_location(self):
+        """The bottom bar's "Database: <file>", so users can see which database Save writes to."""
+        label = getattr(self, "database_label", None)
+        if label is not None:
+            label.configure(text=f"Database: {self.checkpoint_path}")
+
+    def choose_database_location(self, folder=None):
+        """Database Location...: pick the folder holding the database (e.g. the team's synced OneDrive
+        folder). Opens the database there, or saves the open one there if it has none, and remembers it:
+        later launches open it, and the Revit add-in uses its schedules file. Returns whether it changed."""
+        root = getattr(self, "root", None)
+        if folder is None:
+            folder = filedialog.askdirectory(
+                title="Database Location: Pick the Folder With the Database",
+                initialdir=str(Path(self.checkpoint_path).parent), parent=root,
+            )
+        if not folder:
+            return False
+        if not self._confirm_unsaved_changes("switching databases"):
+            return False
+        folder = Path(folder).resolve()
+        database = folder / DEFAULT_CHECKPOINT_PATH.name
+        if database.exists():
+            self.load_checkpoint(str(database))
+            if Path(self.checkpoint_path).resolve() != database:
+                return False  # it couldn't be loaded; the message said why
+        else:
+            if not messagebox.askyesno(
+                "Database Location",
+                f"There's no database ({database.name}) in {folder} yet.\n\n"
+                "Save the open database there and use it from now on?",
+                parent=root,
+            ):
+                return False
+            if not self._save_to(database):
+                return False
+        self._record_for_revit_addin(
+            database_folder=str(folder),
+            schedule_data_path=str(get_database_output_paths(database)["schedule_data"]),
+            revit_sync_path=str(get_revit_sync_path(database)),
+        )
+        self._append_message(
+            f"Database location: {folder}. The app opens this database from now on, and the Revit add-in uses it."
+        )
+        return True
 
     def has_unsaved_changes(self) -> bool:
         saved = getattr(self, "_saved_state", None)
@@ -5127,6 +5301,12 @@ def main():
     app._record_for_revit_addin(app_command=DDMGUI._app_command(), app_pid=os.getpid())
     # Opened from Revit (or Revit asked while it was open): review the changes made there.
     app.start_revit_review_watch()
+    if FROZEN:
+        # The packaged .exe: tidy up after an update, bring the Revit add-in up to this version, and
+        # quietly check for a newer one.
+        remove_old_version(sys.executable)
+        root.after(500, app.refresh_revit_addin)
+        root.after(1500, lambda: app.check_for_updates(quiet=True))
     root.mainloop()
 
 
