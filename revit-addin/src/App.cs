@@ -14,7 +14,7 @@ namespace DesignDataManager.Revit
         // The Linker panel and its check on open: on for dev, off for releases (main) until it's tried
         // in Revit. The app's switch is FEATURES["linker"] in config/app_paths.py. (Not const: the
         // build treats the unreachable code a const would make as an error.)
-        private static readonly bool LinkerEnabled = true;
+        private static readonly bool LinkerEnabled = false;
 
         // Notices saves in the app and offers them to the open project.
         private SyncWatcher? _sync;
