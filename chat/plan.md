@@ -108,10 +108,13 @@ the schedules the macro made. The macro stays until the user verifies the add-in
 - [ ] Then retire the macro; later move ExportScheduleWidths and Send into the add-in.
 - [x] Coworker installs (user, 2026-11-20: coworkers use Revit 2025): 2025 builds from the `Nice3point.Revit.Api`
       2025.4.60 reference package for .NET 8, so it loads on every 2025 update (this PC's 2025.5 runs .NET 10).
-- [ ] **Release to main** (user, 2026-11-20: after their test): user reinstalls (Revit closed) and tries the
-      add-in incl. the Linker; then follow README "Releasing an update": merge `dev` into `main`, raise
-      `APP_VERSION` (0.2.0 Beta), build the `.exe`, push, publish GitHub release `v0.2.0` with the .exe attached;
-      coworkers follow INSTALL.md (later versions reach them through the in-app updater).
+- [x] **Release 0.2.0 Beta to main** (2026-11-20, user asked before their Revit retest): `main` = `dev` + one
+      commit (4f70a19) setting `APP_VERSION` 0.2.0 Beta and the Linker switches off; pushed. `.exe` built with
+      the **demo** database as its master (user: the release is public, so no company data in it; coworkers
+      use Database Location...). Smoke-tested with a throwaway APPDATA: starts, title 0.2.0 Beta.
+- [ ] User: publish GitHub release `v0.2.0` with `dist\DesignDataManager.exe` (README "Releasing an update"),
+      and retest the "not a schedulable field" fix in Revit (it's in 0.2.0, untested).
+- [ ] Keep `dev`'s Linker switches on: never merge `main` back into `dev` without checking them.
 
 ### Linker ID (user, 2026-11-13; built 2026-11-17)
 - [x] Linker Tag Set on sections, roles and prefixes in the database, Linker Role column, `"linker"` in the

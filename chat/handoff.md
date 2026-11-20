@@ -8,7 +8,11 @@ folder works.
   then merge `dev` into `main`.
 - Commit/push only when the user asks.
 - Build the `.exe` (`build_exe.py`, see the README) only when merging `dev` into `main`, never for
-  a `dev` push; then check it starts.
+  a `dev` push; then check it starts (with `$env:APPDATA` set to a scratch folder, so it doesn't
+  touch the user's settings or installed add-in). Release `.exe`s go on the public GitHub releases
+  page, so build them with the **demo** database as master (convert `data/test_data/demo_data.ddm.csv`
+  to JSON first), never the live one. Releases: README "Releasing an update"; main carries
+  unreleased features switched off (`FEATURES`, `App.LinkerEnabled`).
 - Always `git fetch` first: work happens on two machines.
 - Run tests with `pytest`. All tests live in `tests/`; config is `[tool.pytest.ini_options]` in
   `pyproject.toml`. On the second machine use the project env: `./.conda/python.exe -m pytest`.
